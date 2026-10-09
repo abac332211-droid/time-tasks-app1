@@ -43,15 +43,26 @@ jobs:
             "webDir": "web"
           }
           EOF
-          echo "=== Config content ==="
           cat capacitor.config.json
-          echo ""
-          echo "=== Files ==="
-          pwd
-          ls -la
 
       - name: Add Android platform
         run: npx cap add android
+
+      - name: Fix Android project
+        run: |
+          sed -i 's|<string name="app_name">.*</string>|<string name="app_name">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
+          sed -i 's|<string name="title_activity_main">.*</string>|<string name="title_activity_main">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
+
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            folder="android/app/src/main/res/mipmap-$d"
+            if [ -d "$folder" ]; then
+              cp icon-192.png "$folder/ic_launcher.png" 2>/dev/null || true
+              cp icon-192.png "$folder/ic_launcher_round.png" 2>/dev/null || true
+              cp icon-512.png "$folder/ic_launcher_foreground.png" 2>/dev/null || true
+            fi
+          done
+          echo "Icons updated"
+          ls -la android/app/src/main/res/mipmap-xxxhdpi/ || true
 
       - name: Sync Capacitor
         run: npx cap sync android
