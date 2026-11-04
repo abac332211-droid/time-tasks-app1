@@ -71,8 +71,10 @@ self.addEventListener('fetch', function(event) {
         }
         return res;
       }).catch(function() {
-        return caches.match(req).then(function(r) {
-          return r || caches.match('./index.html');
+        return caches.open(CACHE_NAME).then(function(cache) {
+          return cache.match(req).then(function(r) {
+            return r || cache.match('./index.html');
+          });
         });
       })
     );
@@ -81,16 +83,16 @@ self.addEventListener('fetch', function(event) {
 
   /* الأصول الثابتة → cache-first */
   event.respondWith(
-    caches.match(req).then(function(cached) {
-      if (cached) return cached;
-      return fetch(req).then(function(res) {
-        if (res && res.ok && res.type === 'basic') {
-          var clone = res.clone();
-          caches.open(CACHE_NAME).then(function(cache) {
+    caches.open(CACHE_NAME).then(function(cache) {
+      return cache.match(req).then(function(cached) {
+        if (cached) return cached;
+        return fetch(req).then(function(res) {
+          if (res && res.ok && res.type === 'basic') {
+            var clone = res.clone();
             cache.put(req, clone).catch(function() {});
-          }).catch(function() {});
-        }
-        return res;
+          }
+          return res;
+        });
       });
     })
   );
