@@ -1394,10 +1394,13 @@ function validateV2(data) {
     if (s.lastTaskId !== undefined && (!Number.isInteger(s.lastTaskId) || s.lastTaskId < 0)) return false;
   }
 
+  const taskIds = new Set();
   for (let i = 0; i < data.tasks.length; i++) {
     const t = data.tasks[i];
     if (!t || typeof t !== "object" || Array.isArray(t)) return false;
     if (typeof t.id !== "number" || !Number.isFinite(t.id) || !Number.isInteger(t.id) || t.id <= 0) return false;
+    if (taskIds.has(t.id)) return false;
+    taskIds.add(t.id);
     if (typeof t.name !== "string") return false;
     if (typeof t.status !== "string" || !VALID_STATUS.includes(t.status)) return false;
     if (typeof t.type !== "string" || !VALID_TYPES.includes(t.type)) return false;
