@@ -60,7 +60,7 @@ function timerSandbox(saveSessions, saveTimer) {
     _focusTimer: {
       running: true,
       mode: 'pomodoro',
-      phase: 'work',
+      phase: 'short-break',
       taskId: null,
       startedAt: Date.now() - (4 * 3600 + 10) * 1000,
       sessionStartAt: Date.now() - (4 * 3600 + 10) * 1000,
@@ -109,7 +109,7 @@ test('failed long-background session save preserves elapsed time for recovery', 
   assert.equal(sandbox.savedSessions.length, 0);
   assert.equal(sandbox._focusTimer.running, false);
   assert.equal(sandbox._focusTimer.baseElapsed, 4 * 3600 + 10);
-  assert.notEqual(sandbox._focusTimer.phase, 'work', 'phase is not reset after failed session write');
+  assert.equal(sandbox._focusTimer.phase, 'short-break', 'phase is not reset after failed session write');
 });
 
 function recurrenceSandbox(tasks) {
