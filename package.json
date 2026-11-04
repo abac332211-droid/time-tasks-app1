@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^6.2.0"
+  },
+  "scripts": {
+    "test": "node --test tests/regression.test.cjs"
   }
 }
