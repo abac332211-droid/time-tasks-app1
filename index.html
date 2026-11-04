@@ -1382,6 +1382,7 @@ function validateV2(data) {
 
   if (data.settings !== undefined) {
     if (!data.settings || typeof data.settings !== "object" || Array.isArray(data.settings)) return false;
+    if (Object.prototype.hasOwnProperty.call(data.settings, "__proto__")) return false;
     const s = data.settings;
     if (s.operationalDayStart !== undefined) {
       if (!Number.isInteger(s.operationalDayStart) || s.operationalDayStart < 0 || s.operationalDayStart > 23) return false;
@@ -3781,7 +3782,8 @@ function validateBackup(obj) {
     return { valid: false, reason: "حقل سجلات الأيام ليس مصفوفة." };
   if (d.settings !== undefined && d.settings !== null) {
     const st = d.settings;
-    if (!st || typeof st !== "object" || Array.isArray(st))
+    if (!st || typeof st !== "object" || Array.isArray(st)
+        || Object.prototype.hasOwnProperty.call(st, "__proto__"))
       return { valid: false, reason: "إعدادات النسخة الاحتياطية غير صالحة." };
     if (st.operationalDayStart !== undefined
         && (!Number.isInteger(st.operationalDayStart) || st.operationalDayStart < 0 || st.operationalDayStart > 23))
