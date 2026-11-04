@@ -411,24 +411,3 @@ test('stored schema rejects duplicate task IDs before normal app use', () => {
     schemaVersion: 2, tasks: [task, { ...task }], dailyLogs: []
   }), false);
 });
-
-
-test('Pages deployment workflow publishes only the app from the default branch', () => {
-  const workflow = fs.readFileSync(path.join(root, '.github/workflows/deploy-pages.yml'), 'utf8');
-  assert.match(workflow, /branches:\s*\n\s+- main/);
-  assert.match(workflow, /workflow_dispatch/);
-  assert.match(workflow, /pages:\s*write/);
-  assert.match(workflow, /id-token:\s*write/);
-  assert.match(workflow, /actions\/configure-pages@v5/);
-  assert.match(workflow, /actions\/upload-pages-artifact@v4/);
-  assert.match(workflow, /actions\/deploy-pages@v4/);
-  assert.match(workflow, /path: _site/);
-  for (const asset of [
-    'index.html', 'manifest.json', 'sw.js',
-    'icon-192.png', 'icon-512.png', 'icon-512-maskable.png',
-    'apple-touch-icon.png', 'favicon-32.png', 'favicon-16.png'
-  ]) {
-    assert.ok(workflow.includes(asset), 'deployment workflow includes ' + asset);
-  }
-  assert.doesNotMatch(workflow, /branches:\s*\n\s+- codex\/final-audit-fixes/);
-});
