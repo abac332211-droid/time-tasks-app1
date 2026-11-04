@@ -4056,7 +4056,7 @@ function _recoverInterruptedImport() {
 
     // احذف علامة العملية أولاً؛ إذا تعذر ذلك نحتفظ بنسخة التراجع لإعادة المحاولة.
     localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
-    localStorage.removeItem(PRE_IMPORT_KEY);
+    try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (_backupCleanupError) {}
     return true;
   } catch (e) {
     return false;
