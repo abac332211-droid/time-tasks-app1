@@ -1217,21 +1217,29 @@ function _generateRecurringTasksForToday() {
   function getSeriesRoot(task) {
     var current = task;
     var seen = {};
-    while (current && current._recurringGenerated && current._sourceTaskId != null) {
+    var steps = 0;
+    while (current && current._recurringGenerated) {
+      var currentId = String(current.id);
+      if (seen[currentId]) return null;
+      seen[currentId] = true;
+      if (current._sourceTaskId == null) return null;
       var sourceId = String(current._sourceTaskId);
-      if (seen[sourceId]) break;
-      seen[sourceId] = true;
+      if (seen[sourceId]) return null;
       var source = byId[sourceId];
-      if (!source || source === current) break;
+      // حذف المهمة الأصلية أو وجود سلسلة دائرية يعني إيقاف السلسلة، لا ترقية نسخة يتيمة إلى أصل.
+      if (!source || source === current) return null;
       current = source;
+      steps++;
+      if (steps > tasks.length) return null;
     }
-    return current || task;
+    return current && current.id != null ? current : null;
   }
 
   var groups = {};
   tasks.slice().forEach(function(t) {
     if (!t || !t.recurrence) return;
     var root = getSeriesRoot(t);
+    if (!root) return; // نسخة يتيمة بعد حذف أصل السلسلة: لا تُنشئ سلسلة جديدة.
     var key = "series:" + String(root.id);
     if (!groups[key]) groups[key] = { root: root, members: [] };
     groups[key].members.push(t);
@@ -3741,10 +3749,12 @@ function exportBackup() {
 function validateBackup(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj))
     return { valid: false, reason: "الملف ليس كائن JSON صالحًا." };
-  if (typeof obj.backupFormatVersion !== "number")
-    return { valid: false, reason: "الملف ليس نسخة احتياطية معروفة." };
+  if (!Number.isInteger(obj.backupFormatVersion) || obj.backupFormatVersion < 1)
+    return { valid: false, reason: "رقم تنسيق النسخة الاحتياطية غير صالح." };
   if (obj.backupFormatVersion > BACKUP_FORMAT_VERSION)
     return { valid: false, reason: "الملف من إصدار أحدث — حدّث التطبيق أولًا." };
+  if (obj.schemaVersion !== undefined && obj.schemaVersion !== CURRENT_SCHEMA_VERSION)
+    return { valid: false, reason: "مخطط البيانات غير متوافق مع هذا الإصدار." };
 
   const d = obj.data;
   if (!d || typeof d !== "object" || Array.isArray(d))
@@ -3753,6 +3763,30 @@ function validateBackup(obj) {
     return { valid: false, reason: "حقل المهام ليس مصفوفة." };
   if (!Array.isArray(d.dailyLogs))
     return { valid: false, reason: "حقل سجلات الأيام ليس مصفوفة." };
+  if (d.settings !== undefined && d.settings !== null) {
+    const st = d.settings;
+    if (!st || typeof st !== "object" || Array.isArray(st))
+      return { valid: false, reason: "إعدادات النسخة الاحتياطية غير صالحة." };
+    if (st.operationalDayStart !== undefined
+        && (!Number.isInteger(st.operationalDayStart) || st.operationalDayStart < 0 || st.operationalDayStart > 23))
+      return { valid: false, reason: "بداية اليوم التشغيلي غير صالحة." };
+    if (st.firstUseDate !== undefined && st.firstUseDate !== null
+        && (typeof st.firstUseDate !== "string" || !isValidCalendarDate(st.firstUseDate)))
+      return { valid: false, reason: "تاريخ بدء الاستخدام غير صالح." };
+    if (st.darkMode !== undefined && typeof st.darkMode !== "boolean")
+      return { valid: false, reason: "إعداد المظهر غير صالح." };
+    if (st.lastTaskId !== undefined && (!Number.isInteger(st.lastTaskId) || st.lastTaskId < 0))
+      return { valid: false, reason: "عداد المهام غير صالح." };
+    if (st.lastRecurringDates !== undefined && st.lastRecurringDates !== null) {
+      if (typeof st.lastRecurringDates !== "object" || Array.isArray(st.lastRecurringDates))
+        return { valid: false, reason: "تواريخ توليد المهام المتكررة غير صالحة." };
+      const recurringKeys = Object.keys(st.lastRecurringDates);
+      for (let ri = 0; ri < recurringKeys.length; ri++) {
+        if (!isValidCalendarDate(st.lastRecurringDates[recurringKeys[ri]]))
+          return { valid: false, reason: "تاريخ توليد متكرر غير صالح." };
+      }
+    }
+  }
 
   const ids = new Set();
   for (let i = 0; i < d.tasks.length; i++) {
@@ -3780,6 +3814,31 @@ function validateBackup(obj) {
       return { valid: false, reason: "الوقت غير صالح (" + (i+1) + ")." };
     if (t.completedAt !== null && !isValidLocalDateTime(t.completedAt))
       return { valid: false, reason: "وقت الإنجاز غير صالح (" + (i+1) + ")." };
+    if (t.status !== "done" && t.completedAt !== null)
+      return { valid: false, reason: "وقت الإنجاز موجود لمهمة غير مكتملة (" + (i+1) + ")." };
+    if (t.projectId !== undefined && t.projectId !== null
+        && (typeof t.projectId !== "number" || !Number.isInteger(t.projectId) || t.projectId <= 0))
+      return { valid: false, reason: "معرّف المشروع غير صالح (" + (i+1) + ")." };
+    if (t.priority !== undefined && t.priority !== null && !["urgent", "high", "low"].includes(t.priority))
+      return { valid: false, reason: "أولوية المهمة غير صالحة (" + (i+1) + ")." };
+    if (t.recurrence !== undefined && t.recurrence !== null
+        && !["daily", "weekdays", "weekly", "monthly"].includes(t.recurrence))
+      return { valid: false, reason: "نمط التكرار غير صالح (" + (i+1) + ")." };
+    if (t.checklist !== undefined && t.checklist !== null) {
+      if (!Array.isArray(t.checklist))
+        return { valid: false, reason: "قائمة التحقق غير صالحة (" + (i+1) + ")." };
+      for (let ci = 0; ci < t.checklist.length; ci++) {
+        const item = t.checklist[ci];
+        if (!item || typeof item !== "object" || Array.isArray(item)
+            || typeof item.text !== "string" || typeof item.done !== "boolean")
+          return { valid: false, reason: "عنصر قائمة تحقق غير صالح (" + (i+1) + ")." };
+      }
+    }
+    if (t._recurringGenerated !== undefined && typeof t._recurringGenerated !== "boolean")
+      return { valid: false, reason: "علامة المهمة المتكررة غير صالحة (" + (i+1) + ")." };
+    if (t._sourceTaskId !== undefined && t._sourceTaskId !== null
+        && (!Number.isInteger(t._sourceTaskId) || t._sourceTaskId <= 0))
+      return { valid: false, reason: "مرجع أصل المهمة المتكررة غير صالح (" + (i+1) + ")." };
   }
 
   for (let i = 0; i < d.dailyLogs.length; i++) {
@@ -3845,8 +3904,19 @@ function validateBackup(obj) {
       }
       if (typeof s.durationSec !== "number" || !Number.isFinite(s.durationSec) || s.durationSec < 0)
         return { valid: false, reason: "مدة جلسة التركيز غير صالحة (" + (i+1) + ")." };
-      if (typeof s.startedAt !== "string")
+      if (typeof s.startedAt !== "string" || !Number.isFinite(Date.parse(s.startedAt)))
         return { valid: false, reason: "بداية جلسة التركيز غير صالحة (" + (i+1) + ")." };
+      if (s.endedAt !== undefined && s.endedAt !== null
+          && (typeof s.endedAt !== "string" || !Number.isFinite(Date.parse(s.endedAt))
+              || Date.parse(s.endedAt) < Date.parse(s.startedAt)))
+        return { valid: false, reason: "نهاية جلسة التركيز غير صالحة (" + (i+1) + ")." };
+      if (s.taskId !== undefined && s.taskId !== null
+          && (typeof s.taskId !== "number" || !Number.isInteger(s.taskId) || s.taskId <= 0))
+        return { valid: false, reason: "معرّف مهمة جلسة التركيز غير صالح (" + (i+1) + ")." };
+      if (s.taskName !== undefined && s.taskName !== null && typeof s.taskName !== "string")
+        return { valid: false, reason: "اسم مهمة جلسة التركيز غير صالح (" + (i+1) + ")." };
+      if (s.completed !== undefined && typeof s.completed !== "boolean")
+        return { valid: false, reason: "حالة جلسة التركيز غير صالحة (" + (i+1) + ")." };
 
       if (s.mode !== undefined && s.mode !== "pomodoro" && s.mode !== "stopwatch")
         return { valid: false, reason: "وضع جلسة التركيز غير صالح (" + (i+1) + ")." };
@@ -5237,48 +5307,34 @@ function _catchUp() {
   var elapsedTotal = _getElapsedSec();
   if (elapsedTotal > 4 * 3600) {
     _stopDisplayTick();
-    // FIX F2 (TI1): حفظ الوقت كجلسة قبل إعادة الضبط لمنع الفقدان الصامت
-    if (elapsedTotal >= 60) {
-      try {
-        var _catchArr = _loadSessions();
-        var _catchMaxId = _catchArr.reduce(function(m, s) { return Math.max(m, s.id || 0); }, 0);
-        var _catchTaskName = '';
-        if (_focusTimer.taskId) {
-          var _catchTask = tasks.find(function(x) { return x.id === _focusTimer.taskId; });
-          if (_catchTask) _catchTaskName = _catchTask.name;
-        }
-        var _catchStart = _focusTimer.sessionStartAt || (Date.now() - elapsedTotal * 1000);
-        _catchArr.push({
-          id: _catchMaxId + 1,
-          mode: 'pomodoro',
-          phase: _focusTimer.phase,
-          taskId: _focusTimer.taskId,
-          taskName: _catchTaskName,
-          startedAt: new Date(_catchStart).toISOString(),
-          endedAt: new Date().toISOString(),
-          durationSec: elapsedTotal,
-          completed: false
-        });
-        if (!_saveSessions(_catchArr)) {
-          _focusTimer.running = false;
-          _focusTimer.baseElapsed = elapsedTotal;
-          _focusTimer.startedAt = null;
-          _saveFocusTimer();
-          _renderFocusTimer();
-          showToast('⚠️ تعذر حفظ الجلسة — أُوقف المؤقت مع إبقاء الوقت لاستعادته');
-          return;
-        }
-      } catch (_catchErr) { /* best-effort; never block reset */ }
+    // استخدم مسار التسجيل الموحد: مفتاح الجلسة يعتمد على startedAt/taskId/mode/phase.
+    var _catchLogged = false;
+    try {
+      _catchLogged = _logSession(_focusTimer.phase, elapsedTotal, false);
+    } catch (_catchErr) {
+      _catchLogged = false;
+    }
+    if (!_catchLogged) {
+      // لا تصفّر المؤقت ولا تتخلص من الوقت ما لم ينجح حفظ الجلسة.
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = elapsedTotal;
+      _focusTimer.startedAt = null;
+      _saveFocusTimer();
+      _renderFocusTimer();
+      showToast('⚠️ تعذر حفظ الجلسة — أُوقف المؤقت مع إبقاء الوقت لاستعادته');
+      return;
     }
     _focusTimer.running = false;
     _focusTimer.baseElapsed = 0;
     _focusTimer.phase = 'work';
     _focusTimer.startedAt = null;
     _focusTimer.sessionStartAt = null;
-    _saveFocusTimer();
+    var _catchTimerSaved = _saveFocusTimer();
     _renderFocusTimer();
     try { renderFocusSessionsCard(); } catch (_rfsErr) {}
-    showToast('⏸️ توقف المؤقت طويلًا — حُفظ الوقت كجلسة');
+    showToast(_catchTimerSaved
+      ? '⏸️ توقف المؤقت طويلًا — حُفظ الوقت كجلسة'
+      : '⚠️ حُفظت الجلسة، لكن تعذر حفظ إعادة ضبط المؤقت؛ لن تُسجّل الجلسة مرتين عند إعادة الفتح');
     return;
   }
   var safety = 20;
