@@ -386,3 +386,28 @@ test('backup and stored schema reject prototype-polluting settings keys', () => 
   });
   assert.equal(storedResult, false);
 });
+
+
+test('stored schema rejects duplicate task IDs before normal app use', () => {
+  const sandbox = {
+    CURRENT_SCHEMA_VERSION: 2,
+    VALID_STATUS: ['pending', 'done', 'partial', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
+    isValidLocalDateTime: (value) => typeof value === 'string',
+    validateDailyLog: () => true
+  };
+  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  const task = {
+    id: 1, name: 'مهمة', status: 'pending', type: 'معرفية',
+    expected: 30, actual: null, plannedDate: '2026-11-04',
+    plannedTime: '', completedAt: null, createdAt: 1
+  };
+  assert.equal(sandbox.validateV2({
+    schemaVersion: 2, tasks: [task], dailyLogs: []
+  }), true);
+  assert.equal(sandbox.validateV2({
+    schemaVersion: 2, tasks: [task, { ...task }], dailyLogs: []
+  }), false);
+});
