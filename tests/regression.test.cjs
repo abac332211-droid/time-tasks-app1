@@ -49,8 +49,10 @@ test('service worker precache only references files that exist', () => {
   }
 });
 
-test('service worker does not delete unrelated origin caches', () => {
+test('service worker is isolated from unrelated origin caches', () => {
   assert.match(sw, /cache\.indexOf\('timetasks-cache-'\)\s*===\s*0/);
+  assert.match(sw, /cache\.match\(req\)/);
+  assert.doesNotMatch(sw, /caches\.match\(/);
 });
 
 function timerSandbox(saveSessions, saveTimer) {
