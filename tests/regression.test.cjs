@@ -229,3 +229,40 @@ test('weekly report separates planned cohort from actual completion dates', () =
   assert.equal(report.doneTasks, 1, 'completed-plan count follows the planned cohort');
   assert.equal(report.completedThisWeek, 1, 'actual weekly completions follow completedAt, even for older planned tasks');
 });
+
+
+test('restored notebook records normalize imported IDs before inline event handlers use them', () => {
+  const thoughtsSandbox = {
+    THOUGHTS_KEY: 'thoughts',
+    localStorage: {
+      getItem: () => JSON.stringify([{
+        id: '1);globalThis.pwned=true;//',
+        text: '<img src=x onerror=alert(1)>',
+        createdAt: '2026-11-04T10:00:00.000Z'
+      }])
+    }
+  };
+  vm.runInNewContext(extractFunction('_loadThoughts'), thoughtsSandbox);
+  const thoughts = thoughtsSandbox._loadThoughts();
+  assert.equal(thoughts.length, 1);
+  assert.equal(typeof thoughts[0].id, 'number');
+  assert.equal(thoughts[0].id, 1);
+  assert.equal(thoughts[0].text, '<img src=x onerror=alert(1)>', 'raw text stays data and is escaped at render time');
+
+  const inboxSandbox = {
+    MENTAL_INBOX_KEY: 'inbox',
+    localStorage: {
+      getItem: () => JSON.stringify([{
+        id: '2);globalThis.pwned=true;//',
+        text: '<svg onload=alert(1)>',
+        next: '',
+        createdAt: '2026-11-04T10:00:00.000Z'
+      }])
+    }
+  };
+  vm.runInNewContext(extractFunction('_loadMentalInbox'), inboxSandbox);
+  const inbox = inboxSandbox._loadMentalInbox();
+  assert.equal(inbox.length, 1);
+  assert.equal(typeof inbox[0].id, 'number');
+  assert.equal(inbox[0].id, 1);
+});
