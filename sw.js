@@ -41,7 +41,11 @@ self.addEventListener('activate', function(event) {
     caches.keys().then(function(cacheNames) {
       return Promise.all(
         cacheNames.map(function(cache) {
-          if (cache !== CACHE_NAME) return caches.delete(cache);
+          // This app is hosted on a shared origin such as username.github.io.
+          // Only delete caches owned by this application.
+          if (cache.indexOf('timetasks-cache-') === 0 && cache !== CACHE_NAME) {
+            return caches.delete(cache);
+          }
         })
       );
     }).then(function() { return self.clients.claim(); })
