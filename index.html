@@ -775,7 +775,8 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
 <script>
 const STORAGE_KEY = "timeTasksApp_v1";
 const BACKUP_KEY = "timeTasksApp_backup_v1";
-const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup";
+const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup";
+const IMPORT_IN_PROGRESS_KEY = "timeTasksApp_importInProgress";
 const TEST_FLAG_KEY = "timeTasksApp_testInjected";
 const TEST_BACKUP_KEY = "timeTasksApp_testBackup";
 const CURRENT_SCHEMA_VERSION = 2;
@@ -1676,6 +1677,12 @@ function _syncThemeMeta() {
 }
 
 function loadData() {
+  if (!_recoverInterruptedImport()) {
+    storageRecoveryRequired = true;
+    showAlertModal("تعذر استرداد استعادة منقطعة",
+      "اكتشف التطبيق عملية استيراد لم تكتمل، لكنه لم يستطع التحقق من نسخة التراجع. لم تُحذف النسخة الاحتياطية أو علامة الاسترداد. صدّر الملفات المتاحة وراجع مساحة التخزين قبل المتابعة.");
+    return;
+  }
   const report = migrateV1ToV2();
   storageRecoveryRequired = !report.success;
   if (!report.success) {
@@ -1992,6 +1999,7 @@ function resetAll() {
       tasks = [];
       try {
         localStorage.removeItem(PRE_IMPORT_KEY);
+        localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
         localStorage.removeItem(TEST_FLAG_KEY);
         localStorage.removeItem(BACKUP_KEY);
         localStorage.removeItem(TEST_BACKUP_KEY);
@@ -4020,6 +4028,41 @@ function _rollbackRestore(rb) {
   return _restoreStorageSnapshot(rb);
 }
 
+/* استرداد استيراد انقطع قبل اكتمال التحقق النهائي. */
+function _recoverInterruptedImport() {
+  var marker;
+  try { marker = localStorage.getItem(IMPORT_IN_PROGRESS_KEY); }
+  catch (e) { return false; }
+  if (!marker) return true;
+
+  try {
+    var raw = localStorage.getItem(PRE_IMPORT_KEY);
+    if (!raw) return false;
+    var snapshot = JSON.parse(raw);
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+        || !Object.prototype.hasOwnProperty.call(snapshot, "main")) return false;
+
+    var snapshotKeys = ["main", "focusSessions", "focusTimer", "mentalInbox",
+      "thoughts", "projects", "focusSettings", "notifications"];
+    for (var i = 0; i < snapshotKeys.length; i++) {
+      var value = snapshot[snapshotKeys[i]];
+      if (value !== null && value !== undefined && typeof value !== "string") return false;
+    }
+    if (snapshot.main !== null) {
+      var mainData = JSON.parse(snapshot.main);
+      if (!validateV2(mainData)) return false;
+    }
+    if (!_restoreStorageSnapshot(snapshot)) return false;
+
+    // احذف علامة العملية أولاً؛ إذا تعذر ذلك نحتفظ بنسخة التراجع لإعادة المحاولة.
+    localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+    localStorage.removeItem(PRE_IMPORT_KEY);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function showImportPreview(obj) {
   const d = obj.data;
   const tasksCount = d.tasks.length;
@@ -4098,15 +4141,23 @@ function showImportPreview(obj) {
         };
         try {
           localStorage.setItem(PRE_IMPORT_KEY, JSON.stringify(_rollback));
+          localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
         } catch (e) {
-          showAlertModal("فشل الاستعادة", "تعذر حفظ نسخة التراجع. لم يتم أي تغيير لحماية بياناتك.");
+          try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); } catch (_markerCleanupError) {}
+          try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (_backupCleanupError) {}
+          showAlertModal("فشل الاستعادة", "تعذر تجهيز نقطة الاسترداد. لم يتم استبدال أي بيانات.");
           return;
         }
 
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
         } catch (e) {
-          showAlertModal("فشل الاستعادة", "تعذر حفظ البيانات الرئيسية: " + e.message + "<br>لم يتم أي تغيير.");
+          var _mainWriteRollbackOk = _rollbackRestore(_rollback);
+          if (_mainWriteRollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (_mainCleanupError) {}
+          }
+          showAlertModal("فشل الاستعادة", "تعذر حفظ البيانات الرئيسية: " + e.message
+            + (_mainWriteRollbackOk ? "<br>لم يتم تغيير بياناتك السابقة." : "<br>احتُفظ بعلامة الاسترداد لمحاولة التراجع عند إعادة فتح التطبيق."));
           return;
         }
 
@@ -4118,7 +4169,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ جلسات التركيز" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4133,7 +4186,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ العقل المفتوح" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4146,7 +4201,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ الخواطر" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4159,7 +4216,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ المشاريع" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4178,7 +4237,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ إعدادات المؤقت. تمت محاولة استرجاع الحالة السابقة؛ تحقق من البيانات إذا ظهرت مشكلة في التخزين.");
           return;
         }
@@ -4191,7 +4252,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ تفضيلات الإشعارات. تمت محاولة استرجاع الحالة السابقة؛ تحقق من البيانات إذا ظهرت مشكلة في التخزين.");
           return;
         }
@@ -4229,7 +4292,7 @@ function showImportPreview(obj) {
         if (!_importReadbackOk) {
           var _readbackRollbackOk = _rollbackRestore(_rollback);
           if (_readbackRollbackOk) {
-            try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
           }
           showAlertModal("فشل التحقق من الاستعادة",
             "لم تتطابق البيانات المقروءة بعد الاستعادة مع القيم المطلوبة. " +
@@ -4239,6 +4302,19 @@ function showImportPreview(obj) {
           return;
         }
 
+        try {
+          localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+        } catch (_finishImportMarkerError) {
+          var _finishRollbackOk = _rollbackRestore(_rollback);
+          if (_finishRollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (_finishCleanupError) {}
+          }
+          showAlertModal("تعذر إنهاء الاستعادة",
+            _finishRollbackOk
+              ? "تعذّر إغلاق علامة الاستيراد؛ تمت استعادة الحالة السابقة."
+              : "تعذّر إغلاق الاستيراد واستعادة الحالة السابقة؛ احتُفظ بعلامة الاسترداد ونسخة التراجع.");
+          return;
+        }
         try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تمت الاستعادة الكاملة'); } catch (e) {}
         location.reload();
       }
@@ -4266,6 +4342,7 @@ function undoLastImport() {
         localStorage.setItem(STORAGE_KEY, raw);
         if (localStorage.getItem(STORAGE_KEY) !== raw) throw new Error("فشل التحقق من البيانات الرئيسية");
       }
+      localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
       localStorage.removeItem(PRE_IMPORT_KEY);
       try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تم الاسترجاع الكامل'); } catch (e) {}
       location.reload();
