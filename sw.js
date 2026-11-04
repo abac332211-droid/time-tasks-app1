@@ -7,13 +7,12 @@
    - fetch: network-first للتنقل، cache-first للأصول.
    ============================================================ */
 
-const CACHE_NAME = 'timetasks-cache-v2.7.0';
+const CACHE_NAME = 'timetasks-cache-v2.8.8';
 
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './manifest.json',
-  './icon.svg',
   './icon-192.png',
   './icon-512.png',
   './icon-512-maskable.png',
