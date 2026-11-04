@@ -339,3 +339,17 @@ test('startup preserves an invalid rollback snapshot and blocks recovery', () =>
   assert.equal(store.get(markerKey), '1');
   assert.equal(store.get(backupKey), '{broken-json');
 });
+
+
+test('normal completed phase save failure preserves phase and elapsed time', () => {
+  const sandbox = timerSandbox(() => false, () => true);
+  const sessionStartAt = sandbox._focusTimer.sessionStartAt;
+  sandbox._getElapsedSec = () => 420;
+  sandbox._phaseTargetSec = () => 300;
+  sandbox._catchUp();
+  assert.equal(sandbox.savedSessions.length, 0);
+  assert.equal(sandbox._focusTimer.running, false);
+  assert.equal(sandbox._focusTimer.baseElapsed, 420);
+  assert.equal(sandbox._focusTimer.phase, 'short-break');
+  assert.equal(sandbox._focusTimer.sessionStartAt, sessionStartAt);
+});
