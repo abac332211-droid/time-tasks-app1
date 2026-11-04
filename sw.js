@@ -7,13 +7,12 @@
    - fetch: network-first للتنقل، cache-first للأصول.
    ============================================================ */
 
-const CACHE_NAME = 'timetasks-cache-v2.7.0';
+const CACHE_NAME = 'timetasks-cache-v2.8.8';
 
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './manifest.json',
-  './icon.svg',
   './icon-192.png',
   './icon-512.png',
   './icon-512-maskable.png',
@@ -42,7 +41,11 @@ self.addEventListener('activate', function(event) {
     caches.keys().then(function(cacheNames) {
       return Promise.all(
         cacheNames.map(function(cache) {
-          if (cache !== CACHE_NAME) return caches.delete(cache);
+          // This app is hosted on a shared origin such as username.github.io.
+          // Only delete caches owned by this application.
+          if (cache.indexOf('timetasks-cache-') === 0 && cache !== CACHE_NAME) {
+            return caches.delete(cache);
+          }
         })
       );
     }).then(function() { return self.clients.claim(); })
@@ -68,8 +71,10 @@ self.addEventListener('fetch', function(event) {
         }
         return res;
       }).catch(function() {
-        return caches.match(req).then(function(r) {
-          return r || caches.match('./index.html');
+        return caches.open(CACHE_NAME).then(function(cache) {
+          return cache.match(req).then(function(r) {
+            return r || cache.match('./index.html');
+          });
         });
       })
     );
@@ -78,16 +83,16 @@ self.addEventListener('fetch', function(event) {
 
   /* الأصول الثابتة → cache-first */
   event.respondWith(
-    caches.match(req).then(function(cached) {
-      if (cached) return cached;
-      return fetch(req).then(function(res) {
-        if (res && res.ok && res.type === 'basic') {
-          var clone = res.clone();
-          caches.open(CACHE_NAME).then(function(cache) {
+    caches.open(CACHE_NAME).then(function(cache) {
+      return cache.match(req).then(function(cached) {
+        if (cached) return cached;
+        return fetch(req).then(function(res) {
+          if (res && res.ok && res.type === 'basic') {
+            var clone = res.clone();
             cache.put(req, clone).catch(function() {});
-          }).catch(function() {});
-        }
-        return res;
+          }
+          return res;
+        });
       });
     })
   );

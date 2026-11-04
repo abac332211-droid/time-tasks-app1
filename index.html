@@ -775,11 +775,12 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
 <script>
 const STORAGE_KEY = "timeTasksApp_v1";
 const BACKUP_KEY = "timeTasksApp_backup_v1";
-const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup";
+const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup";
+const IMPORT_IN_PROGRESS_KEY = "timeTasksApp_importInProgress";
 const TEST_FLAG_KEY = "timeTasksApp_testInjected";
 const TEST_BACKUP_KEY = "timeTasksApp_testBackup";
 const CURRENT_SCHEMA_VERSION = 2;
-const APP_VERSION = "2.8.7";
+const APP_VERSION = "2.8.8";
 const BACKUP_FORMAT_VERSION = 1;
 
 const VALID_TYPES = ["معرفية", "إدارية", "إبداعية", "اجتماعية"];
@@ -1217,21 +1218,29 @@ function _generateRecurringTasksForToday() {
   function getSeriesRoot(task) {
     var current = task;
     var seen = {};
-    while (current && current._recurringGenerated && current._sourceTaskId != null) {
+    var steps = 0;
+    while (current && current._recurringGenerated) {
+      var currentId = String(current.id);
+      if (seen[currentId]) return null;
+      seen[currentId] = true;
+      if (current._sourceTaskId == null) return null;
       var sourceId = String(current._sourceTaskId);
-      if (seen[sourceId]) break;
-      seen[sourceId] = true;
+      if (seen[sourceId]) return null;
       var source = byId[sourceId];
-      if (!source || source === current) break;
+      // حذف المهمة الأصلية أو وجود سلسلة دائرية يعني إيقاف السلسلة، لا ترقية نسخة يتيمة إلى أصل.
+      if (!source || source === current) return null;
       current = source;
+      steps++;
+      if (steps > tasks.length) return null;
     }
-    return current || task;
+    return current && current.id != null ? current : null;
   }
 
   var groups = {};
   tasks.slice().forEach(function(t) {
     if (!t || !t.recurrence) return;
     var root = getSeriesRoot(t);
+    if (!root) return; // نسخة يتيمة بعد حذف أصل السلسلة: لا تُنشئ سلسلة جديدة.
     var key = "series:" + String(root.id);
     if (!groups[key]) groups[key] = { root: root, members: [] };
     groups[key].members.push(t);
@@ -1373,6 +1382,7 @@ function validateV2(data) {
 
   if (data.settings !== undefined) {
     if (!data.settings || typeof data.settings !== "object" || Array.isArray(data.settings)) return false;
+    if (Object.prototype.hasOwnProperty.call(data.settings, "__proto__")) return false;
     const s = data.settings;
     if (s.operationalDayStart !== undefined) {
       if (!Number.isInteger(s.operationalDayStart) || s.operationalDayStart < 0 || s.operationalDayStart > 23) return false;
@@ -1384,10 +1394,13 @@ function validateV2(data) {
     if (s.lastTaskId !== undefined && (!Number.isInteger(s.lastTaskId) || s.lastTaskId < 0)) return false;
   }
 
+  const taskIds = new Set();
   for (let i = 0; i < data.tasks.length; i++) {
     const t = data.tasks[i];
     if (!t || typeof t !== "object" || Array.isArray(t)) return false;
     if (typeof t.id !== "number" || !Number.isFinite(t.id) || !Number.isInteger(t.id) || t.id <= 0) return false;
+    if (taskIds.has(t.id)) return false;
+    taskIds.add(t.id);
     if (typeof t.name !== "string") return false;
     if (typeof t.status !== "string" || !VALID_STATUS.includes(t.status)) return false;
     if (typeof t.type !== "string" || !VALID_TYPES.includes(t.type)) return false;
@@ -1668,6 +1681,12 @@ function _syncThemeMeta() {
 }
 
 function loadData() {
+  if (!_recoverInterruptedImport()) {
+    storageRecoveryRequired = true;
+    showAlertModal("تعذر استرداد استعادة منقطعة",
+      "اكتشف التطبيق عملية استيراد لم تكتمل، لكنه لم يستطع التحقق من نسخة التراجع. لم تُحذف النسخة الاحتياطية أو علامة الاسترداد. صدّر الملفات المتاحة وراجع مساحة التخزين قبل المتابعة.");
+    return;
+  }
   const report = migrateV1ToV2();
   storageRecoveryRequired = !report.success;
   if (!report.success) {
@@ -1984,6 +2003,7 @@ function resetAll() {
       tasks = [];
       try {
         localStorage.removeItem(PRE_IMPORT_KEY);
+        localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
         localStorage.removeItem(TEST_FLAG_KEY);
         localStorage.removeItem(BACKUP_KEY);
         localStorage.removeItem(TEST_BACKUP_KEY);
@@ -3404,7 +3424,13 @@ function computeWeeklyReport() {
   const medianGap = sorted.length === 0 ? 0
     : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
 
+  // فصل مجموعة المهام المخطط لها عن الإنجازات حسب وقت الإنجاز الفعلي.
   const doneTasks = weekTasks.filter(isTaskDone).length;
+  const completedThisWeek = tasks.filter(function(t) {
+    return t && isTaskDone(t) && !isTaskCancelled(t)
+      && typeof t.completedAt === "string"
+      && daySet.has(_operationalDateFromIso(t.completedAt));
+  }).length;
   const totalDistractions = dailyLogs.reduce(function(s, l) {
     return s + (Number.isFinite(l && l.distractions) && l.distractions >= 0 ? l.distractions : 0);
   }, 0);
@@ -3437,6 +3463,7 @@ function computeWeeklyReport() {
     daysLoggedRaw: dailyLogs.length,
     control, execution, wellbeing,
     doneTasks, totalTasks: weekTasks.length,
+    completedThisWeek,
     avgGap, aggGap, medianGap, gapCount: tasksWithActual.length,
     totalDistractions,
     recurringTotal, recurringDone, recurringByKind
@@ -3484,13 +3511,14 @@ function renderWeeklyReport() {
   const container = document.getElementById("weeklyReport");
   if (!container) return;
   const report = computeWeeklyReport();
-  if (report.daysLogged === 0 && report.totalTasks === 0) {
+  if (report.daysLogged === 0 && report.totalTasks === 0 && report.completedThisWeek === 0) {
     container.innerHTML = '<div class="empty">لا توجد بيانات هذا الأسبوع بعد.</div>';
     return;
   }
   let html = '<div class="weekly-summary">';
   html += '<div class="weekly-stat"><div class="weekly-stat-label">الأيام المسجلة</div><div class="weekly-stat-value">' + report.daysLogged + ' / 7</div></div>';
-  html += '<div class="weekly-stat"><div class="weekly-stat-label">المهام المنجزة</div><div class="weekly-stat-value">' + report.doneTasks + ' / ' + report.totalTasks + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">المكتمل من خطة الأسبوع</div><div class="weekly-stat-value">' + report.doneTasks + ' / ' + report.totalTasks + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">إنجازات تمت هذا الأسبوع</div><div class="weekly-stat-value">' + report.completedThisWeek + '</div></div>';
   html += '</div>';
   html += '<div class="weekly-metrics">';
   if (report.control.count > 0)
@@ -3741,10 +3769,12 @@ function exportBackup() {
 function validateBackup(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj))
     return { valid: false, reason: "الملف ليس كائن JSON صالحًا." };
-  if (typeof obj.backupFormatVersion !== "number")
-    return { valid: false, reason: "الملف ليس نسخة احتياطية معروفة." };
+  if (!Number.isInteger(obj.backupFormatVersion) || obj.backupFormatVersion < 1)
+    return { valid: false, reason: "رقم تنسيق النسخة الاحتياطية غير صالح." };
   if (obj.backupFormatVersion > BACKUP_FORMAT_VERSION)
     return { valid: false, reason: "الملف من إصدار أحدث — حدّث التطبيق أولًا." };
+  if (obj.schemaVersion !== undefined && obj.schemaVersion !== CURRENT_SCHEMA_VERSION)
+    return { valid: false, reason: "مخطط البيانات غير متوافق مع هذا الإصدار." };
 
   const d = obj.data;
   if (!d || typeof d !== "object" || Array.isArray(d))
@@ -3753,6 +3783,31 @@ function validateBackup(obj) {
     return { valid: false, reason: "حقل المهام ليس مصفوفة." };
   if (!Array.isArray(d.dailyLogs))
     return { valid: false, reason: "حقل سجلات الأيام ليس مصفوفة." };
+  if (d.settings !== undefined && d.settings !== null) {
+    const st = d.settings;
+    if (!st || typeof st !== "object" || Array.isArray(st)
+        || Object.prototype.hasOwnProperty.call(st, "__proto__"))
+      return { valid: false, reason: "إعدادات النسخة الاحتياطية غير صالحة." };
+    if (st.operationalDayStart !== undefined
+        && (!Number.isInteger(st.operationalDayStart) || st.operationalDayStart < 0 || st.operationalDayStart > 23))
+      return { valid: false, reason: "بداية اليوم التشغيلي غير صالحة." };
+    if (st.firstUseDate !== undefined && st.firstUseDate !== null
+        && (typeof st.firstUseDate !== "string" || !isValidCalendarDate(st.firstUseDate)))
+      return { valid: false, reason: "تاريخ بدء الاستخدام غير صالح." };
+    if (st.darkMode !== undefined && typeof st.darkMode !== "boolean")
+      return { valid: false, reason: "إعداد المظهر غير صالح." };
+    if (st.lastTaskId !== undefined && (!Number.isInteger(st.lastTaskId) || st.lastTaskId < 0))
+      return { valid: false, reason: "عداد المهام غير صالح." };
+    if (st.lastRecurringDates !== undefined && st.lastRecurringDates !== null) {
+      if (typeof st.lastRecurringDates !== "object" || Array.isArray(st.lastRecurringDates))
+        return { valid: false, reason: "تواريخ توليد المهام المتكررة غير صالحة." };
+      const recurringKeys = Object.keys(st.lastRecurringDates);
+      for (let ri = 0; ri < recurringKeys.length; ri++) {
+        if (!isValidCalendarDate(st.lastRecurringDates[recurringKeys[ri]]))
+          return { valid: false, reason: "تاريخ توليد متكرر غير صالح." };
+      }
+    }
+  }
 
   const ids = new Set();
   for (let i = 0; i < d.tasks.length; i++) {
@@ -3780,6 +3835,31 @@ function validateBackup(obj) {
       return { valid: false, reason: "الوقت غير صالح (" + (i+1) + ")." };
     if (t.completedAt !== null && !isValidLocalDateTime(t.completedAt))
       return { valid: false, reason: "وقت الإنجاز غير صالح (" + (i+1) + ")." };
+    if (t.status !== "done" && t.completedAt !== null)
+      return { valid: false, reason: "وقت الإنجاز موجود لمهمة غير مكتملة (" + (i+1) + ")." };
+    if (t.projectId !== undefined && t.projectId !== null
+        && (typeof t.projectId !== "number" || !Number.isInteger(t.projectId) || t.projectId <= 0))
+      return { valid: false, reason: "معرّف المشروع غير صالح (" + (i+1) + ")." };
+    if (t.priority !== undefined && t.priority !== null && !["urgent", "high", "low"].includes(t.priority))
+      return { valid: false, reason: "أولوية المهمة غير صالحة (" + (i+1) + ")." };
+    if (t.recurrence !== undefined && t.recurrence !== null
+        && !["daily", "weekdays", "weekly", "monthly"].includes(t.recurrence))
+      return { valid: false, reason: "نمط التكرار غير صالح (" + (i+1) + ")." };
+    if (t.checklist !== undefined && t.checklist !== null) {
+      if (!Array.isArray(t.checklist))
+        return { valid: false, reason: "قائمة التحقق غير صالحة (" + (i+1) + ")." };
+      for (let ci = 0; ci < t.checklist.length; ci++) {
+        const item = t.checklist[ci];
+        if (!item || typeof item !== "object" || Array.isArray(item)
+            || typeof item.text !== "string" || typeof item.done !== "boolean")
+          return { valid: false, reason: "عنصر قائمة تحقق غير صالح (" + (i+1) + ")." };
+      }
+    }
+    if (t._recurringGenerated !== undefined && typeof t._recurringGenerated !== "boolean")
+      return { valid: false, reason: "علامة المهمة المتكررة غير صالحة (" + (i+1) + ")." };
+    if (t._sourceTaskId !== undefined && t._sourceTaskId !== null
+        && (!Number.isInteger(t._sourceTaskId) || t._sourceTaskId <= 0))
+      return { valid: false, reason: "مرجع أصل المهمة المتكررة غير صالح (" + (i+1) + ")." };
   }
 
   for (let i = 0; i < d.dailyLogs.length; i++) {
@@ -3845,8 +3925,19 @@ function validateBackup(obj) {
       }
       if (typeof s.durationSec !== "number" || !Number.isFinite(s.durationSec) || s.durationSec < 0)
         return { valid: false, reason: "مدة جلسة التركيز غير صالحة (" + (i+1) + ")." };
-      if (typeof s.startedAt !== "string")
+      if (typeof s.startedAt !== "string" || !Number.isFinite(Date.parse(s.startedAt)))
         return { valid: false, reason: "بداية جلسة التركيز غير صالحة (" + (i+1) + ")." };
+      if (s.endedAt !== undefined && s.endedAt !== null
+          && (typeof s.endedAt !== "string" || !Number.isFinite(Date.parse(s.endedAt))
+              || Date.parse(s.endedAt) < Date.parse(s.startedAt)))
+        return { valid: false, reason: "نهاية جلسة التركيز غير صالحة (" + (i+1) + ")." };
+      if (s.taskId !== undefined && s.taskId !== null
+          && (typeof s.taskId !== "number" || !Number.isInteger(s.taskId) || s.taskId <= 0))
+        return { valid: false, reason: "معرّف مهمة جلسة التركيز غير صالح (" + (i+1) + ")." };
+      if (s.taskName !== undefined && s.taskName !== null && typeof s.taskName !== "string")
+        return { valid: false, reason: "اسم مهمة جلسة التركيز غير صالح (" + (i+1) + ")." };
+      if (s.completed !== undefined && typeof s.completed !== "boolean")
+        return { valid: false, reason: "حالة جلسة التركيز غير صالحة (" + (i+1) + ")." };
 
       if (s.mode !== undefined && s.mode !== "pomodoro" && s.mode !== "stopwatch")
         return { valid: false, reason: "وضع جلسة التركيز غير صالح (" + (i+1) + ")." };
@@ -3942,6 +4033,41 @@ function _rollbackRestore(rb) {
   return _restoreStorageSnapshot(rb);
 }
 
+/* استرداد استيراد انقطع قبل اكتمال التحقق النهائي. */
+function _recoverInterruptedImport() {
+  var marker;
+  try { marker = localStorage.getItem(IMPORT_IN_PROGRESS_KEY); }
+  catch (e) { return false; }
+  if (!marker) return true;
+
+  try {
+    var raw = localStorage.getItem(PRE_IMPORT_KEY);
+    if (!raw) return false;
+    var snapshot = JSON.parse(raw);
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+        || !Object.prototype.hasOwnProperty.call(snapshot, "main")) return false;
+
+    var snapshotKeys = ["main", "focusSessions", "focusTimer", "mentalInbox",
+      "thoughts", "projects", "focusSettings", "notifications"];
+    for (var i = 0; i < snapshotKeys.length; i++) {
+      var value = snapshot[snapshotKeys[i]];
+      if (value !== null && value !== undefined && typeof value !== "string") return false;
+    }
+    if (snapshot.main !== null) {
+      var mainData = JSON.parse(snapshot.main);
+      if (!validateV2(mainData)) return false;
+    }
+    if (!_restoreStorageSnapshot(snapshot)) return false;
+
+    // احذف علامة العملية أولاً؛ إذا تعذر ذلك نحتفظ بنسخة التراجع لإعادة المحاولة.
+    localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+    try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (_backupCleanupError) {}
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function showImportPreview(obj) {
   const d = obj.data;
   const tasksCount = d.tasks.length;
@@ -4020,15 +4146,23 @@ function showImportPreview(obj) {
         };
         try {
           localStorage.setItem(PRE_IMPORT_KEY, JSON.stringify(_rollback));
+          localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
         } catch (e) {
-          showAlertModal("فشل الاستعادة", "تعذر حفظ نسخة التراجع. لم يتم أي تغيير لحماية بياناتك.");
+          try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); } catch (_markerCleanupError) {}
+          try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (_backupCleanupError) {}
+          showAlertModal("فشل الاستعادة", "تعذر تجهيز نقطة الاسترداد. لم يتم استبدال أي بيانات.");
           return;
         }
 
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
         } catch (e) {
-          showAlertModal("فشل الاستعادة", "تعذر حفظ البيانات الرئيسية: " + e.message + "<br>لم يتم أي تغيير.");
+          var _mainWriteRollbackOk = _rollbackRestore(_rollback);
+          if (_mainWriteRollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (_mainCleanupError) {}
+          }
+          showAlertModal("فشل الاستعادة", "تعذر حفظ البيانات الرئيسية: " + e.message
+            + (_mainWriteRollbackOk ? "<br>لم يتم تغيير بياناتك السابقة." : "<br>احتُفظ بعلامة الاسترداد لمحاولة التراجع عند إعادة فتح التطبيق."));
           return;
         }
 
@@ -4040,7 +4174,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ جلسات التركيز" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4055,7 +4191,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ العقل المفتوح" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4068,7 +4206,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ الخواطر" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4081,7 +4221,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ المشاريع" + (_rollbackOk ? "؛ تم التحقق من استعادة الحالة السابقة." : "؛ فشل التحقق من التراجع. احتُفظ بنسخة التراجع، صدّر بياناتك فورًا."));
           return;
         }
@@ -4100,7 +4242,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ إعدادات المؤقت. تمت محاولة استرجاع الحالة السابقة؛ تحقق من البيانات إذا ظهرت مشكلة في التخزين.");
           return;
         }
@@ -4113,7 +4257,9 @@ function showImportPreview(obj) {
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
-          if (_rollbackOk) { try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {} }
+          if (_rollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+          }
           showAlertModal("فشل الاستعادة", "تعذر حفظ تفضيلات الإشعارات. تمت محاولة استرجاع الحالة السابقة؛ تحقق من البيانات إذا ظهرت مشكلة في التخزين.");
           return;
         }
@@ -4151,7 +4297,7 @@ function showImportPreview(obj) {
         if (!_importReadbackOk) {
           var _readbackRollbackOk = _rollbackRestore(_rollback);
           if (_readbackRollbackOk) {
-            try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (e2) {}
           }
           showAlertModal("فشل التحقق من الاستعادة",
             "لم تتطابق البيانات المقروءة بعد الاستعادة مع القيم المطلوبة. " +
@@ -4161,6 +4307,19 @@ function showImportPreview(obj) {
           return;
         }
 
+        try {
+          localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+        } catch (_finishImportMarkerError) {
+          var _finishRollbackOk = _rollbackRestore(_rollback);
+          if (_finishRollbackOk) {
+            try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (_finishCleanupError) {}
+          }
+          showAlertModal("تعذر إنهاء الاستعادة",
+            _finishRollbackOk
+              ? "تعذّر إغلاق علامة الاستيراد؛ تمت استعادة الحالة السابقة."
+              : "تعذّر إغلاق الاستيراد واستعادة الحالة السابقة؛ احتُفظ بعلامة الاسترداد ونسخة التراجع.");
+          return;
+        }
         try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تمت الاستعادة الكاملة'); } catch (e) {}
         location.reload();
       }
@@ -4188,6 +4347,7 @@ function undoLastImport() {
         localStorage.setItem(STORAGE_KEY, raw);
         if (localStorage.getItem(STORAGE_KEY) !== raw) throw new Error("فشل التحقق من البيانات الرئيسية");
       }
+      localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
       localStorage.removeItem(PRE_IMPORT_KEY);
       try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تم الاسترجاع الكامل'); } catch (e) {}
       location.reload();
@@ -5237,48 +5397,34 @@ function _catchUp() {
   var elapsedTotal = _getElapsedSec();
   if (elapsedTotal > 4 * 3600) {
     _stopDisplayTick();
-    // FIX F2 (TI1): حفظ الوقت كجلسة قبل إعادة الضبط لمنع الفقدان الصامت
-    if (elapsedTotal >= 60) {
-      try {
-        var _catchArr = _loadSessions();
-        var _catchMaxId = _catchArr.reduce(function(m, s) { return Math.max(m, s.id || 0); }, 0);
-        var _catchTaskName = '';
-        if (_focusTimer.taskId) {
-          var _catchTask = tasks.find(function(x) { return x.id === _focusTimer.taskId; });
-          if (_catchTask) _catchTaskName = _catchTask.name;
-        }
-        var _catchStart = _focusTimer.sessionStartAt || (Date.now() - elapsedTotal * 1000);
-        _catchArr.push({
-          id: _catchMaxId + 1,
-          mode: 'pomodoro',
-          phase: _focusTimer.phase,
-          taskId: _focusTimer.taskId,
-          taskName: _catchTaskName,
-          startedAt: new Date(_catchStart).toISOString(),
-          endedAt: new Date().toISOString(),
-          durationSec: elapsedTotal,
-          completed: false
-        });
-        if (!_saveSessions(_catchArr)) {
-          _focusTimer.running = false;
-          _focusTimer.baseElapsed = elapsedTotal;
-          _focusTimer.startedAt = null;
-          _saveFocusTimer();
-          _renderFocusTimer();
-          showToast('⚠️ تعذر حفظ الجلسة — أُوقف المؤقت مع إبقاء الوقت لاستعادته');
-          return;
-        }
-      } catch (_catchErr) { /* best-effort; never block reset */ }
+    // استخدم مسار التسجيل الموحد: مفتاح الجلسة يعتمد على startedAt/taskId/mode/phase.
+    var _catchLogged = false;
+    try {
+      _catchLogged = _logSession(_focusTimer.phase, elapsedTotal, false);
+    } catch (_catchErr) {
+      _catchLogged = false;
+    }
+    if (!_catchLogged) {
+      // لا تصفّر المؤقت ولا تتخلص من الوقت ما لم ينجح حفظ الجلسة.
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = elapsedTotal;
+      _focusTimer.startedAt = null;
+      _saveFocusTimer();
+      _renderFocusTimer();
+      showToast('⚠️ تعذر حفظ الجلسة — أُوقف المؤقت مع إبقاء الوقت لاستعادته');
+      return;
     }
     _focusTimer.running = false;
     _focusTimer.baseElapsed = 0;
     _focusTimer.phase = 'work';
     _focusTimer.startedAt = null;
     _focusTimer.sessionStartAt = null;
-    _saveFocusTimer();
+    var _catchTimerSaved = _saveFocusTimer();
     _renderFocusTimer();
     try { renderFocusSessionsCard(); } catch (_rfsErr) {}
-    showToast('⏸️ توقف المؤقت طويلًا — حُفظ الوقت كجلسة');
+    showToast(_catchTimerSaved
+      ? '⏸️ توقف المؤقت طويلًا — حُفظ الوقت كجلسة'
+      : '⚠️ حُفظت الجلسة، لكن تعذر حفظ إعادة ضبط المؤقت؛ لن تُسجّل الجلسة مرتين عند إعادة الفتح');
     return;
   }
   var safety = 20;
@@ -5290,20 +5436,17 @@ function _catchUp() {
     var completedPhase = _focusTimer.phase;
     var _logged = _logSession(completedPhase, target, true);
     if (!_logged) {
-      // FIX TI5 (E3): إيقاف التعويض عند فشل التسجيل — يمنع تقدّم الحالة مع فقدان الجلسات
+      // لا تصفّر الوقت أو المرحلة عند فشل الكتابة؛ احتفظ ببيانات الجلسة لإعادة المحاولة.
       _focusTimer.running = false;
-      _focusTimer.baseElapsed = 0;
-      _focusTimer.phase = 'work';
+      _focusTimer.baseElapsed = elapsed;
       _focusTimer.startedAt = null;
-      _focusTimer.sessionStartAt = null;
-      _focusTimer.cyclePosition = 0;
-      _saveFocusTimer();
+      var _retryTimerSaved = _saveFocusTimer();
       _renderFocusTimer();
       try { renderFocusSessionsCard(); } catch (_rfsE3) {}
       showAlertModal(
         "⚠️ فشل تسجيل جلسة مكتملة",
-        "تعذر تسجيل الجلسة في التخزين. تم إيقاف التعويض ومنع تقدّم الحالة.<br><br>" +
-        "تفقّد مساحة التخزين أو صدّر نسخة احتياطية قبل إعادة المحاولة."
+        "تعذر تسجيل الجلسة في التخزين. أُوقف المؤقت مع إبقاء الوقت والمرحلة للمحاولة مجددًا." +
+        (_retryTimerSaved ? "" : "<br><br>تعذر حفظ حالة التوقف؛ لا تغلق التطبيق قبل تصدير بياناتك أو تحرير مساحة التخزين.")
       );
       return;
     }
