@@ -5431,20 +5431,17 @@ function _catchUp() {
     var completedPhase = _focusTimer.phase;
     var _logged = _logSession(completedPhase, target, true);
     if (!_logged) {
-      // FIX TI5 (E3): إيقاف التعويض عند فشل التسجيل — يمنع تقدّم الحالة مع فقدان الجلسات
+      // لا تصفّر الوقت أو المرحلة عند فشل الكتابة؛ احتفظ ببيانات الجلسة لإعادة المحاولة.
       _focusTimer.running = false;
-      _focusTimer.baseElapsed = 0;
-      _focusTimer.phase = 'work';
+      _focusTimer.baseElapsed = elapsed;
       _focusTimer.startedAt = null;
-      _focusTimer.sessionStartAt = null;
-      _focusTimer.cyclePosition = 0;
-      _saveFocusTimer();
+      var _retryTimerSaved = _saveFocusTimer();
       _renderFocusTimer();
       try { renderFocusSessionsCard(); } catch (_rfsE3) {}
       showAlertModal(
         "⚠️ فشل تسجيل جلسة مكتملة",
-        "تعذر تسجيل الجلسة في التخزين. تم إيقاف التعويض ومنع تقدّم الحالة.<br><br>" +
-        "تفقّد مساحة التخزين أو صدّر نسخة احتياطية قبل إعادة المحاولة."
+        "تعذر تسجيل الجلسة في التخزين. أُوقف المؤقت مع إبقاء الوقت والمرحلة للمحاولة مجددًا." +
+        (_retryTimerSaved ? "" : "<br><br>تعذر حفظ حالة التوقف؛ لا تغلق التطبيق قبل تصدير بياناتك أو تحرير مساحة التخزين.")
       );
       return;
     }
