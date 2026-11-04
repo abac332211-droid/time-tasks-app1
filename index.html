@@ -3412,7 +3412,13 @@ function computeWeeklyReport() {
   const medianGap = sorted.length === 0 ? 0
     : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
 
+  // فصل مجموعة المهام المخطط لها عن الإنجازات حسب وقت الإنجاز الفعلي.
   const doneTasks = weekTasks.filter(isTaskDone).length;
+  const completedThisWeek = tasks.filter(function(t) {
+    return t && isTaskDone(t) && !isTaskCancelled(t)
+      && typeof t.completedAt === "string"
+      && daySet.has(_operationalDateFromIso(t.completedAt));
+  }).length;
   const totalDistractions = dailyLogs.reduce(function(s, l) {
     return s + (Number.isFinite(l && l.distractions) && l.distractions >= 0 ? l.distractions : 0);
   }, 0);
@@ -3445,6 +3451,7 @@ function computeWeeklyReport() {
     daysLoggedRaw: dailyLogs.length,
     control, execution, wellbeing,
     doneTasks, totalTasks: weekTasks.length,
+    completedThisWeek,
     avgGap, aggGap, medianGap, gapCount: tasksWithActual.length,
     totalDistractions,
     recurringTotal, recurringDone, recurringByKind
@@ -3492,13 +3499,14 @@ function renderWeeklyReport() {
   const container = document.getElementById("weeklyReport");
   if (!container) return;
   const report = computeWeeklyReport();
-  if (report.daysLogged === 0 && report.totalTasks === 0) {
+  if (report.daysLogged === 0 && report.totalTasks === 0 && report.completedThisWeek === 0) {
     container.innerHTML = '<div class="empty">لا توجد بيانات هذا الأسبوع بعد.</div>';
     return;
   }
   let html = '<div class="weekly-summary">';
   html += '<div class="weekly-stat"><div class="weekly-stat-label">الأيام المسجلة</div><div class="weekly-stat-value">' + report.daysLogged + ' / 7</div></div>';
-  html += '<div class="weekly-stat"><div class="weekly-stat-label">المهام المنجزة</div><div class="weekly-stat-value">' + report.doneTasks + ' / ' + report.totalTasks + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">المكتمل من خطة الأسبوع</div><div class="weekly-stat-value">' + report.doneTasks + ' / ' + report.totalTasks + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">إنجازات تمت هذا الأسبوع</div><div class="weekly-stat-value">' + report.completedThisWeek + '</div></div>';
   html += '</div>';
   html += '<div class="weekly-metrics">';
   if (report.control.count > 0)
