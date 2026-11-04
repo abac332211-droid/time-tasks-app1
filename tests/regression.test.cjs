@@ -266,3 +266,76 @@ test('restored notebook records normalize imported IDs before inline event handl
   assert.equal(typeof inbox[0].id, 'number');
   assert.equal(inbox[0].id, 1);
 });
+
+
+test('startup restores a valid snapshot when backup import was interrupted', () => {
+  const markerKey = 'timeTasksApp_importInProgress';
+  const backupKey = 'timeTasksApp_preImportBackup';
+  const previous = {
+    main: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] }),
+    focusSessions: '[]',
+    focusTimer: null,
+    mentalInbox: '[]',
+    thoughts: '[]',
+    projects: '[]',
+    focusSettings: null,
+    notifications: null
+  };
+  const store = new Map([
+    [markerKey, '1'],
+    [backupKey, JSON.stringify(previous)]
+  ]);
+  let restored = null;
+  const sandbox = {
+    IMPORT_IN_PROGRESS_KEY: markerKey,
+    PRE_IMPORT_KEY: backupKey,
+    localStorage: {
+      getItem: (key) => store.has(key) ? store.get(key) : null,
+      setItem: (key, value) => store.set(key, String(value)),
+      removeItem: (key) => store.delete(key)
+    },
+    validateV2: (data) => data && data.schemaVersion === 2,
+    _restoreStorageSnapshot: (snapshot) => {
+      restored = snapshot;
+      return true;
+    }
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedImport'), sandbox);
+  assert.equal(sandbox._recoverInterruptedImport(), true);
+  assert.equal(restored.main, previous.main);
+  assert.equal(store.has(markerKey), false);
+  assert.equal(store.has(backupKey), false);
+});
+
+test('startup does not touch storage when no import is in progress', () => {
+  const store = new Map([['primary', 'new-data']]);
+  let restoreCalled = false;
+  const sandbox = {
+    IMPORT_IN_PROGRESS_KEY: 'importing',
+    PRE_IMPORT_KEY: 'rollback',
+    localStorage: { getItem: (key) => store.has(key) ? store.get(key) : null },
+    _restoreStorageSnapshot: () => { restoreCalled = true; return true; },
+    validateV2: () => true
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedImport'), sandbox);
+  assert.equal(sandbox._recoverInterruptedImport(), true);
+  assert.equal(restoreCalled, false);
+  assert.equal(store.get('primary'), 'new-data');
+});
+
+test('startup preserves an invalid rollback snapshot and blocks recovery', () => {
+  const markerKey = 'timeTasksApp_importInProgress';
+  const backupKey = 'timeTasksApp_preImportBackup';
+  const store = new Map([[markerKey, '1'], [backupKey, '{broken-json']]);
+  const sandbox = {
+    IMPORT_IN_PROGRESS_KEY: markerKey,
+    PRE_IMPORT_KEY: backupKey,
+    localStorage: { getItem: (key) => store.has(key) ? store.get(key) : null },
+    validateV2: () => true,
+    _restoreStorageSnapshot: () => { throw new Error('must not be called'); }
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedImport'), sandbox);
+  assert.equal(sandbox._recoverInterruptedImport(), false);
+  assert.equal(store.get(markerKey), '1');
+  assert.equal(store.get(backupKey), '{broken-json');
+});
