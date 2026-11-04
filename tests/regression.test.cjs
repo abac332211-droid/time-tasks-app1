@@ -194,3 +194,38 @@ test('backup validator rejects malformed focus-session timestamps', () => {
   });
   assert.equal(result.valid, false);
 });
+
+
+test('weekly report separates planned cohort from actual completion dates', () => {
+  const weekDays = [
+    '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04',
+    '2026-11-05', '2026-11-06', '2026-11-07'
+  ];
+  const tasks = [
+    {
+      id: 1, plannedDate: '2026-11-02', status: 'done',
+      completedAt: '2026-10-31T23:00:00', expected: 30, actual: 20
+    },
+    {
+      id: 2, plannedDate: '2026-10-31', status: 'done',
+      completedAt: '2026-11-04T10:00:00', expected: 30, actual: 25
+    },
+    {
+      id: 3, plannedDate: '2026-11-03', status: 'pending',
+      completedAt: null, expected: 20, actual: null
+    }
+  ];
+  const sandbox = {
+    getLast7OperationalDays: () => weekDays,
+    localStorage: { getItem: () => JSON.stringify({ dailyLogs: [] }) },
+    tasks,
+    isTaskCancelled: (task) => task.status === 'cancelled',
+    isTaskDone: (task) => task.status === 'done',
+    _operationalDateFromIso: (value) => String(value).slice(0, 10)
+  };
+  vm.runInNewContext(extractFunction('computeWeeklyReport'), sandbox);
+  const report = sandbox.computeWeeklyReport();
+  assert.equal(report.totalTasks, 2, 'only tasks planned for this week belong to its plan cohort');
+  assert.equal(report.doneTasks, 1, 'completed-plan count follows the planned cohort');
+  assert.equal(report.completedThisWeek, 1, 'actual weekly completions follow completedAt, even for older planned tasks');
+});
