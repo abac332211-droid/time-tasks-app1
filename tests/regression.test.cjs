@@ -353,3 +353,34 @@ test('normal completed phase save failure preserves phase and elapsed time', () 
   assert.equal(sandbox._focusTimer.phase, 'short-break');
   assert.equal(sandbox._focusTimer.sessionStartAt, sessionStartAt);
 });
+
+
+test('backup and stored schema reject prototype-polluting settings keys', () => {
+  const sandbox = {
+    CURRENT_SCHEMA_VERSION: 2,
+    BACKUP_FORMAT_VERSION: 1,
+    VALID_STATUS: ['pending', 'done', 'partial', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
+    isValidLocalDateTime: (value) => typeof value === 'string',
+    validateDailyLog: () => true
+  };
+  const unsafeSettings = JSON.parse('{"__proto__":{"polluted":true}}');
+  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  const backupResult = sandbox.validateBackup({
+    backupFormatVersion: 1,
+    schemaVersion: 2,
+    data: { settings: unsafeSettings, tasks: [], dailyLogs: [] }
+  });
+  assert.equal(backupResult.valid, false);
+
+  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  const storedResult = sandbox.validateV2({
+    schemaVersion: 2,
+    settings: unsafeSettings,
+    tasks: [],
+    dailyLogs: []
+  });
+  assert.equal(storedResult, false);
+});
