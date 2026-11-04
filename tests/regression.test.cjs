@@ -411,3 +411,19 @@ test('stored schema rejects duplicate task IDs before normal app use', () => {
     schemaVersion: 2, tasks: [task, { ...task }], dailyLogs: []
   }), false);
 });
+
+
+test('release workflow creates a downloadable web ZIP and uses Node 24 compatible actions', () => {
+  const verify = fs.readFileSync(path.join(root, '.github/workflows/verify-pwa.yml'), 'utf8');
+  const apk = fs.readFileSync(path.join(root, '.github/workflows/build-apk.yml'), 'utf8');
+  assert.match(verify, /actions\/checkout@v5/);
+  assert.match(verify, /actions\/setup-node@v5/);
+  assert.match(verify, /node-version:\s*'22'/);
+  assert.match(verify, /zip -9 -r \.\.\/time-tasks-app-2\.8\.8-web\.zip/);
+  assert.match(verify, /name:\s*time-tasks-app-2\.8\.8-web/);
+  assert.match(verify, /retention-days:\s*90/);
+  assert.match(verify, /if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
+  assert.match(apk, /actions\/checkout@v5/);
+  assert.match(apk, /actions\/setup-node@v5/);
+  assert.doesNotMatch(verify + apk, /actions\/(?:checkout|setup-node)@v4/);
+});

@@ -18,10 +18,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
       - name: Run regression tests
         run: npm test
+
+      - name: Prepare downloadable web ZIP
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p release-web
+          cp index.html manifest.json sw.js BETA-TESTING.md release-web/
+          cp icon-192.png icon-512.png icon-512-maskable.png apple-touch-icon.png favicon-32.png favicon-16.png release-web/
+          cd release-web
+          zip -9 -r ../time-tasks-app-2.8.8-web.zip .
+
+      - name: Upload downloadable web ZIP
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: time-tasks-app-2.8.8-web
+          path: time-tasks-app-2.8.8-web.zip
+          if-no-files-found: error
+          retention-days: 90
