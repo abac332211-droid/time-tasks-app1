@@ -15,7 +15,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="description" content="تطبيق عربي لإدارة الوقت والمهام، تسجيل الإنجاز، جلسات التركيز، والمراجعة الأسبوعية.">
-<title>إدارة الوقت والمهام — 2.8.8</title>
+<title>إدارة الوقت والمهام — 2.9.0</title>
 
 <style>
 :root {
@@ -780,11 +780,11 @@ const IMPORT_IN_PROGRESS_KEY = "timeTasksApp_importInProgress";
 const TEST_FLAG_KEY = "timeTasksApp_testInjected";
 const TEST_BACKUP_KEY = "timeTasksApp_testBackup";
 const CURRENT_SCHEMA_VERSION = 2;
-const APP_VERSION = "2.8.8";
+const APP_VERSION = "2.9.0";
 const BACKUP_FORMAT_VERSION = 1;
 
 const VALID_TYPES = ["معرفية", "إدارية", "إبداعية", "اجتماعية"];
-const VALID_STATUS = ["pending", "done", "partial", "cancelled"];
+const VALID_STATUS = ["pending", "done", "cancelled"];
 const VALID_ENERGY = ["منخفض", "متوسط", "مرتفع"];
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_REGEX = /^\d{2}:\d{2}$/;
@@ -794,7 +794,7 @@ let tasks = [];
 let editingId = null;
 let currentFilter = "all";
 let lastPct = 0;
-let appSettings = { operationalDayStart: 4, firstUseDate: null, darkMode: false, lastRecurringDates: {} };
+let appSettings = { operationalDayStart: 4, firstUseDate: null, darkMode: false, themeMode: "system", lastRecurringDates: {} };
 let createdByVersion = APP_VERSION;
 let _timerIntervalId = null;
 let _timerSecondsLeft = 0;
@@ -819,35 +819,34 @@ function showToast(message) {
 let _modalKeyHandler = null;
 let _modalCancelCallback = null;
 let _focusReturnTarget = null;  // FIX A10 (F-3): العنصر الذي كان له التركيز قبل فتح المودال
+var _pendingPhaseNotificationAt = null;
+const PENDING_PHASE_NOTIFICATION_TTL_MS = 10000;
 
 function closeModal() {
   if (_timerIntervalId) { clearInterval(_timerIntervalId); _timerIntervalId = null; }
-  const overlay = document.getElementById('customModalOverlay');
-  if (overlay) overlay.classList.add('hidden');
-  if (_modalKeyHandler) {
-    document.removeEventListener('keydown', _modalKeyHandler);
-    _modalKeyHandler = null;
-  }
+  const overlay = document.getElementById("customModalOverlay");
+  if (overlay) overlay.classList.add("hidden");
+  if (_modalKeyHandler) { document.removeEventListener("keydown", _modalKeyHandler); _modalKeyHandler = null; }
   _modalCancelCallback = null;
-  if (typeof _catchUp === "function") _catchUp();
-
+  if (typeof _catchUp === "function") _catchUp(false);
   if (_pendingPhaseNotification) {
-    var _pFn = _pendingPhaseNotification;
+    var pendingFn = _pendingPhaseNotification;
+    var queuedAt = _pendingPhaseNotificationAt || Date.now();
     _pendingPhaseNotification = null;
-    /* FIX H2 (R1): defer notification if modal active */
+    _pendingPhaseNotificationAt = null;
     setTimeout(function() {
-      var _ov = document.getElementById('customModalOverlay');
-      if (_ov && !_ov.classList.contains('hidden')) {
-        _pendingPhaseNotification = _pFn;
+      if (Date.now() - queuedAt > PENDING_PHASE_NOTIFICATION_TTL_MS) return;
+      var currentOverlay = document.getElementById("customModalOverlay");
+      if (currentOverlay && !currentOverlay.classList.contains("hidden")) {
+        if (!_pendingPhaseNotification) { _pendingPhaseNotification = pendingFn; _pendingPhaseNotificationAt = queuedAt; }
         return;
       }
-      _pFn();
+      pendingFn();
     }, 250);
   }
-
-  // FIX A10 (F-3): إعادة التركيز للعنصر الذي فتح المودال
+  if (_focusTimer && _focusTimer.awaitingConfirmation) setTimeout(function() { _showAwaySessionConfirmation(); }, 300);
   if (_focusReturnTarget && document.contains(_focusReturnTarget)) {
-    try { _focusReturnTarget.focus(); } catch (_frtErr2) {}
+    try { _focusReturnTarget.focus(); } catch (e) {}
   }
   _focusReturnTarget = null;
 }
@@ -1391,6 +1390,7 @@ function validateV2(data) {
       if (typeof s.firstUseDate !== "string" || !isValidCalendarDate(s.firstUseDate)) return false;
     }
     if (s.darkMode !== undefined && typeof s.darkMode !== "boolean") return false;
+    if (s.themeMode !== undefined && !["system", "light", "dark"].includes(s.themeMode)) return false;
     if (s.lastTaskId !== undefined && (!Number.isInteger(s.lastTaskId) || s.lastTaskId < 0)) return false;
   }
 
@@ -1520,6 +1520,7 @@ function buildEmptyV2(firstUseDate) {
       operationalDayStart: 4,
       firstUseDate: firstUseDate || todayStr(),
       darkMode: false,
+      themeMode: "system",
       lastRecurringDates: {}
     },
     tasks: [],
@@ -1534,6 +1535,7 @@ function _healTaskArray(arr) {
   var validRec = ["daily", "weekdays", "weekly", "monthly"];
   arr.forEach(function(t) {
     if (!t || typeof t !== "object" || Array.isArray(t)) return;
+    if (t.status === "partial") { t.status = "pending"; changed = true; }
     if (t.priority !== undefined && t.priority !== null && validPri.indexOf(t.priority) === -1) {
       t.priority = null; changed = true;
     }
@@ -1656,7 +1658,7 @@ function migrateV1ToV2() {
     const v2Data = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       createdByVersion: APP_VERSION,
-      settings: { operationalDayStart: 4, firstUseDate, darkMode: false, lastRecurringDates: {} },
+      settings: { operationalDayStart: 4, firstUseDate, darkMode: false, themeMode: "system", lastRecurringDates: {} },
       tasks: migratedTasks,
       dailyLogs: []
     };
@@ -1675,9 +1677,33 @@ function migrateV1ToV2() {
 
 function _syncThemeMeta() {
   const meta = document.getElementById("metaThemeColor");
-  if (meta) {
-    meta.setAttribute("content", appSettings.darkMode ? "#0f172a" : "#2563eb");
-  }
+  if (meta) meta.setAttribute("content", appSettings.darkMode ? "#0f172a" : "#2563eb");
+}
+function _applyThemePreference() {
+  var mode = ["system", "light", "dark"].includes(appSettings.themeMode) ? appSettings.themeMode : "system";
+  var prefersDark = false;
+  try { prefersDark = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); } catch (e) {}
+  var isDark = mode === "dark" || (mode === "system" && prefersDark);
+  appSettings.darkMode = isDark;
+  document.body.classList.toggle("dark-mode", isDark);
+  document.documentElement.setAttribute("data-theme", mode);
+  _syncThemeMeta();
+}
+function _loadAppSettings(settings) {
+  var source = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+  var hasThemeMode = Object.prototype.hasOwnProperty.call(source, "themeMode") && ["system", "light", "dark"].includes(source.themeMode);
+  var merged = Object.assign({ operationalDayStart: 4, firstUseDate: null, darkMode: false, themeMode: "system", lastRecurringDates: {} }, source);
+  if (!hasThemeMode) merged.themeMode = typeof source.darkMode === "boolean" ? (source.darkMode ? "dark" : "light") : "system";
+  appSettings = merged;
+  _applyThemePreference();
+}
+function _setupSystemThemeListener() {
+  if (!window.matchMedia) return;
+  var media;
+  try { media = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) { return; }
+  var onChange = function() { if (appSettings.themeMode === "system") _applyThemePreference(); };
+  if (media && typeof media.addEventListener === "function") media.addEventListener("change", onChange);
+  else if (media && typeof media.addListener === "function") media.addListener(onChange);
 }
 
 function loadData() {
@@ -1695,12 +1721,10 @@ function loadData() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const data = JSON.parse(raw);
+        if (data && Array.isArray(data.tasks)) _healTaskArray(data.tasks);
         if (data && Array.isArray(data.tasks) && validateV2(data)) {
           tasks = data.tasks;
-          appSettings = Object.assign(
-            { operationalDayStart: 4, firstUseDate: null, darkMode: false, lastRecurringDates: {} },
-            data.settings || {}
-          );
+          _loadAppSettings(data.settings || {});
           createdByVersion = data.createdByVersion || APP_VERSION;
         } else tasks = [];
       } else tasks = [];
@@ -1716,14 +1740,9 @@ function loadData() {
     if (data && Array.isArray(data.tasks)) _healTaskArray(data.tasks);
     if (data && validateV2(data)) {
       tasks = data.tasks;
-      appSettings = Object.assign(
-        { operationalDayStart: 4, firstUseDate: null, darkMode: false, lastRecurringDates: {} },
-        data.settings || {}
-      );
+      _loadAppSettings(data.settings || {});
       createdByVersion = data.createdByVersion || APP_VERSION;
-      if (appSettings.darkMode) document.body.classList.add("dark-mode");
-      else document.body.classList.remove("dark-mode");
-      _syncThemeMeta();
+      _applyThemePreference();
     } else tasks = [];
   } catch (e) { tasks = []; }
 
@@ -1892,16 +1911,15 @@ function _checklistAdd() {
 }
 
 function _pruneLastRecurringDates() {
-  if (!appSettings.lastRecurringDates || typeof appSettings.lastRecurringDates !== 'object') {
+  if (!appSettings.lastRecurringDates || typeof appSettings.lastRecurringDates !== "object" || Array.isArray(appSettings.lastRecurringDates)) {
     appSettings.lastRecurringDates = {};
     return;
   }
-  var todayVal = todayStr();
-  var cleaned = {};
-  Object.keys(appSettings.lastRecurringDates).forEach(function(k) {
-    if (appSettings.lastRecurringDates[k] === todayVal) {
-      cleaned[k] = todayVal;
-    }
+  var cleaned = Object.create(null);
+  Object.keys(appSettings.lastRecurringDates).forEach(function(key) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype") return;
+    var value = appSettings.lastRecurringDates[key];
+    if (isValidCalendarDate(value)) cleaned[key] = value;
   });
   appSettings.lastRecurringDates = cleaned;
 }
@@ -1931,6 +1949,7 @@ function saveData() {
         operationalDayStart: Number.isInteger(appSettings.operationalDayStart) ? appSettings.operationalDayStart : 4,
         firstUseDate: appSettings.firstUseDate || todayStr(),
         darkMode: appSettings.darkMode || false,
+        themeMode: ["system", "light", "dark"].includes(appSettings.themeMode) ? appSettings.themeMode : (appSettings.darkMode ? "dark" : "light"),
         lastTaskId: (Number.isInteger(appSettings.lastTaskId) && appSettings.lastTaskId > 0) ? appSettings.lastTaskId : 0,
         lastRecurringDates: appSettings.lastRecurringDates || {}
       },
@@ -1953,14 +1972,16 @@ function saveData() {
 }
 
 function toggleDarkMode() {
-  const _prevDarkMode = appSettings.darkMode;
-  appSettings.darkMode = !_prevDarkMode;
+  var previousMode = appSettings.themeMode;
+  var previousDark = appSettings.darkMode;
+  appSettings.themeMode = appSettings.darkMode ? "light" : "dark";
+  appSettings.darkMode = appSettings.themeMode === "dark";
   if (!saveData()) {
-    appSettings.darkMode = _prevDarkMode;
+    appSettings.themeMode = previousMode;
+    appSettings.darkMode = previousDark;
     return;
   }
-  document.body.classList.toggle("dark-mode", appSettings.darkMode);
-  _syncThemeMeta();
+  _applyThemePreference();
   showToast(appSettings.darkMode ? "🌙 الوضع الليلي" : "☀️ الوضع النهاري");
 }
 
@@ -1991,6 +2012,7 @@ function resetAll() {
     showConfirmModal("تأكيد نهائي", "هل أنت واثق تمامًا؟", function() {
       const fresh = buildEmptyV2();
       fresh.settings.darkMode = appSettings.darkMode;
+      fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
       fresh.settings.firstUseDate = todayStr();
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
@@ -2025,6 +2047,10 @@ function resetAll() {
       _focusTimer.cyclePosition = 0;
       _focusTimer.taskId = null;
       _focusTimer.sessionStartAt = null;
+      _focusTimer.awaitingConfirmation = false;
+      _focusTimer.pendingPhaseEndedAt = null;
+      _awaySessionPromptOpen = false;
+      _applyThemePreference();
       storageRecoveryRequired = false;
       cancelEdit();
       cancelProjectEdit();
@@ -3796,6 +3822,8 @@ function validateBackup(obj) {
       return { valid: false, reason: "تاريخ بدء الاستخدام غير صالح." };
     if (st.darkMode !== undefined && typeof st.darkMode !== "boolean")
       return { valid: false, reason: "إعداد المظهر غير صالح." };
+    if (st.themeMode !== undefined && !["system", "light", "dark"].includes(st.themeMode))
+      return { valid: false, reason: "وضع المظهر غير صالح." };
     if (st.lastTaskId !== undefined && (!Number.isInteger(st.lastTaskId) || st.lastTaskId < 0))
       return { valid: false, reason: "عداد المهام غير صالح." };
     if (st.lastRecurringDates !== undefined && st.lastRecurringDates !== null) {
@@ -3821,7 +3849,7 @@ function validateBackup(obj) {
     ids.add(t.id);
     if (typeof t.name !== "string" || t.name.trim() === "")
       return { valid: false, reason: "اسم مهمة فارغ (" + (i+1) + ")." };
-    if (typeof t.status !== "string" || !VALID_STATUS.includes(t.status))
+    if (typeof t.status !== "string" || (t.status !== "partial" && !VALID_STATUS.includes(t.status)))
       return { valid: false, reason: "حالة مهمة غير صالحة (" + (i+1) + ")." };
     if (typeof t.type !== "string" || !VALID_TYPES.includes(t.type))
       return { valid: false, reason: "نوع مهمة غير صالح (" + (i+1) + ")." };
@@ -5329,7 +5357,9 @@ var _focusTimer = {
   startedAt: null,
   cyclePosition: 0,
   taskId: null,
-  sessionStartAt: null
+  sessionStartAt: null,
+  awaitingConfirmation: false,
+  pendingPhaseEndedAt: null
 };
 
 var _focusDisplayInterval = null;
@@ -5348,6 +5378,8 @@ function _loadFocusTimer() {
     _focusTimer.cyclePosition = (typeof d.cyclePosition === 'number' && d.cyclePosition >= 0 && d.cyclePosition <= 3) ? d.cyclePosition : 0;
     _focusTimer.taskId = (typeof d.taskId === 'number') ? d.taskId : null;
     _focusTimer.sessionStartAt = (typeof d.sessionStartAt === 'number') ? d.sessionStartAt : null;
+    _focusTimer.awaitingConfirmation = d.awaitingConfirmation === true;
+    _focusTimer.pendingPhaseEndedAt = (typeof d.pendingPhaseEndedAt === 'number' && Number.isFinite(d.pendingPhaseEndedAt)) ? d.pendingPhaseEndedAt : null;
     if (_focusTimer.taskId !== null) {
       var exists = tasks.some(function(t) { return t.id === _focusTimer.taskId; });
       if (!exists) {
@@ -5369,6 +5401,8 @@ function _saveFocusTimer() {
       cyclePosition: _focusTimer.cyclePosition,
       taskId: _focusTimer.taskId,
       sessionStartAt: _focusTimer.sessionStartAt,
+      awaitingConfirmation: !!_focusTimer.awaitingConfirmation,
+      pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
       savedAt: Date.now()
     }));
     return true;
@@ -5390,75 +5424,58 @@ function _phaseTargetSec() {
 }
 
 /* Catch-up: حساب الوقت الحقيقي بدقة تامة دون تجميد عشوائي */
-function _catchUp() {
-  if (!_focusTimer.running) return;
-  if (_focusTimer.mode !== 'pomodoro') return;
-
-  var elapsedTotal = _getElapsedSec();
-  if (elapsedTotal > 4 * 3600) {
-    _stopDisplayTick();
-    // استخدم مسار التسجيل الموحد: مفتاح الجلسة يعتمد على startedAt/taskId/mode/phase.
-    var _catchLogged = false;
-    try {
-      _catchLogged = _logSession(_focusTimer.phase, elapsedTotal, false);
-    } catch (_catchErr) {
-      _catchLogged = false;
-    }
-    if (!_catchLogged) {
-      // لا تصفّر المؤقت ولا تتخلص من الوقت ما لم ينجح حفظ الجلسة.
-      _focusTimer.running = false;
-      _focusTimer.baseElapsed = elapsedTotal;
-      _focusTimer.startedAt = null;
-      _saveFocusTimer();
-      _renderFocusTimer();
-      showToast('⚠️ تعذر حفظ الجلسة — أُوقف المؤقت مع إبقاء الوقت لاستعادته');
-      return;
-    }
-    _focusTimer.running = false;
-    _focusTimer.baseElapsed = 0;
-    _focusTimer.phase = 'work';
-    _focusTimer.startedAt = null;
-    _focusTimer.sessionStartAt = null;
-    var _catchTimerSaved = _saveFocusTimer();
-    _renderFocusTimer();
-    try { renderFocusSessionsCard(); } catch (_rfsErr) {}
-    showToast(_catchTimerSaved
-      ? '⏸️ توقف المؤقت طويلًا — حُفظ الوقت كجلسة'
-      : '⚠️ حُفظت الجلسة، لكن تعذر حفظ إعادة ضبط المؤقت؛ لن تُسجّل الجلسة مرتين عند إعادة الفتح');
+function _catchUp(backgroundReturn) {
+  if (!_focusTimer.running || _focusTimer.mode !== "pomodoro") return;
+  if (_focusTimer.awaitingConfirmation) {
+    if (backgroundReturn) _showAwaySessionConfirmation();
     return;
   }
-  var safety = 20;
-  var transitions = 0;
+  var elapsedTotal = _getElapsedSec(), targetNow = _phaseTargetSec();
+  if (elapsedTotal > 4 * 3600 || (backgroundReturn && elapsedTotal >= targetNow)) {
+    var segmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
+    var remainingAtResume = Math.max(0, targetNow - _focusTimer.baseElapsed);
+    _focusTimer.pendingPhaseEndedAt = segmentStart + remainingAtResume * 1000;
+    _stopDisplayTick();
+    _focusTimer.running = false;
+    _focusTimer.baseElapsed = targetNow;
+    _focusTimer.startedAt = null;
+    _focusTimer.awaitingConfirmation = true;
+    if (!_saveFocusTimer()) {
+      _renderFocusTimer();
+      showAlertModal("⚠️ تعذر حفظ الجلسة المعلقة", "تم إيقاف المؤقت وإبقاء الجلسة معلقة في الذاكرة، لكن التخزين لم يؤكد حفظها. لا تغلق التطبيق قبل تصدير نسخة احتياطية والتحقق من مساحة التخزين.");
+      return;
+    }
+    _renderFocusTimer();
+    _showAwaySessionConfirmation();
+    return;
+  }
+  var safety = 20, transitions = 0;
   while (safety-- > 0) {
-    var target = _phaseTargetSec();
-    var elapsed = _getElapsedSec();
+    var target = _phaseTargetSec(), elapsed = _getElapsedSec();
     if (elapsed < target) break;
     var completedPhase = _focusTimer.phase;
-    var _logged = _logSession(completedPhase, target, true);
-    if (!_logged) {
-      // لا تصفّر الوقت أو المرحلة عند فشل الكتابة؛ احتفظ ببيانات الجلسة لإعادة المحاولة.
+    var currentSegmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
+    var phaseEndAt = currentSegmentStart + Math.max(0, target - _focusTimer.baseElapsed) * 1000;
+    var logged = _logSession(completedPhase, target, true, phaseEndAt);
+    if (!logged) {
       _focusTimer.running = false;
       _focusTimer.baseElapsed = elapsed;
       _focusTimer.startedAt = null;
-      var _retryTimerSaved = _saveFocusTimer();
+      var retrySaved = _saveFocusTimer();
       _renderFocusTimer();
-      try { renderFocusSessionsCard(); } catch (_rfsE3) {}
-      showAlertModal(
-        "⚠️ فشل تسجيل جلسة مكتملة",
+      try { renderFocusSessionsCard(); } catch (e) {}
+      showAlertModal("⚠️ فشل تسجيل جلسة مكتملة",
         "تعذر تسجيل الجلسة في التخزين. أُوقف المؤقت مع إبقاء الوقت والمرحلة للمحاولة مجددًا." +
-        (_retryTimerSaved ? "" : "<br><br>تعذر حفظ حالة التوقف؛ لا تغلق التطبيق قبل تصدير بياناتك أو تحرير مساحة التخزين.")
-      );
+        (retrySaved ? "" : "<br><br>تعذر حفظ حالة التوقف؛ لا تغلق التطبيق قبل تصدير بياناتك أو تحرير مساحة التخزين."));
       return;
     }
-    if (completedPhase === 'work') {
+    if (completedPhase === "work") {
       _focusTimer.cyclePosition = (_focusTimer.cyclePosition + 1) % 4;
-      _focusTimer.phase = (_focusTimer.cyclePosition === 0) ? 'long-break' : 'short-break';
-    } else {
-      _focusTimer.phase = 'work';
-    }
+      _focusTimer.phase = (_focusTimer.cyclePosition === 0) ? "long-break" : "short-break";
+    } else _focusTimer.phase = "work";
     _focusTimer.baseElapsed = elapsed - target;
     _focusTimer.startedAt = Date.now();
-    _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
+    _focusTimer.sessionStartAt = phaseEndAt;
     transitions++;
   }
   if (transitions > 0) {
@@ -5466,6 +5483,59 @@ function _catchUp() {
     renderFocusSessionsCard();
     _notifyPhaseTransition();
   }
+}
+var _awaySessionPromptOpen = false;
+function _showAwaySessionConfirmation() {
+  if (!_focusTimer.awaitingConfirmation || _awaySessionPromptOpen) return;
+  var overlay = document.getElementById("customModalOverlay");
+  if (overlay && !overlay.classList.contains("hidden")) return;
+  var phase = _focusTimer.phase, target = _phaseTargetSec();
+  var endedAt = _focusTimer.pendingPhaseEndedAt, startedAt = _focusTimer.sessionStartAt;
+  var labels = { work: "التركيز", "short-break": "الاستراحة القصيرة", "long-break": "الاستراحة الطويلة" };
+  _awaySessionPromptOpen = true;
+  showConfirmModal("⏱️ انتهت المرحلة أثناء غيابك",
+    "اكتمل طور " + (labels[phase] || "المؤقت") + " (" + Math.round(target / 60) +
+    " دقيقة) أثناء وجود التطبيق في الخلفية أو بعد إغلاقه. هل تريد اعتماد جلسة واحدة وتسجيلها؟",
+    function() {
+      _awaySessionPromptOpen = false;
+      if (!_focusTimer.awaitingConfirmation || _focusTimer.phase !== phase || _focusTimer.sessionStartAt !== startedAt) return;
+      if (!_logSession(phase, target, true, endedAt)) {
+        _saveFocusTimer();
+        showAlertModal("تعذر تسجيل الجلسة", "لم تُسجّل الجلسة. أبقيناها معلقة دون تكرار؛ تحقق من التخزين ثم أعد فتح التطبيق للمحاولة مجددًا.");
+        return;
+      }
+      if (phase === "work") {
+        _focusTimer.cyclePosition = (_focusTimer.cyclePosition + 1) % 4;
+        _focusTimer.phase = (_focusTimer.cyclePosition === 0) ? "long-break" : "short-break";
+      } else _focusTimer.phase = "work";
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = 0;
+      _focusTimer.startedAt = null;
+      _focusTimer.sessionStartAt = null;
+      _focusTimer.awaitingConfirmation = false;
+      _focusTimer.pendingPhaseEndedAt = null;
+      var saved = _saveFocusTimer();
+      _renderFocusTimer();
+      try { renderFocusSessionsCard(); } catch (e) {}
+      if (!saved) showAlertModal("تم تسجيل الجلسة", "سُجلت الجلسة، لكن تعذر حفظ انتقال المؤقت. لا تُعد تسجيل الجلسة؛ أعد فتح التطبيق للتحقق من الحالة.");
+      else showToast("✅ تم اعتماد جلسة واحدة وتسجيلها");
+    },
+    function() {
+      _awaySessionPromptOpen = false;
+      if (!_focusTimer.awaitingConfirmation) return;
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = 0;
+      _focusTimer.phase = "work";
+      _focusTimer.startedAt = null;
+      _focusTimer.sessionStartAt = null;
+      _focusTimer.cyclePosition = 0;
+      _focusTimer.awaitingConfirmation = false;
+      _focusTimer.pendingPhaseEndedAt = null;
+      _saveFocusTimer();
+      _renderFocusTimer();
+      showToast("⚪ أُلغيت الجلسة دون احتسابها");
+    }
+  );
 }
 
 var NOTIFICATIONS_KEY = "timeTasksApp_notifications";
@@ -5697,25 +5767,26 @@ function _applyNotifPermissionResult(result) {
 var _pendingPhaseNotification = null;
 
 function _notifyPhaseTransition() {
-  var overlay = document.getElementById('customModalOverlay');
-  var isModalOpen = overlay && !overlay.classList.contains('hidden');
-
+  var overlay = document.getElementById("customModalOverlay");
+  var isModalOpen = overlay && !overlay.classList.contains("hidden");
   function trigger() {
-    if (_focusTimer.phase === 'work') {
-      showToast('✅ انتهت الاستراحة — لنعد للتركيز');
-      _sendNotification('✅ انتهت الاستراحة', 'حان وقت العودة للتركيز');
-    } else if (_focusTimer.phase === 'long-break') {
-      showToast('🌿 4 جلسات مكتملة — استراحة طويلة');
-      _sendNotification('🌿 استراحة طويلة', 'أتممت 4 جلسات — خذ استراحة طويلة');
+    if (_focusTimer.phase === "work") {
+      showToast("✅ انتهت الاستراحة — لنعد للتركيز");
+      _sendNotification("✅ انتهت الاستراحة", "حان وقت العودة للتركيز");
+    } else if (_focusTimer.phase === "long-break") {
+      showToast("🌿 4 جلسات مكتملة — استراحة طويلة");
+      _sendNotification("🌿 استراحة طويلة", "أتممت 4 جلسات — خذ استراحة طويلة");
     } else {
-      showToast('🍅 جلسة مكتملة — خذ استراحة قصيرة');
-      _sendNotification('🍅 جلسة مكتملة', 'خذ استراحة قصيرة');
+      showToast("🍅 جلسة مكتملة — خذ استراحة قصيرة");
+      _sendNotification("🍅 جلسة مكتملة", "خذ استراحة قصيرة");
     }
   }
-
   if (isModalOpen) {
     _pendingPhaseNotification = trigger;
+    _pendingPhaseNotificationAt = Date.now();
   } else {
+    _pendingPhaseNotification = null;
+    _pendingPhaseNotificationAt = null;
     trigger();
   }
 }
@@ -5766,40 +5837,27 @@ function _sessionAlreadyLogged(phase, durationSec) {
   });
 }
 
-function _logSession(phase, durationSec, completed) {
+function _logSession(phase, durationSec, completed, endedAtMs) {
   if (durationSec < 1) return true;
   var arr = _loadSessions();
   var sessionStart = _focusTimer.sessionStartAt || (Date.now() - durationSec * 1000);
   var sessionStartedAt = new Date(sessionStart).toISOString();
-  // Idempotency: retrying a frozen session after a failed timer reset must not append it twice.
   if (arr.some(function(session) {
-    return session && session.startedAt === sessionStartedAt
-      && session.taskId === _focusTimer.taskId
-      && session.mode === _focusTimer.mode
-      && session.phase === phase;
+    return session && session.startedAt === sessionStartedAt && session.taskId === _focusTimer.taskId &&
+      session.mode === _focusTimer.mode && session.phase === phase;
   })) return true;
   var maxId = arr.reduce(function(m, s) { return Math.max(m, s.id || 0); }, 0);
-  var taskName = '';
+  var taskName = "";
   if (_focusTimer.taskId) {
-    var t = tasks.find(function(x) { return x.id === _focusTimer.taskId; });
-    if (t) taskName = t.name;
+    var task = tasks.find(function(x) { return x.id === _focusTimer.taskId; });
+    if (task) taskName = task.name;
   }
-  var sessionEnd = sessionStart + durationSec * 1000;
-  arr.push({
-    id: maxId + 1,
-    mode: _focusTimer.mode,
-    phase: phase,
-    taskId: _focusTimer.taskId,
-    taskName: taskName,
-    startedAt: sessionStartedAt,
-    endedAt: new Date(sessionEnd).toISOString(),
-    durationSec: durationSec,
-    completed: !!completed
-  });
-  if (!_saveSessions(arr)) {
-    showToast('⚠️ تعذر حفظ جلسة التركيز');
-    return false;
-  }
+  var computedEnd = sessionStart + durationSec * 1000;
+  var sessionEnd = typeof endedAtMs === "number" && Number.isFinite(endedAtMs) ? endedAtMs : computedEnd;
+  arr.push({ id: maxId + 1, mode: _focusTimer.mode, phase: phase, taskId: _focusTimer.taskId,
+    taskName: taskName, startedAt: sessionStartedAt, endedAt: new Date(sessionEnd).toISOString(),
+    durationSec: durationSec, completed: !!completed });
+  if (!_saveSessions(arr)) { showToast("⚠️ تعذر حفظ جلسة التركيز"); return false; }
   return true;
 }
 
@@ -6026,7 +6084,8 @@ function renderFocusSessionsCard() {
 function _startDisplayTick() {
   if (_focusDisplayInterval) return;
   _focusDisplayInterval = setInterval(function() {
-    if (_focusTimer.mode === 'pomodoro') _catchUp();
+    if (document.visibilityState === "hidden") return;
+    if (_focusTimer.mode === "pomodoro") _catchUp(false);
     _renderFocusTimer();
   }, 1000);
 }
@@ -6048,6 +6107,8 @@ function setTimerMode(mode) {
     _focusTimer.phase = 'work';
     _focusTimer.startedAt = null;
     _focusTimer.sessionStartAt = null;
+    _focusTimer.awaitingConfirmation = false;
+    _focusTimer.pendingPhaseEndedAt = null;
     _saveFocusTimer();
     _renderFocusTimer();
   }
@@ -6064,6 +6125,7 @@ function setTimerMode(mode) {
 
 function toggleTimer() {
   _unlockAudioContext();
+  if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return; }
   if (_focusTimer.running) {
     _focusTimer.baseElapsed = _getElapsedSec();
     _focusTimer.running = false;
@@ -6072,9 +6134,11 @@ function toggleTimer() {
     if (!_saveFocusTimer()) showToast('⚠️ تعذر حفظ حالة المؤقت — تحقق من التخزين');
     _renderFocusTimer();
   } else {
-    _focusTimer.running = true;
+    if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
+      _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
+    }
     _focusTimer.startedAt = Date.now();
-    _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
+    _focusTimer.running = true;
     _startDisplayTick();
     if (!_saveFocusTimer()) showToast('⚠️ تعذر حفظ حالة المؤقت — تحقق من التخزين');
     _renderFocusTimer();
@@ -6088,6 +6152,8 @@ function resetTimer() {
     _focusTimer.phase = 'work';
     _focusTimer.startedAt = null;
     _focusTimer.sessionStartAt = null;
+    _focusTimer.awaitingConfirmation = false;
+    _focusTimer.pendingPhaseEndedAt = null;
     _saveFocusTimer();
     _renderFocusTimer();
     return;
@@ -6106,6 +6172,8 @@ function resetTimer() {
       _focusTimer.phase = 'work';
       _focusTimer.startedAt = null;
       _focusTimer.sessionStartAt = null;
+      _focusTimer.awaitingConfirmation = false;
+      _focusTimer.pendingPhaseEndedAt = null;
       _saveFocusTimer();
       _renderFocusTimer();
     }
@@ -6402,15 +6470,15 @@ function _resetAfterSession() {
   _stopDisplayTick();
   _focusTimer.running = false;
   _focusTimer.baseElapsed = 0;
-  _focusTimer.phase = 'work';
+  _focusTimer.phase = "work";
   _focusTimer.startedAt = null;
   _focusTimer.sessionStartAt = null;
-  _focusTimer.cyclePosition = 0;  // FIX TI12 (E6): تصفير دورة البومودورو
+  _focusTimer.cyclePosition = 0;
+  _focusTimer.awaitingConfirmation = false;
+  _focusTimer.pendingPhaseEndedAt = null;
   var resetSaved = _saveFocusTimer();
   _renderFocusTimer();
-  if (!resetSaved) {
-    showAlertModal('تعذر حفظ تصفير المؤقت', 'صُفّر المؤقت في الذاكرة، لكن التخزين لم يؤكد حفظ التصفير. تحقّق من التخزين وصدّر نسخة احتياطية؛ لا تُعد تسجيل الجلسة قبل مراجعة سجل الجلسات.');
-  }
+  if (!resetSaved) showAlertModal("تعذر حفظ تصفير المؤقت", "صُفّر المؤقت في الذاكرة، لكن التخزين لم يؤكد حفظ التصفير. تحقّق من التخزين وصدّر نسخة احتياطية؛ لا تُعد تسجيل الجلسة قبل مراجعة سجل الجلسات.");
   return resetSaved;
 }
 
@@ -6537,6 +6605,7 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
 
 function startTimerForTask(taskId) {
   _unlockAudioContext();
+  if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return; }
   var t = tasks.find(function(x) { return x.id === taskId; });
   if (!t || isTaskDone(t) || isTaskCancelled(t)) return;
 
@@ -6600,7 +6669,7 @@ function startTimerForTask(taskId) {
 function _setupVisibilityListener() {
   document.addEventListener('visibilitychange', function() {
     if (document.visibilityState !== 'visible') return;
-    if (_focusTimer.running && _focusTimer.mode === 'pomodoro') _catchUp();
+    if (_focusTimer.running && _focusTimer.mode === 'pomodoro') _catchUp(true);
     _renderFocusTimer();
     renderFocusSessionsCard();
     if (!storageRecoveryRequired) {
@@ -7087,7 +7156,7 @@ function addTaskToProject(projectId) {
   if (!p) return;
   // FIX N7 (G3): تحذير عند المشروع غير النشط
   if (p.status !== 'active') {
-    showToast('⚠️ المشروع "' + p.name + '" غير نشط (' + (p.status === 'completed' ? 'مكتمل' : 'موقوف') + ')', false);
+    showToast('⚠️ المشروع "' + p.name + '" غير نشط (' + (p.status === 'completed' ? 'مكتمل' : 'موقوف') + ')');
   }
   showPromptModal("➕ مهمة في «" + p.name + "»", "اكتب اسم المهمة:", "", "اسم المهمة", function(val) {
     var name = String(val || "").trim();
@@ -7147,6 +7216,7 @@ function renderNotebook() {
 /* ============ Init ============ */
 
 loadData();
+_setupSystemThemeListener();
 if (!storageRecoveryRequired) {
   try {
     if (tasks.length > 0 && _healTaskFieldsAfterLoad()) { saveData(); }
@@ -7172,7 +7242,7 @@ _loadFocusSettings();
 renderAll();
 
 /* ===== focus-timer-v2 init ===== */
-_catchUp();
+_catchUp(true);
 _renderFocusTimer();
 _setupVisibilityListener();
 if (_focusTimer.running) _startDisplayTick();
