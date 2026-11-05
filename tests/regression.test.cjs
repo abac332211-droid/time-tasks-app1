@@ -146,7 +146,7 @@ test('legacy partial task status is healed to pending before strict stored valid
 test('recurring date pruning preserves valid historical dates and removes invalid values', () => {
   const sandbox = {
     appSettings: { lastRecurringDates: { 'series:1': '2026-10-01', 'series:2': '2026-11-04', 'series:3': 'yesterday', constructor: '2026-10-01' } },
-    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     todayStr: () => '2026-11-04'
   };
   vm.runInNewContext(extractFunction('_pruneLastRecurringDates'), sandbox);
@@ -193,8 +193,8 @@ test('backup validator accepts legacy partial for import healing', () => {
     CURRENT_SCHEMA_VERSION: 2, BACKUP_FORMAT_VERSION: 1,
     VALID_STATUS: ['pending', 'done', 'cancelled'],
     VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
-    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
-    isValidLocalTime: (value) => value === '' || /^\\d{2}:\\d{2}$/.test(value),
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
