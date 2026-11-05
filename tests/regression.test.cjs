@@ -29,10 +29,10 @@ test('inline application and service worker JavaScript parse', () => {
 });
 
 test('application, package, and PWA cache versions agree', () => {
-  assert.match(html, /<title>إدارة الوقت والمهام — 2\.8\.8<\/title>/);
-  assert.match(appScript, /const APP_VERSION = "2\.8\.8";/);
-  assert.equal(pkg.version, '2.8.8');
-  assert.match(sw, /timetasks-cache-v2\.8\.8/);
+  assert.match(html, /<title>إدارة الوقت والمهام — 2\.9\.0<\/title>/);
+  assert.match(appScript, /const APP_VERSION = "2\.9\.0";/);
+  assert.equal(pkg.version, '2.9.0');
+  assert.match(sw, /timetasks-cache-v2\.9\.0/);
 });
 
 test('service worker precache only references files that exist', () => {
@@ -55,22 +55,21 @@ test('service worker is isolated from unrelated origin caches', () => {
   assert.doesNotMatch(sw, /caches\.match\(/);
 });
 
+
 function timerSandbox(saveSessions, saveTimer) {
   const saved = [];
+  let promptCount = 0, alertCount = 0;
   const sandbox = {
     FOCUS_MAX_SESSIONS: 5000,
     _focusTimer: {
-      running: true,
-      mode: 'pomodoro',
-      phase: 'short-break',
-      taskId: null,
+      running: true, mode: 'pomodoro', phase: 'short-break', taskId: null,
       startedAt: Date.now() - (4 * 3600 + 10) * 1000,
       sessionStartAt: Date.now() - (4 * 3600 + 10) * 1000,
-      baseElapsed: 0,
-      cyclePosition: 0
+      baseElapsed: 0, cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null
     },
     tasks: [],
     _getElapsedSec: () => 4 * 3600 + 10,
+    _phaseTargetSec: () => 5 * 60,
     _loadSessions: () => saved.slice(),
     _saveSessions: (arr) => {
       if (saveSessions && !saveSessions(arr)) return false;
@@ -78,40 +77,133 @@ function timerSandbox(saveSessions, saveTimer) {
       return true;
     },
     _saveFocusTimer: () => saveTimer ? saveTimer(sandbox._focusTimer) : true,
-    _stopDisplayTick: () => {},
-    _renderFocusTimer: () => {},
-    renderFocusSessionsCard: () => {},
-    showToast: () => {},
-    showAlertModal: () => {}
+    _stopDisplayTick: () => {}, _renderFocusTimer: () => {}, renderFocusSessionsCard: () => {},
+    _showAwaySessionConfirmation: () => { promptCount++; },
+    showToast: () => {}, showAlertModal: () => { alertCount++; }
   };
   vm.runInNewContext(extractFunction('_logSession') + '\n' + extractFunction('_catchUp'), sandbox);
   sandbox.savedSessions = saved;
+  Object.defineProperty(sandbox, 'promptCount', { get: () => promptCount });
+  Object.defineProperty(sandbox, 'alertCount', { get: () => alertCount });
   return sandbox;
 }
 
-test('long-background timer uses the idempotent session logger', () => {
-  const sandbox = timerSandbox(null, () => false);
-  const persistedRunningState = { ...sandbox._focusTimer };
-  sandbox._catchUp();
-  assert.equal(sandbox.savedSessions.length, 1);
-  assert.equal(sandbox.savedSessions[0].durationSec, 4 * 3600 + 10);
-  assert.equal(sandbox._focusTimer.running, false);
-  assert.equal(sandbox._focusTimer.baseElapsed, 0);
-
-  // Simulate reload after timer-state write failed: the previously persisted running
-  // timer is restored, but logging the same start/task/mode/phase must not duplicate it.
-  sandbox._focusTimer = { ...persistedRunningState };
-  sandbox._catchUp();
-  assert.equal(sandbox.savedSessions.length, 1);
-});
-
-test('failed long-background session save preserves elapsed time for recovery', () => {
-  const sandbox = timerSandbox(() => false, () => true);
-  sandbox._catchUp();
+test('background return freezes one Pomodoro phase and waits for explicit approval', () => {
+  const sandbox = timerSandbox(null, () => true);
+  sandbox._catchUp(true);
   assert.equal(sandbox.savedSessions.length, 0);
   assert.equal(sandbox._focusTimer.running, false);
-  assert.equal(sandbox._focusTimer.baseElapsed, 4 * 3600 + 10);
-  assert.equal(sandbox._focusTimer.phase, 'short-break', 'phase is not reset after failed session write');
+  assert.equal(sandbox._focusTimer.baseElapsed, 5 * 60);
+  assert.equal(sandbox._focusTimer.awaitingConfirmation, true);
+  assert.equal(sandbox.promptCount, 1);
+});
+
+test('long background absence never synthesizes repeated focus and break sessions', () => {
+  const sandbox = timerSandbox(null, () => true);
+  sandbox._catchUp(true);
+  assert.equal(sandbox.savedSessions.length, 0);
+  assert.equal(sandbox._focusTimer.awaitingConfirmation, true);
+  assert.equal(sandbox._focusTimer.phase, 'short-break');
+  assert.equal(sandbox._focusTimer.baseElapsed, 5 * 60);
+  assert.equal(sandbox.promptCount, 1);
+});
+
+test('failed persistence of a pending background phase does not create a fake session', () => {
+  const sandbox = timerSandbox(null, () => false);
+  sandbox._catchUp(true);
+  assert.equal(sandbox.savedSessions.length, 0);
+  assert.equal(sandbox._focusTimer.running, false);
+  assert.equal(sandbox._focusTimer.awaitingConfirmation, true);
+  assert.equal(sandbox._focusTimer.baseElapsed, 5 * 60);
+  assert.equal(sandbox.promptCount, 0);
+  assert.equal(sandbox.alertCount, 1);
+});
+
+
+test('resume keeps the original sessionStartAt instead of drifting it forward', () => {
+  const sandbox = {
+    _focusTimer: { running: false, baseElapsed: 420, startedAt: null, sessionStartAt: 123456789, awaitingConfirmation: false },
+    _getElapsedSec: () => 420, _unlockAudioContext: () => {}, _startDisplayTick: () => {},
+    _stopDisplayTick: () => {}, _saveFocusTimer: () => true, _renderFocusTimer: () => {}, showToast: () => {}
+  };
+  vm.runInNewContext(extractFunction('toggleTimer'), sandbox);
+  sandbox.toggleTimer();
+  assert.equal(sandbox._focusTimer.sessionStartAt, 123456789);
+  assert.equal(sandbox._focusTimer.running, true);
+  assert.equal(typeof sandbox._focusTimer.startedAt, 'number');
+});
+
+test('legacy partial task status is healed to pending before strict stored validation', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_healTaskArray'), sandbox);
+  const tasks = [{ id: 1, status: 'partial' }, { id: 2, status: 'done' }];
+  assert.equal(sandbox._healTaskArray(tasks), true);
+  assert.equal(tasks[0].status, 'pending');
+  assert.equal(tasks[1].status, 'done');
+  assert.match(appScript, /const VALID_STATUS = \["pending", "done", "cancelled"\]/);
+});
+
+test('recurring date pruning preserves valid historical dates and removes invalid values', () => {
+  const sandbox = {
+    appSettings: { lastRecurringDates: { 'series:1': '2026-10-01', 'series:2': '2026-11-04', 'series:3': 'yesterday', constructor: '2026-10-01' } },
+    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    todayStr: () => '2026-11-04'
+  };
+  vm.runInNewContext(extractFunction('_pruneLastRecurringDates'), sandbox);
+  sandbox._pruneLastRecurringDates();
+  assert.equal(sandbox.appSettings.lastRecurringDates['series:1'], '2026-10-01');
+  assert.equal(sandbox.appSettings.lastRecurringDates['series:2'], '2026-11-04');
+  assert.equal(sandbox.appSettings.lastRecurringDates['series:3'], undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(sandbox.appSettings.lastRecurringDates, 'constructor'), false);
+});
+
+test('legacy theme preference is preserved and new data supports system color scheme', () => {
+  let darkClass = false, dataTheme = null;
+  const listeners = [];
+  const sandbox = {
+    appSettings: {},
+    window: { matchMedia: () => ({ matches: true, addEventListener: (_name, fn) => listeners.push(fn) }) },
+    document: {
+      body: { classList: { toggle: (_name, enabled) => { darkClass = enabled; } } },
+      documentElement: { setAttribute: (_name, value) => { dataTheme = value; } }
+    },
+    _syncThemeMeta: () => {}
+  };
+  vm.runInNewContext(extractFunction('_applyThemePreference') + '\n' + extractFunction('_loadAppSettings') + '\n' + extractFunction('_setupSystemThemeListener'), sandbox);
+  sandbox._loadAppSettings({ darkMode: false });
+  assert.equal(sandbox.appSettings.themeMode, 'light');
+  assert.equal(darkClass, false);
+  sandbox._loadAppSettings({ themeMode: 'system', darkMode: false });
+  assert.equal(sandbox.appSettings.themeMode, 'system');
+  assert.equal(darkClass, true);
+  sandbox._setupSystemThemeListener();
+  assert.equal(listeners.length, 1);
+  assert.equal(dataTheme, 'system');
+});
+
+test('deferred phase notifications have a finite expiry, not periodic polling', () => {
+  assert.match(appScript, /PENDING_PHASE_NOTIFICATION_TTL_MS = 10000/);
+  const body = extractFunction('closeModal');
+  assert.match(body, /Date\.now\(\) - queuedAt > PENDING_PHASE_NOTIFICATION_TTL_MS/);
+  assert.doesNotMatch(body, /setInterval/);
+});
+
+test('backup validator accepts legacy partial for import healing', () => {
+  const sandbox = {
+    CURRENT_SCHEMA_VERSION: 2, BACKUP_FORMAT_VERSION: 1,
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
+    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    isValidLocalTime: (value) => value === '' || /^\\d{2}:\\d{2}$/.test(value),
+    isValidLocalDateTime: (value) => typeof value === 'string',
+    validateDailyLog: () => true
+  };
+  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  const backup = { backupFormatVersion: 1, schemaVersion: 2, data: {
+    tasks: [{ id: 1, name: 'قديم', status: 'partial', type: 'معرفية', expected: 20, actual: null, plannedDate: '2026-11-04', plannedTime: '', completedAt: null, createdAt: 1 }],
+    dailyLogs: []
+  } };
+  assert.equal(sandbox.validateBackup(backup).valid, true);
 });
 
 function recurrenceSandbox(tasks) {
@@ -161,7 +253,7 @@ test('backup validator rejects malformed version and storage settings', () => {
   const sandbox = {
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 1,
-    VALID_STATUS: ['pending', 'done', 'partial', 'cancelled'],
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
     VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
@@ -178,7 +270,7 @@ test('backup validator rejects malformed focus-session timestamps', () => {
   const sandbox = {
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 1,
-    VALID_STATUS: ['pending', 'done', 'partial', 'cancelled'],
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
     VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
@@ -361,7 +453,7 @@ test('backup and stored schema reject prototype-polluting settings keys', () => 
   const sandbox = {
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 1,
-    VALID_STATUS: ['pending', 'done', 'partial', 'cancelled'],
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
     VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
@@ -391,7 +483,7 @@ test('backup and stored schema reject prototype-polluting settings keys', () => 
 test('stored schema rejects duplicate task IDs before normal app use', () => {
   const sandbox = {
     CURRENT_SCHEMA_VERSION: 2,
-    VALID_STATUS: ['pending', 'done', 'partial', 'cancelled'],
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
     VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
@@ -419,8 +511,8 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(verify, /actions\/checkout@v5/);
   assert.match(verify, /actions\/setup-node@v5/);
   assert.match(verify, /node-version:\s*'22'/);
-  assert.match(verify, /zip -9 -r \.\.\/time-tasks-app-2\.8\.8-web\.zip/);
-  assert.match(verify, /name:\s*time-tasks-app-2\.8\.8-web/);
+  assert.match(verify, /zip -9 -r \.\.\/time-tasks-app-2\.9\.0-web\.zip/);
+  assert.match(verify, /name:\s*time-tasks-app-2\.9\.0-web/);
   assert.match(verify, /retention-days:\s*90/);
   assert.match(verify, /if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
   assert.match(apk, /actions\/checkout@v5/);
