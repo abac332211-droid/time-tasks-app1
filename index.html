@@ -374,7 +374,7 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
   --shadow: rgba(27, 55, 47, .075);
   --primary: #1b5b50;
   --success: #2f775f;
-  --warning: #a86f35;
+  --warning: #9f642d;
   --danger: #b9554a;
   --ghost: #edf1eb;
   --nav-bg: rgba(255, 254, 250, .94);
@@ -433,14 +433,14 @@ header h1 {
   margin-bottom: 8px;
   font-size: clamp(22px, 5.5vw, 27px);
   line-height: 1.45;
-  letter-spacing: -.35px;
+  letter-spacing: normal;
   font-weight: 800;
 }
 header p {
   position: relative;
   color: rgba(255,255,255,.82);
   font-size: 13px;
-  letter-spacing: .1px;
+  letter-spacing: normal;
 }
 .container {
   max-width: 760px;
@@ -460,7 +460,7 @@ header p {
   font-size: 17px;
   font-weight: 800;
   line-height: 1.5;
-  letter-spacing: -.15px;
+  letter-spacing: normal;
   margin-bottom: 13px;
 }
 .card.accent-primary::before, .card.accent-success::before,
@@ -497,7 +497,7 @@ button {
   border-radius: 13px;
   padding: 11px 15px;
   font-weight: 700;
-  letter-spacing: -.1px;
+  letter-spacing: normal;
   transition: transform .14s ease, opacity .2s, background-color .2s, box-shadow .2s;
 }
 .btn-primary {
@@ -507,6 +507,11 @@ button {
 body.dark-mode .btn-primary {
   color: #10231d;
   box-shadow: 0 5px 15px rgba(0, 0, 0, .2);
+}
+body.dark-mode .btn-success,
+body.dark-mode .btn-warning,
+body.dark-mode .btn-danger {
+  color: #10231d;
 }
 .btn-success { background: var(--success); }
 .btn-warning { background: var(--warning); }
