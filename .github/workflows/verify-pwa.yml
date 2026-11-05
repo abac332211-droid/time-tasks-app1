@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - codex/final-audit-fixes
+      - codex/v2.9.0-stability
   pull_request:
     branches:
       - main
