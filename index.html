@@ -3727,6 +3727,8 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
   if (timer.awaitingConfirmation) {
     if (timer.mode !== "pomodoro" || timer.sessionStartAt === null || timer.pendingPhaseEndedAt === null)
       return { valid: false, reason: "بيانات المرحلة المكتملة التي تنتظر التأكيد غير مكتملة." };
+    if (timer.pendingPhaseEndedAt < timer.sessionStartAt)
+      return { valid: false, reason: "وقت انتهاء المرحلة المعلقة يسبق وقت بدء الجلسة." };
   } else if (timer.pendingPhaseEndedAt !== null) {
     return { valid: false, reason: "يوجد وقت انتهاء معلق دون طلب تأكيد." };
   }
