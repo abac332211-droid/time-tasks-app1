@@ -5859,9 +5859,16 @@ async function _setCapacitorNotificationsEnabled(enabled) {
   var LN = window.Capacitor.Plugins.LocalNotifications;
   try {
     if (!enabled) {
+      var wasEnabled = _getNotificationsPref().enabled;
       if (!_setNotificationsPref(false)) return false;
-      await LN.cancelAll();
-      return true;
+      try {
+        await LN.cancelAll();
+        return true;
+      } catch (cancelError) {
+        // Do not report "disabled" while native alarms may still be queued.
+        _setNotificationsPref(wasEnabled);
+        throw cancelError;
+      }
     }
     var permission = await LN.checkPermissions();
     if (!permission || permission.display !== "granted") {
