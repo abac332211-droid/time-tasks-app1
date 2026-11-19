@@ -771,3 +771,28 @@ test('task deletion restores the task and linked focus timer when persistence fa
   assert.equal(sandbox._focusTimer.taskId, 12);
   assert.equal(timerSaveCalls, 2);
 });
+
+
+test('weekday recurrence uses the intended Sunday-to-Thursday workweek', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_shouldGenerateToday'), sandbox);
+  const root = { recurrence: 'weekdays', plannedDate: '2026-11-01' };
+
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-01'), true);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-02'), true);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-05'), true);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-06'), false);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-07'), false);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-10-29'), false);
+});
+
+test('weekly recurrence stays on the original anchor weekday', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_shouldGenerateToday'), sandbox);
+  const root = { recurrence: 'weekly', plannedDate: '2026-11-02' };
+
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-09'), true);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-16'), true);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-11-10'), false);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-10-26'), false);
+});
