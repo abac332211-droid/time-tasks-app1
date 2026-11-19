@@ -5843,21 +5843,23 @@ function _sendCapacitorNotification(title, body) {
     if (!_hasCapacitorLocalNotifications()) return false;
     var LN = window.Capacitor.Plugins.LocalNotifications;
     LN.checkPermissions().then(function(perm) {
-      if (perm && perm.display === 'granted') return perm;
+      if (perm && perm.display === "granted") return perm;
       return LN.requestPermissions();
-    }).then(function() {
+    }).then(function(perm) {
+      if (!perm || perm.display !== "granted") return null;
       return LN.schedule({
         notifications: [{
-          id: Math.floor(Math.random() * 1000000),
-          title: String(title || '').slice(0, 100),
-          body: String(body || '').slice(0, 200),
+          id: 2000000000,
+          title: String(title || "").slice(0, 100),
+          body: String(body || "").slice(0, 200),
           schedule: { at: new Date(Date.now() + 300) },
           sound: null,
           ongoing: false,
-          autoCancel: true
+          autoCancel: true,
+          extra: { kind: "focus-transition" }
         }]
       });
-    }).catch(function() {});
+    }).catch(function(e) { console.warn("Focus notification failed:", e); });
     return true;
   } catch (e) { return false; }
 }
