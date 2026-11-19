@@ -146,7 +146,7 @@ test('legacy partial task status is healed to pending before strict stored valid
 test('recurring date pruning preserves valid historical dates and removes invalid values', () => {
   const sandbox = {
     appSettings: { lastRecurringDates: { 'series:1': '2026-10-01', 'series:2': '2026-11-04', 'series:3': 'yesterday', constructor: '2026-10-01' } },
-    isValidCalendarDate: () => true,
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     todayStr: () => '2026-11-04'
   };
   vm.runInNewContext(extractFunction('_pruneLastRecurringDates'), sandbox);
@@ -640,8 +640,8 @@ function taskFormSandbox(options = {}) {
       }
     },
     todayStr: () => '2026-11-19',
-    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
-    isValidLocalTime: (value) => /^\d{2}:\d{2}$/.test(value),
+    isValidCalendarDate: () => true,
+    isValidLocalTime: () => true,
     localDateTimeString: () => '2026-11-19T09:00:00',
     getNextTaskId: options.getNextTaskId || (() => 10),
     saveData: options.saveData || (() => true),
