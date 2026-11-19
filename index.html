@@ -1969,6 +1969,7 @@ function saveData() {
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(v2));
+    _queueAllTaskReminderSync();
     return true;
   } catch (e) {
     showAlertModal("تنبيه الحفظ", "تعذر حفظ البيانات. مساحة التخزين المحلية ممتلئة.");
@@ -2028,6 +2029,7 @@ function resetAll() {
       appSettings = fresh.settings;
       createdByVersion = fresh.createdByVersion;
       tasks = [];
+      _queueAllTaskReminderSync();
       try {
         localStorage.removeItem(PRE_IMPORT_KEY);
         localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
@@ -5697,15 +5699,23 @@ function _taskNotificationId(taskId) {
     hash ^= text.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
-  // Keep task reminders below the reserved focus-transition notification ID.
+  // Task reminder IDs occupy 1..1,900,000,000; focus transitions reserve 2,000,000,000.
   return (hash >>> 0) % 1900000000 + 1;
 }
 
 function _taskReminderAt(task) {
   if (!task || task.status !== "pending" || !task.plannedDate || !task.plannedTime) return null;
   if (!isValidCalendarDate(task.plannedDate) || !isValidLocalTime(task.plannedTime)) return null;
-  var at = new Date(task.plannedDate + "T" + task.plannedTime + ":00");
-  if (!Number.isFinite(at.getTime()) || at.getTime() <= Date.now()) return null;
+  var dateParts = task.plannedDate.split("-").map(Number);
+  var timeParts = task.plannedTime.split(":").map(Number);
+  var at = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], timeParts[0], timeParts[1], 0, 0);
+  if (!Number.isFinite(at.getTime())
+      || at.getFullYear() !== dateParts[0]
+      || at.getMonth() !== dateParts[1] - 1
+      || at.getDate() !== dateParts[2]
+      || at.getHours() !== timeParts[0]
+      || at.getMinutes() !== timeParts[1]
+      || at.getTime() <= Date.now()) return null;
   return at;
 }
 
@@ -5722,9 +5732,9 @@ async function _cancelTaskNotification(taskId) {
   }
 }
 
-async function _syncTaskNotification(task) {
+async function _syncTaskNotification(task, notificationId, permissionAlreadyGranted) {
   if (!_hasCapacitorLocalNotifications() || !task) return false;
-  var id = _taskNotificationId(task.id);
+  var id = Number.isSafeInteger(notificationId) ? notificationId : _taskNotificationId(task.id);
   if (id === null) return false;
   var LN = window.Capacitor.Plugins.LocalNotifications;
   try {
@@ -5733,14 +5743,16 @@ async function _syncTaskNotification(task) {
     if (!_getNotificationsPref().enabled) return true;
     var at = _taskReminderAt(task);
     if (!at) return true;
-    var permission = await LN.checkPermissions();
-    if (!permission || permission.display !== "granted") return false;
+    if (!permissionAlreadyGranted) {
+      var permission = await LN.checkPermissions();
+      if (!permission || permission.display !== "granted") return false;
+    }
     await LN.schedule({
       notifications: [{
         id: id,
         title: "تذكير بمهمة",
         body: String(task.name || "لديك مهمة مستحقة").slice(0, 180),
-        schedule: { at: at },
+        schedule: { at: at, allowWhileIdle: true },
         sound: null,
         autoCancel: true,
         extra: { kind: "task-reminder", taskId: String(task.id) }
@@ -5755,23 +5767,48 @@ async function _syncTaskNotification(task) {
 
 async function _syncAllTaskNotifications() {
   if (!_hasCapacitorLocalNotifications()) return false;
-  if (!_getNotificationsPref().enabled) return true;
   var LN = window.Capacitor.Plugins.LocalNotifications;
   try {
-    var permission = await LN.checkPermissions();
-    if (!permission || permission.display !== "granted") return false;
-    var desired = tasks.filter(function(task) { return !!_taskReminderAt(task); });
-    var desiredIds = new Set(desired.map(function(task) { return _taskNotificationId(task.id); }));
     var pendingResult = await LN.getPending();
     var pending = pendingResult && Array.isArray(pendingResult.notifications)
       ? pendingResult.notifications : [];
-    var staleIds = pending.filter(function(item) {
-      return item && item.extra && item.extra.kind === "task-reminder" && !desiredIds.has(item.id);
+    var pref = _getNotificationsPref();
+    var desired = [];
+    var desiredIds = new Set();
+    if (pref.enabled) {
+      tasks.forEach(function(task) {
+        if (!_taskReminderAt(task)) return;
+        var id = _taskNotificationId(task.id);
+        if (id === null || desiredIds.has(id)) {
+          console.warn("Skipping task reminder with an invalid or colliding ID:", task && task.id);
+          return;
+        }
+        desiredIds.add(id);
+        desired.push({ task: task, id: id });
+      });
+    }
+
+    var pendingTaskReminders = pending.filter(function(item) {
+      return item && item.extra && item.extra.kind === "task-reminder";
+    });
+    var staleIds = pendingTaskReminders.filter(function(item) {
+      return !pref.enabled || !desiredIds.has(item.id);
     }).map(function(item) { return { id: item.id }; });
     if (staleIds.length) await LN.cancel({ notifications: staleIds });
+    if (!pref.enabled) return true;
+
+    var permission = await LN.checkPermissions();
+    if (!permission || permission.display !== "granted") {
+      var remainingIds = pendingTaskReminders.filter(function(item) {
+        return desiredIds.has(item.id);
+      }).map(function(item) { return { id: item.id }; });
+      if (remainingIds.length) await LN.cancel({ notifications: remainingIds });
+      return false;
+    }
+
     var allOk = true;
     for (var i = 0; i < desired.length; i++) {
-      if (!await _syncTaskNotification(desired[i])) allOk = false;
+      if (!await _syncTaskNotification(desired[i].task, desired[i].id, true)) allOk = false;
     }
     return allOk;
   } catch (e) {
@@ -5780,12 +5817,17 @@ async function _syncAllTaskNotifications() {
   }
 }
 
-function _queueTaskReminderSync(task) {
-  if (!_hasCapacitorLocalNotifications()) return;
-  _syncTaskNotification(task).then(function(ok) {
-    if (!ok && _taskReminderAt(task))
-      showToast("⚠️ حُفظت المهمة، لكن تعذرت جدولة تذكيرها.");
-  }).catch(function() {});
+var _taskReminderSyncQueue = Promise.resolve(true);
+function _queueAllTaskReminderSync() {
+  if (!_hasCapacitorLocalNotifications() || storageRecoveryRequired) return Promise.resolve(false);
+  _taskReminderSyncQueue = _taskReminderSyncQueue
+    .catch(function() { return false; })
+    .then(function() { return _syncAllTaskNotifications(); })
+    .catch(function(e) {
+      console.warn("Queued task notification sync failed:", e);
+      return false;
+    });
+  return _taskReminderSyncQueue;
 }
 
 async function _setCapacitorNotificationsEnabled(enabled) {
@@ -5793,22 +5835,36 @@ async function _setCapacitorNotificationsEnabled(enabled) {
   var LN = window.Capacitor.Plugins.LocalNotifications;
   try {
     if (!enabled) {
-      await LN.cancelAll();
       if (!_setNotificationsPref(false)) return false;
+      await LN.cancelAll();
       return true;
     }
     var permission = await LN.checkPermissions();
     if (!permission || permission.display !== "granted") {
       permission = await LN.requestPermissions();
     }
-    if (!permission || permission.display !== "granted") return false;
+    if (!permission || permission.display !== "granted") {
+      _setNotificationsPref(false);
+      return false;
+    }
     if (!_setNotificationsPref(true)) return false;
-    await _syncAllTaskNotifications();
+    await _queueAllTaskReminderSync();
     return true;
   } catch (e) {
     console.warn("Notification preference update failed:", e);
     return false;
   }
+}
+
+async function _toggleCapacitorNotifications() {
+  if (!_hasCapacitorLocalNotifications()) return { enabled: false, ok: false };
+  var pref = _getNotificationsPref();
+  var permission = await window.Capacitor.Plugins.LocalNotifications.checkPermissions();
+  // On first use (or after revocation), the button must request permission instead
+  // of treating the default stored preference as an instruction to switch off.
+  var newValue = permission && permission.display === "granted" ? !pref.enabled : true;
+  var ok = await _setCapacitorNotificationsEnabled(newValue);
+  return { enabled: newValue, ok: ok };
 }
 
 /* فك قفل الصوت (Web Audio Unlock) */
@@ -5860,16 +5916,13 @@ function _sendCapacitorNotification(title, body) {
     if (!_hasCapacitorLocalNotifications()) return false;
     var LN = window.Capacitor.Plugins.LocalNotifications;
     LN.checkPermissions().then(function(perm) {
-      if (perm && perm.display === "granted") return perm;
-      return LN.requestPermissions();
-    }).then(function(perm) {
       if (!perm || perm.display !== "granted") return null;
       return LN.schedule({
         notifications: [{
           id: 2000000000,
           title: String(title || "").slice(0, 100),
           body: String(body || "").slice(0, 200),
-          schedule: { at: new Date(Date.now() + 300) },
+          schedule: { at: new Date(Date.now() + 300), allowWhileIdle: true },
           sound: null,
           ongoing: false,
           autoCancel: true,
@@ -5928,19 +5981,30 @@ function _updateNotifToggleUI() {
     btn.disabled = false;
     return;
   }
-  if (typeof Notification === 'undefined' && !_hasCapacitorLocalNotifications()) {
+  if (_hasCapacitorLocalNotifications()) {
+    btn.disabled = false;
+    btn.textContent = pref.enabled ? '✓ مفعّل' : 'معطّل';
+    btn.className = pref.enabled ? 'btn-primary' : 'btn-ghost';
+    window.Capacitor.Plugins.LocalNotifications.checkPermissions().then(function(permission) {
+      var current = _getNotificationsPref();
+      if (!permission || permission.display !== 'granted') {
+        btn.textContent = current.enabled ? 'إذن مطلوب' : 'تفعيل';
+        btn.className = 'btn-ghost';
+      } else {
+        btn.textContent = current.enabled ? '✓ مفعّل' : 'معطّل';
+        btn.className = current.enabled ? 'btn-primary' : 'btn-ghost';
+      }
+    }).catch(function() {});
+    return;
+  }
+  if (typeof Notification === 'undefined') {
     btn.textContent = 'صوت + اهتزاز';
     btn.className = 'btn-primary';
     btn.disabled = false;
     return;
   }
   btn.disabled = false;
-  if (_hasCapacitorLocalNotifications()) {
-    btn.textContent = pref.enabled ? '✓ مفعّل' : 'معطّل';
-    btn.className = pref.enabled ? 'btn-primary' : 'btn-ghost';
-    return;
-  }
-  var perm = (typeof Notification !== 'undefined') ? Notification.permission : 'default';
+  var perm = Notification.permission;
   if (perm === 'denied') {
     btn.textContent = 'محظور';
     btn.className = 'btn-ghost';
@@ -5960,16 +6024,15 @@ function toggleNotifications() {
   _unlockAudioContext();
   var pref = _getNotificationsPref();
   if (_hasCapacitorLocalNotifications()) {
-    var newVal = !pref.enabled;
-    _setCapacitorNotificationsEnabled(newVal).then(function(ok) {
+    _toggleCapacitorNotifications().then(function(result) {
       _updateNotifToggleUI();
-      if (!ok) {
-        showAlertModal("الإشعارات", newVal
-          ? "لم يُمنح إذن الإشعارات أو تعذر حفظ الإعداد. يمكنك المحاولة مجددًا من هذا الزر."
-          : "تعذر إلغاء الإشعارات المجدولة؛ لم نغيّر الإعداد.");
+      if (!result.ok) {
+        showAlertModal("الإشعارات", result.enabled
+          ? "لم يُمنح إذن الإشعارات أو تعذرت جدولة التنبيهات. يمكنك المحاولة مجددًا من هذا الزر."
+          : "تم إيقاف الإشعارات، لكن تعذر إلغاء جميع التنبيهات السابقة.");
         return;
       }
-      showToast(newVal ? "🔔 الإشعارات مفعّلة" : "🔕 الإشعارات معطّلة");
+      showToast(result.enabled ? "🔔 الإشعارات مفعّلة" : "🔕 الإشعارات معطّلة");
     }).catch(function() {
       _updateNotifToggleUI();
       showAlertModal("الإشعارات", "تعذر تحديث إعداد الإشعارات.");
@@ -7508,6 +7571,7 @@ if (_focusTimer.awaitingConfirmation) {
 _setupVisibilityListener();
 if (_focusTimer.running) _startDisplayTick();
 
+_queueAllTaskReminderSync();
 _updateNotifToggleUI();
 if (_hasCapacitorLocalNotifications()) {
   _syncAllTaskNotifications().then(function(ok) {
