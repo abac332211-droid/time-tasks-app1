@@ -76,6 +76,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
+      - name: Verify merged Android notification permissions
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          PERMISSIONS="$("$AAPT" dump permissions "$APK")"
+          printf '%s\n' "$PERMISSIONS"
+          grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
+          grep -q "android.permission.RECEIVE_BOOT_COMPLETED" <<< "$PERMISSIONS"
+          grep -q "android.permission.WAKE_LOCK" <<< "$PERMISSIONS"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
