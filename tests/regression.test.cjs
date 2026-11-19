@@ -917,7 +917,7 @@ test('home schedule separates overdue, today, and upcoming pending tasks', () =>
     todayStr: () => today,
     isTaskDone: (task) => task.status === 'done',
     isTaskCancelled: (task) => task.status === 'cancelled',
-    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value)
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value)
       && (() => {
         const [year, month, day] = value.split('-').map(Number);
         const date = new Date(year, month - 1, day);
@@ -928,7 +928,7 @@ test('home schedule separates overdue, today, and upcoming pending tasks', () =>
     priorityRank: () => 0
   };
   const result = vm.runInNewContext(
-    source + '\\n_getHomeScheduleBuckets(tasks, today, isLate)',
+    source + '\n_getHomeScheduleBuckets(tasks, today, isLate)',
     { ...sandbox, tasks, today }
   );
   assert.deepEqual(JSON.parse(JSON.stringify({
@@ -939,6 +939,6 @@ test('home schedule separates overdue, today, and upcoming pending tasks', () =>
 });
 
 test('task list offers a today filter based on operational todayStr', () => {
-  assert.match(extractFunction('renderTasks'), /currentFilter === "today"[\\s\\S]*?t\\.plannedDate === todayStr\\(\\)/);
-  assert.match(appScript, /setFilter\\('today', this\\)/);
+  assert.match(extractFunction('renderTasks'), /currentFilter === "today"[\s\S]*?t\.plannedDate === todayStr\(\)/);
+  assert.match(appScript, /setFilter\('today', this\)/);
 });
