@@ -111,7 +111,7 @@ test('only pending tasks with a valid future local date and time have reminders'
     { isValidCalendarDate: validDate, isValidLocalTime: validTime }
   );
   const future = { id: 1, status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
-  assert.ok(_taskReminderAt(future) instanceof Date);
+  assert.ok(_taskReminderAt(future).getTime() > Date.now());
   assert.equal(_taskReminderAt({ ...future, status: 'done' }), null);
   assert.equal(_taskReminderAt({ ...future, plannedTime: '' }), null);
   assert.equal(_taskReminderAt({ ...future, plannedDate: '2099-02-30' }), null);
