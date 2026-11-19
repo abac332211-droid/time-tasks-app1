@@ -84,6 +84,8 @@ jobs:
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -n "$AAPT"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          printf '%s\n' "$BADGING" | grep -F "package: name='com.abac332211.timetasks.debug'"
           PERMISSIONS="$("$AAPT" dump permissions "$APK")"
           printf '%s\n' "$PERMISSIONS"
           grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
