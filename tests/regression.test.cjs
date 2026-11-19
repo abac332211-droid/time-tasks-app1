@@ -900,3 +900,45 @@ test('successful task deletion queues reminder cancellation after persistence', 
   assert.equal(sandbox.tasks.length, 0);
   assert.deepEqual(cancelled, [21]);
 });
+
+
+test('home schedule separates overdue, today, and upcoming pending tasks', () => {
+  const source = extractFunction('_getHomeScheduleBuckets');
+  const today = '2026-11-19';
+  const tasks = [
+    { id: 1, name: 'موعد اليوم', status: 'pending', plannedDate: today, plannedTime: '18:00' },
+    { id: 2, name: 'متأخرة', status: 'pending', plannedDate: '2026-11-18', plannedTime: '09:00' },
+    { id: 3, name: 'قادمة', status: 'pending', plannedDate: '2026-11-20', plannedTime: '09:00' },
+    { id: 4, name: 'منجزة اليوم', status: 'done', plannedDate: today, plannedTime: '10:00' },
+    { id: 5, name: 'ملغاة اليوم', status: 'cancelled', plannedDate: today, plannedTime: '11:00' },
+    { id: 6, name: 'تاريخ غير صالح', status: 'pending', plannedDate: '2026-02-30', plannedTime: '' }
+  ];
+  const sandbox = {
+    todayStr: () => today,
+    isTaskDone: (task) => task.status === 'done',
+    isTaskCancelled: (task) => task.status === 'cancelled',
+    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value)
+      && (() => {
+        const [year, month, day] = value.split('-').map(Number);
+        const date = new Date(year, month - 1, day);
+        return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+      })(),
+    isLate: (task) => task.id === 2,
+    parseTaskDate: (date, time) => new Date(date + 'T' + (time || '23:59') + ':00'),
+    priorityRank: () => 0
+  };
+  const result = vm.runInNewContext(
+    source + '\\n_getHomeScheduleBuckets(tasks, today, isLate)',
+    { ...sandbox, tasks, today }
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify({
+    overdue: result.overdue.map((task) => task.id),
+    today: result.today.map((task) => task.id),
+    upcoming: result.upcoming.map((task) => task.id)
+  })), { overdue: [2], today: [1], upcoming: [3] });
+});
+
+test('task list offers a today filter based on operational todayStr', () => {
+  assert.match(extractFunction('renderTasks'), /currentFilter === "today"[\\s\\S]*?t\\.plannedDate === todayStr\\(\\)/);
+  assert.match(appScript, /setFilter\\('today', this\\)/);
+});
