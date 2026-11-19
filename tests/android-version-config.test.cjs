@@ -63,3 +63,16 @@ test('Android versionCode increases for patch, minor, and major releases', () =>
   assert.ok(code('2.10.0') > code('2.9.999'));
   assert.ok(code('3.0.0') > code('2.999.999'));
 });
+
+
+test('Android version config rejects components that would collide in versionCode', (t) => {
+  for (const version of ['2.9.1000', '2.1000.0']) {
+    const f = fixture({ packageVersion: version, appVersion: version, cacheVersion: version });
+    const before = fs.readFileSync(f.gradlePath, 'utf8');
+    const result = run(f.root);
+    assert.notEqual(result.status, 0, version);
+    assert.match(result.stderr, /minor and patch components <= 999/);
+    assert.equal(fs.readFileSync(f.gradlePath, 'utf8'), before);
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
