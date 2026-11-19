@@ -5752,7 +5752,7 @@ async function _syncTaskNotification(task, notificationId, permissionAlreadyGran
         id: id,
         title: "تذكير بمهمة",
         body: String(task.name || "لديك مهمة مستحقة").slice(0, 180),
-        schedule: { at: at, allowWhileIdle: true },
+        schedule: { at: at },
         sound: null,
         autoCancel: true,
         extra: { kind: "task-reminder", taskId: String(task.id) }
@@ -5777,19 +5777,24 @@ async function _syncAllTaskNotifications() {
     var desiredIds = new Set();
     if (pref.enabled) {
       tasks.forEach(function(task) {
-        if (!_taskReminderAt(task)) return;
+        var at = _taskReminderAt(task);
+        if (!at) return;
         var id = _taskNotificationId(task.id);
         if (id === null || desiredIds.has(id)) {
           console.warn("Skipping task reminder with an invalid or colliding ID:", task && task.id);
           return;
         }
         desiredIds.add(id);
-        desired.push({ task: task, id: id });
+        desired.push({ task: task, id: id, at: at });
       });
     }
 
     var pendingTaskReminders = pending.filter(function(item) {
       return item && item.extra && item.extra.kind === "task-reminder";
+    });
+    var pendingById = new Map();
+    pendingTaskReminders.forEach(function(item) {
+      if (Number.isSafeInteger(item.id)) pendingById.set(item.id, item);
     });
     var staleIds = pendingTaskReminders.filter(function(item) {
       return !pref.enabled || !desiredIds.has(item.id);
@@ -5808,7 +5813,19 @@ async function _syncAllTaskNotifications() {
 
     var allOk = true;
     for (var i = 0; i < desired.length; i++) {
-      if (!await _syncTaskNotification(desired[i].task, desired[i].id, true)) allOk = false;
+      var entry = desired[i];
+      var existing = pendingById.get(entry.id);
+      var existingAt = existing && existing.schedule && existing.schedule.at
+        ? new Date(existing.schedule.at).getTime() : NaN;
+      var expectedBody = String(entry.task.name || "لديك مهمة مستحقة").slice(0, 180);
+      var matches = existing
+        && existing.title === "تذكير بمهمة"
+        && existing.body === expectedBody
+        && existingAt === entry.at.getTime()
+        && existing.extra && existing.extra.kind === "task-reminder"
+        && existing.extra.taskId === String(entry.task.id);
+      if (matches) continue;
+      if (!await _syncTaskNotification(entry.task, entry.id, true)) allOk = false;
     }
     return allOk;
   } catch (e) {
@@ -5816,13 +5833,12 @@ async function _syncAllTaskNotifications() {
     return false;
   }
 }
-
 var _taskReminderSyncQueue = Promise.resolve(true);
 function _queueTaskReminderSync(task) {
   if (!_hasCapacitorLocalNotifications() || storageRecoveryRequired || !task) return Promise.resolve(false);
   _taskReminderSyncQueue = _taskReminderSyncQueue
     .catch(function() { return false; })
-    .then(function() { return _syncTaskNotification(task); })
+    .then(function() { return _syncAllTaskNotifications(); })
     .catch(function(e) {
       console.warn("Queued task reminder update failed:", e);
       return false;
