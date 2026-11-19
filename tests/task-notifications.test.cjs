@@ -141,7 +141,7 @@ test('startup reconciliation schedules pending tasks and removes stale task remi
   assert.equal(await fns._syncAllTaskNotifications(), true);
   assert.deepEqual(harness.calls.schedule.map((item) => item.id), [fns._taskNotificationId(task.id)]);
   assert.equal(harness.calls.schedule[0].title, 'تذكير بمهمة');
-  assert.equal(harness.calls.schedule[0].schedule.allowWhileIdle, true);
+  assert.equal(harness.calls.schedule[0].schedule.allowWhileIdle, undefined);
   const cancelled = harness.calls.cancel.flat();
   assert.ok(cancelled.includes(999));
   assert.ok(cancelled.includes(fns._taskNotificationId(task.id)));
@@ -260,4 +260,58 @@ test('failed native cancel-all restores the prior enabled preference', async () 
   assert.equal(harness.context.preference, true);
   assert.deepEqual(harness.pending().map((item) => item.id), [777, 2000000000]);
   assert.equal(harness.calls.cancelAll, 1);
+});
+
+
+test('startup reconciliation leaves an unchanged pending reminder untouched', async () => {
+  const task = { id: 41, name: 'مهمة ثابتة', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
+  const { _taskNotificationId, _taskReminderAt } = loadFunctions(
+    ['_taskNotificationId', '_taskReminderAt'],
+    { isValidCalendarDate: validDate, isValidLocalTime: validTime }
+  );
+  const id = _taskNotificationId(task.id);
+  const at = _taskReminderAt(task);
+  const harness = makeNotificationHarness({
+    tasks: [task],
+    pending: [{
+      id,
+      title: 'تذكير بمهمة',
+      body: task.name,
+      schedule: { at },
+      extra: { kind: 'task-reminder', taskId: String(task.id) }
+    }]
+  });
+  const fns = loadFunctions(reminderFunctions, harness.context);
+
+  assert.equal(await fns._syncAllTaskNotifications(), true);
+  assert.equal(harness.calls.schedule.length, 0);
+  assert.equal(harness.calls.cancel.length, 0);
+});
+
+test('startup reconciliation replaces a pending reminder when task title or due time changes', async () => {
+  const task = { id: 42, name: 'العنوان الجديد', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
+  const { _taskNotificationId, _taskReminderAt } = loadFunctions(
+    ['_taskNotificationId', '_taskReminderAt'],
+    { isValidCalendarDate: validDate, isValidLocalTime: validTime }
+  );
+  const id = _taskNotificationId(task.id);
+  const oldAt = new Date(2099, 11, 31, 22, 59, 0, 0);
+  const at = _taskReminderAt(task);
+  const harness = makeNotificationHarness({
+    tasks: [task],
+    pending: [{
+      id,
+      title: 'تذكير بمهمة',
+      body: 'العنوان السابق',
+      schedule: { at: oldAt },
+      extra: { kind: 'task-reminder', taskId: String(task.id) }
+    }]
+  });
+  const fns = loadFunctions(reminderFunctions, harness.context);
+
+  assert.equal(await fns._syncAllTaskNotifications(), true);
+  assert.deepEqual(harness.calls.cancel, [[id]]);
+  assert.equal(harness.calls.schedule.length, 1);
+  assert.equal(harness.calls.schedule[0].body, task.name);
+  assert.equal(new Date(harness.calls.schedule[0].schedule.at).getTime(), at.getTime());
 });
