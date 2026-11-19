@@ -291,7 +291,7 @@ test('rollback snapshot restores and reads back the focus timer with every other
 
   assert.equal(restore(snapshot), true);
   assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
-  assert.equal(storage.getItem('app-main'), previous.main);
+  assert.equal(storage.getItem('app-main'), 'previous-main');
   assert.equal(storage.getItem('timeTasksApp_focusSessions'), 'previous-sessions');
   assert.equal(storage.getItem('timeTasksApp_mentalInbox'), 'previous-inbox');
   assert.equal(storage.getItem('app-thoughts'), 'previous-thoughts');
@@ -344,7 +344,7 @@ test('interrupted import recovery restores the previous timer and clears both ma
 
   assert.equal(recovery(), true);
   assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
-  assert.equal(storage.getItem('app-main'), 'previous-main');
+  assert.equal(storage.getItem('app-main'), previous.main);
   assert.equal(storage.getItem('app-import-marker'), null);
   assert.equal(storage.getItem('app-pre-import'), null);
   assert.equal(harness.invalidationCount(), 1);
