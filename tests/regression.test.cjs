@@ -519,3 +519,89 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(apk, /actions\/setup-node@v5/);
   assert.doesNotMatch(verify + apk, /actions\/(?:checkout|setup-node)@v4/);
 });
+
+
+test('monthly recurrence anchored on the 31st uses month-end fallback without drifting', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_shouldGenerateToday'), sandbox);
+  const root = { recurrence: 'monthly', plannedDate: '2026-01-31' };
+
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-02-28'), true);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-02-27'), false);
+  assert.equal(sandbox._shouldGenerateToday(root, '2026-03-31'), true);
+});
+
+test('monthly recurrence handles leap February using the original anchor date', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_shouldGenerateToday'), sandbox);
+  const leapAnchor = { recurrence: 'monthly', plannedDate: '2024-01-29' };
+  const commonYearAnchor = { recurrence: 'monthly', plannedDate: '2025-01-29' };
+
+  assert.equal(sandbox._shouldGenerateToday(leapAnchor, '2024-02-29'), true);
+  assert.equal(sandbox._shouldGenerateToday(leapAnchor, '2024-02-28'), false);
+  assert.equal(sandbox._shouldGenerateToday(commonYearAnchor, '2025-02-28'), true);
+});
+
+function recurrencePersistenceSandbox(tasks, saveResult) {
+  const appSettings = {
+    lastRecurringDates: {},
+    lastTaskId: Math.max(0, ...tasks.map((task) => task.id))
+  };
+  let saveCalls = 0;
+  let toastCalls = 0;
+  const sandbox = {
+    tasks,
+    appSettings,
+    todayStr: () => '2026-11-04',
+    getNextTaskId: () => ++appSettings.lastTaskId,
+    saveData: () => {
+      saveCalls++;
+      return saveResult;
+    },
+    showToast: () => { toastCalls++; }
+  };
+  vm.runInNewContext(
+    extractFunction('_shouldGenerateToday') + '\\n' +
+    extractFunction('_generateRecurringTasksForToday') + '\\n' +
+    extractFunction('_generateAndPersistRecurringTasks'),
+    sandbox
+  );
+  return {
+    sandbox,
+    saveCalls: () => saveCalls,
+    toastCalls: () => toastCalls
+  };
+}
+
+test('failed recurring-task persistence rolls back tasks, series dates, and next ID', () => {
+  const rootTask = {
+    id: 5, name: 'مهمة يومية', type: 'معرفية', status: 'pending',
+    expected: 25, actual: null, plannedDate: '2026-01-01', plannedTime: '',
+    completedAt: null, createdAt: 1, recurrence: 'daily'
+  };
+  const harness = recurrencePersistenceSandbox([rootTask], false);
+
+  assert.equal(harness.sandbox._generateAndPersistRecurringTasks(), 0);
+  assert.equal(harness.sandbox.tasks.length, 1);
+  assert.deepEqual(harness.sandbox.appSettings.lastRecurringDates, {});
+  assert.equal(harness.sandbox.appSettings.lastTaskId, 5);
+  assert.equal(harness.saveCalls(), 1);
+  assert.equal(harness.toastCalls(), 1);
+});
+
+test('successful recurring-task persistence is idempotent on repeated startup', () => {
+  const rootTask = {
+    id: 5, name: 'مهمة يومية', type: 'معرفية', status: 'pending',
+    expected: 25, actual: null, plannedDate: '2026-01-01', plannedTime: '',
+    completedAt: null, createdAt: 1, recurrence: 'daily'
+  };
+  const harness = recurrencePersistenceSandbox([rootTask], true);
+
+  assert.equal(harness.sandbox._generateAndPersistRecurringTasks(), 1);
+  assert.equal(harness.sandbox.tasks.length, 2);
+  assert.equal(harness.sandbox.tasks[1]._sourceTaskId, 5);
+  assert.equal(harness.sandbox._generateAndPersistRecurringTasks(), 0);
+  assert.equal(harness.sandbox.tasks.length, 2);
+  assert.equal(harness.saveCalls(), 1);
+  assert.equal(harness.sandbox.appSettings.lastRecurringDates['series:5'], '2026-11-04');
+});
