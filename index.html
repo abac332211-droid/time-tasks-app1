@@ -5771,6 +5771,14 @@ async function _syncAllTaskNotifications() {
   }
 }
 
+function _queueTaskReminderSync(task) {
+  if (!_hasCapacitorLocalNotifications()) return;
+  _syncTaskNotification(task).then(function(ok) {
+    if (!ok && _taskReminderAt(task))
+      showToast("⚠️ حُفظت المهمة، لكن تعذرت جدولة تذكيرها.");
+  }).catch(function() {});
+}
+
 async function _setCapacitorNotificationsEnabled(enabled) {
   if (!_hasCapacitorLocalNotifications()) return false;
   var LN = window.Capacitor.Plugins.LocalNotifications;
