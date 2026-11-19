@@ -605,3 +605,169 @@ test('successful recurring-task persistence is idempotent on repeated startup', 
   assert.equal(harness.saveCalls(), 1);
   assert.equal(harness.sandbox.appSettings.lastRecurringDates['series:5'], '2026-11-04');
 });
+
+
+function taskFormSandbox(options = {}) {
+  const values = {
+    taskName: 'مهمة اختبار',
+    taskType: 'معرفية',
+    taskExpected: '25',
+    taskDate: '2026-11-19',
+    taskTime: '09:00',
+    taskProject: '',
+    taskPriority: '',
+    taskRecurrence: '',
+    taskActual: '',
+    ...(options.values || {})
+  };
+  const elements = Object.create(null);
+  const tasks = options.tasks || [];
+  const sandbox = {
+    tasks,
+    editingId: options.editingId ?? null,
+    _pendingUncompleteConfirm: false,
+    document: {
+      getElementById(id) {
+        if (!elements[id]) {
+          elements[id] = {
+            value: values[id] ?? '',
+            attributes: Object.create(null),
+            removeAttribute(name) { delete this.attributes[name]; },
+            setAttribute(name, value) { this.attributes[name] = value; }
+          };
+        }
+        return elements[id];
+      }
+    },
+    todayStr: () => '2026-11-19',
+    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    isValidLocalTime: (value) => /^\\d{2}:\\d{2}$/.test(value),
+    localDateTimeString: () => '2026-11-19T09:00:00',
+    getNextTaskId: options.getNextTaskId || (() => 10),
+    saveData: options.saveData || (() => true),
+    clearForm: () => { sandbox.clearFormCalls++; },
+    clearFormCalls: 0,
+    showAlertModal: () => { sandbox.alertCalls++; },
+    alertCalls: 0,
+    showToast: () => { sandbox.toastCalls++; },
+    toastCalls: 0,
+    renderAll: () => { sandbox.renderCalls++; },
+    renderCalls: 0,
+    cancelEdit: () => { sandbox.cancelEditCalls++; },
+    cancelEditCalls: 0,
+    showConfirmModal: (title, body, onConfirm) => { onConfirm(); }
+  };
+  vm.runInNewContext(extractFunction('saveTask'), sandbox);
+  return { sandbox, elements };
+}
+
+test('new task is not retained in memory when persistence fails', () => {
+  const harness = taskFormSandbox({ saveData: () => false });
+
+  harness.sandbox.saveTask();
+
+  assert.equal(harness.sandbox.tasks.length, 0);
+  assert.equal(harness.sandbox.renderCalls, 0);
+  assert.equal(harness.sandbox.toastCalls, 0);
+});
+
+test('new task is retained and rendered only after successful persistence', () => {
+  const harness = taskFormSandbox({ saveData: () => true });
+
+  harness.sandbox.saveTask();
+
+  assert.equal(harness.sandbox.tasks.length, 1);
+  assert.equal(harness.sandbox.tasks[0].id, 10);
+  assert.equal(harness.sandbox.tasks[0].name, 'مهمة اختبار');
+  assert.equal(harness.sandbox.tasks[0].status, 'pending');
+  assert.equal(harness.sandbox.tasks[0].plannedDate, '2026-11-19');
+  assert.equal(harness.sandbox.renderCalls, 1);
+  assert.equal(harness.sandbox.clearFormCalls, 1);
+});
+
+test('editing a task restores every edited field when persistence fails', () => {
+  const original = {
+    id: 7, name: 'الاسم السابق', type: 'إدارية', expected: 40,
+    plannedDate: '2026-11-10', plannedTime: '08:00',
+    actual: null, status: 'pending', completedAt: null,
+    projectId: null, priority: null, recurrence: null
+  };
+  const harness = taskFormSandbox({
+    tasks: [original],
+    editingId: 7,
+    saveData: () => false,
+    values: {
+      taskName: 'اسم جديد',
+      taskType: 'إبداعية',
+      taskExpected: '60',
+      taskDate: '2026-11-19',
+      taskTime: '11:30',
+      taskPriority: 'high',
+      taskRecurrence: 'daily',
+      taskActual: '35'
+    }
+  });
+
+  harness.sandbox.saveTask();
+
+  assert.equal(harness.sandbox.tasks.length, 1);
+  assert.equal(original.name, 'الاسم السابق');
+  assert.equal(original.type, 'إدارية');
+  assert.equal(original.expected, 40);
+  assert.equal(original.plannedDate, '2026-11-10');
+  assert.equal(original.plannedTime, '08:00');
+  assert.equal(original.actual, null);
+  assert.equal(original.status, 'pending');
+  assert.equal(original.priority, null);
+  assert.equal(original.recurrence, null);
+  assert.equal(harness.sandbox.renderCalls, 0);
+});
+
+test('task completion is rolled back when persistence fails', () => {
+  const task = {
+    id: 9, name: 'مهمة معلقة', expected: 25,
+    actual: null, status: 'pending', completedAt: null
+  };
+  const sandbox = {
+    tasks: [task],
+    _focusTimer: { taskId: null },
+    isTaskCancelled: () => false,
+    showPromptModal: (title, body, value, placeholder, callback) => callback('30'),
+    localDateTimeString: () => '2026-11-19T09:00:00',
+    saveData: () => false,
+    renderAll: () => { throw new Error('must not render unpersisted completion'); },
+    showToast: () => { throw new Error('must not announce unpersisted completion'); },
+    showAlertModal: () => {}
+  };
+  vm.runInNewContext(extractFunction('toggleTask'), sandbox);
+
+  sandbox.toggleTask(9);
+
+  assert.equal(task.actual, null);
+  assert.equal(task.status, 'pending');
+  assert.equal(task.completedAt, null);
+});
+
+test('task deletion restores the task and linked focus timer when persistence fails', () => {
+  const task = { id: 12, name: 'مهمة مرتبطة', status: 'pending' };
+  let timerSaveCalls = 0;
+  const sandbox = {
+    tasks: [task],
+    editingId: null,
+    _focusTimer: { taskId: 12 },
+    showConfirmModal: (title, body, callback) => callback(),
+    _saveFocusTimer: () => { timerSaveCalls++; return true; },
+    _renderFocusTimer: () => {},
+    saveData: () => false,
+    renderAll: () => { throw new Error('must not render unpersisted deletion'); },
+    showToast: () => {}
+  };
+  vm.runInNewContext(extractFunction('deleteTask'), sandbox);
+
+  sandbox.deleteTask(12);
+
+  assert.equal(sandbox.tasks.length, 1);
+  assert.equal(sandbox.tasks[0], task);
+  assert.equal(sandbox._focusTimer.taskId, 12);
+  assert.equal(timerSaveCalls, 2);
+});
