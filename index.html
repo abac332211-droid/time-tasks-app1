@@ -386,6 +386,12 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
     <div class="progress"><div class="progress-bar" id="homeBar"></div></div>
   </div>
 
+  <div class="card accent-info">
+    <h3>📅 مواعيد المهام</h3>
+    <p class="small" style="margin-top:-4px;">المتأخرة، ومهام اليوم، والمواعيد القادمة.</p>
+    <div id="homeSchedule"></div>
+  </div>
+
   <div class="card accent-warning">
     <h3>🆘 عالق؟ لا تستطيع البدء؟</h3>
     <p class="small" style="margin-top:-4px;">اضغط الزر — سأساعدك على كسر حاجز البدء في دقيقة.</p>
@@ -582,6 +588,7 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
     <input id="searchInput" type="text" placeholder="ابحث..." oninput="renderTasks()" aria-label="بحث">
     <div class="filters">
       <button class="active" onclick="setFilter('all', this)">الكل</button>
+      <button onclick="setFilter('today', this)">📅 اليوم</button>
       <button onclick="setFilter('urgent', this)">🔥 عاجل</button>
       <button onclick="setFilter('pending', this)">قيد الانتظار</button>
       <button onclick="setFilter('done', this)">منجزة</button>
@@ -4647,6 +4654,7 @@ function renderTasks() {
   let filtered = tasks.filter(function(t) {
     if (search && !t.name.toLowerCase().includes(search)) return false;
     if (typeFilter && t.type !== typeFilter) return false;
+    if (currentFilter === "today") return t.plannedDate === todayStr();
     if (currentFilter === "done") return isTaskDone(t);
     if (currentFilter === "pending") return !isTaskDone(t) && !isTaskCancelled(t);
     if (currentFilter === "late") return isLate(t);
@@ -4710,6 +4718,55 @@ return da - db;
         '</div>' +
       '</div>';
   }).join("");
+}
+
+function _getHomeScheduleBuckets(sourceTasks, todayValue, isLateCheck) {
+  var day = typeof todayValue === "string" ? todayValue : todayStr();
+  var lateCheck = typeof isLateCheck === "function" ? isLateCheck : isLate;
+  var list = Array.isArray(sourceTasks) ? sourceTasks.filter(function(task) {
+    return task && !isTaskDone(task) && !isTaskCancelled(task)
+      && isValidCalendarDate(task.plannedDate);
+  }) : [];
+  var overdue = list.filter(function(task) { return lateCheck(task); });
+  var today = list.filter(function(task) { return task.plannedDate === day && !lateCheck(task); });
+  var upcoming = list.filter(function(task) { return task.plannedDate > day; });
+  function sortByDueDate(items) {
+    return items.slice().sort(function(a, b) {
+      var da = parseTaskDate(a.plannedDate, a.plannedTime) || new Date(8640000000000000);
+      var db = parseTaskDate(b.plannedDate, b.plannedTime) || new Date(8640000000000000);
+      if (da.getTime() !== db.getTime()) return da - db;
+      return priorityRank(a.priority) - priorityRank(b.priority);
+    });
+  }
+  return { overdue: sortByDueDate(overdue), today: sortByDueDate(today), upcoming: sortByDueDate(upcoming) };
+}
+
+function renderHomeSchedule() {
+  var container = document.getElementById("homeSchedule");
+  if (!container) return;
+  var groups = _getHomeScheduleBuckets(tasks, todayStr(), isLate);
+  var sections = [
+    { title: "⚠️ متأخرة", items: groups.overdue },
+    { title: "📅 اليوم", items: groups.today },
+    { title: "🔜 قادمة", items: groups.upcoming }
+  ];
+  var metrics = sections.map(function(section) {
+    return '<div class="stat-box"><div class="stat-number">' + section.items.length
+      + '</div><small>' + section.title + '</small></div>';
+  }).join("");
+  var content = sections.map(function(section) {
+    var rows = section.items.slice(0, 3).map(function(task) {
+      var when = formatDate(task.plannedDate) + (task.plannedTime ? " — " + escapeHTML(task.plannedTime) : "");
+      return '<div class="small" style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">'
+        + '<span style="font-weight:600;min-width:0;overflow-wrap:anywhere;">' + escapeHTML(task.name) + '</span>'
+        + '<span style="white-space:nowrap;color:var(--muted);">' + when + '</span></div>';
+    }).join("");
+    var more = section.items.length > 3
+      ? '<div class="small" style="margin-top:5px;">+' + (section.items.length - 3) + ' مهام أخرى</div>' : "";
+    return '<div style="margin-top:10px;"><strong>' + section.title + '</strong>'
+      + (rows || '<div class="small" style="padding:5px 0;color:var(--muted);">لا توجد مهام</div>') + more + '</div>';
+  }).join("");
+  container.innerHTML = '<div class="stats-grid">' + metrics + '</div>' + content;
 }
 
 function renderStats() {
@@ -4789,6 +4846,7 @@ function renderAll() {
     if (!b.hasAttribute("aria-pressed")) b.setAttribute("aria-pressed", b.classList.contains("active") ? "true" : "false");
   });
   renderTasks();
+  renderHomeSchedule();
   renderStats();
   renderDailyLog();
   renderWeeklyReport();
