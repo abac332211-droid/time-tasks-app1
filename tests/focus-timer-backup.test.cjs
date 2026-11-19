@@ -568,6 +568,7 @@ test('timer rehydration removes a reference to a task absent from restored tasks
     tasks: [],
     _focusTimer: state,
     _saveFocusTimer() {
+      storage.setItem('focusTimer', JSON.stringify(state));
       savedState = JSON.parse(storage.getItem('focusTimer'));
       return true;
     }
