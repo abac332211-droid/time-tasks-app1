@@ -7509,6 +7509,11 @@ _setupVisibilityListener();
 if (_focusTimer.running) _startDisplayTick();
 
 _updateNotifToggleUI();
+if (_hasCapacitorLocalNotifications()) {
+  _syncAllTaskNotifications().then(function(ok) {
+    if (!ok) console.warn("Some task reminders could not be synchronized.");
+  }).catch(function(e) { console.warn("Task reminder startup sync failed:", e); });
+}
 
 // FIX F1: عرض التوست المؤجل بعد reload المستحث بالاستيراد أو التراجع
 try {
