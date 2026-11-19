@@ -29,6 +29,27 @@ jobs:
       - name: Run regression tests
         run: npm test
 
+      - name: Prepare 2.9.1 candidate web ZIP
+        if: github.event_name == 'push' && github.ref == 'refs/heads/codex/v2.9.1-stability'
+        id: candidate_web
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p candidate-web
+          cp index.html manifest.json sw.js docs/TESTING-2.9.1.md candidate-web/
+          cp icon-192.png icon-512.png icon-512-maskable.png apple-touch-icon.png favicon-32.png favicon-16.png candidate-web/
+          cd candidate-web
+          zip -9 -r "../time-tasks-app-${VERSION}-candidate-web.zip" .
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload 2.9.1 candidate web ZIP
+        if: github.event_name == 'push' && github.ref == 'refs/heads/codex/v2.9.1-stability'
+        uses: actions/upload-artifact@v4
+        with:
+          name: time-tasks-app-${{ steps.candidate_web.outputs.version }}-candidate-web
+          path: time-tasks-app-${{ steps.candidate_web.outputs.version }}-candidate-web.zip
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Prepare downloadable web ZIP
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
