@@ -93,6 +93,7 @@ function makeNotificationHarness({ enabled = true, permission = 'granted', tasks
 const reminderFunctions = [
   '_taskNotificationId',
   '_taskReminderAt',
+  '_cancelTaskNotification',
   '_syncTaskNotification',
   '_syncAllTaskNotifications'
 ];
@@ -227,6 +228,7 @@ test('queued task reminder updates and cancellations run sequentially', async ()
     '_taskReminderAt',
     '_cancelTaskNotification',
     '_syncTaskNotification',
+    '_syncAllTaskNotifications',
     '_queueTaskReminderSync',
     '_queueTaskReminderCancellation'
   ];
