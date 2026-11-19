@@ -20,7 +20,9 @@ def version_parts(value: str) -> tuple[int, int, int]:
 
 def android_version_code(value: str) -> int:
     major, minor, patch = version_parts(value)
-    # Monotonic for normal SemVer progression: major, then minor, then patch.
+    # The decimal slots must be bounded to keep SemVer tuples collision-free.
+    if minor > 999 or patch > 999:
+        raise ValueError("Android versionCode requires minor and patch components <= 999")
     code = major * 1_000_000 + minor * 1_000 + patch
     if code < 1 or code > 2_100_000_000:
         raise ValueError(f"Calculated Android versionCode is out of range: {code}")
