@@ -591,6 +591,7 @@ function recurrencePersistenceSandbox(tasks, saveResult) {
       saveCalls++;
       return saveResult;
     },
+    _queueTaskReminderSync: () => {},
     showToast: () => { toastCalls++; }
   };
   vm.runInNewContext(
@@ -678,6 +679,8 @@ function taskFormSandbox(options = {}) {
     localDateTimeString: () => '2026-11-19T09:00:00',
     getNextTaskId: options.getNextTaskId || (() => 10),
     saveData: options.saveData || (() => true),
+    _queueTaskReminderSync: () => {},
+    _queueTaskReminderCancellation: () => {},
     clearForm: () => { sandbox.clearFormCalls++; },
     clearFormCalls: 0,
     showAlertModal: (title, message) => {
