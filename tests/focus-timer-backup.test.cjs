@@ -214,7 +214,7 @@ function extractTopLevelSource(name) {
   const marker = `function ${name}(`;
   const start = html.indexOf(marker);
   assert.notEqual(start, -1, `Missing function ${name}`);
-  const end = html.indexOf('\\n}', start);
+  const end = html.indexOf('\n}', start);
   assert.notEqual(end, -1, `Could not find end of function ${name}`);
   return html.slice(start, end + 2);
 }
