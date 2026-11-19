@@ -1,0 +1,142 @@
+name: Build signed Android Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or tag to build after review
+        required: true
+        type: string
+        default: codex/v2.9.1-stability
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare web files
+        run: |
+          mkdir -p web
+          cp index.html manifest.json sw.js web/
+          cp *.png web/ 2>/dev/null || true
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Configure Capacitor
+        run: |
+          rm -f capacitor.config.json capacitor.config.ts
+          cat > capacitor.config.json << 'EOF'
+          {
+            "appId": "com.abac332211.timetasks",
+            "appName": "TimeTasks",
+            "webDir": "web"
+          }
+          EOF
+          npx cap add android
+
+      - name: Fix Android project
+        run: |
+          sed -i 's|<string name="app_name">.*</string>|<string name="app_name">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
+          sed -i 's|<string name="title_activity_main">.*</string>|<string name="title_activity_main">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            folder="android/app/src/main/res/mipmap-$d"
+            if [ -d "$folder" ]; then
+              cp icon-192.png "$folder/ic_launcher.png" 2>/dev/null || true
+              cp icon-192.png "$folder/ic_launcher_round.png" 2>/dev/null || true
+              cp icon-512.png "$folder/ic_launcher_foreground.png" 2>/dev/null || true
+            fi
+          done
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Align Android version metadata
+        id: version
+        run: |
+          python3 scripts/configure-android-version.py
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD in GitHub Actions secrets."
+            exit 1
+          fi
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          test -s "$ANDROID_KEYSTORE_PATH"
+          keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Configure release signing
+        run: |
+          cat > android/app/release-signing.gradle << 'EOF'
+          android {
+            signingConfigs {
+              release {
+                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+              }
+            }
+            buildTypes {
+              release {
+                signingConfig signingConfigs.release
+              }
+            }
+          }
+          EOF
+          printf "\napply from: 'release-signing.gradle'\n" >> android/app/build.gradle
+
+      - name: Build signed Release APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew clean assembleRelease --no-daemon
+
+      - name: Verify APK signature and calculate checksum
+        run: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
+          sha256sum "$APK" | tee "$APK.sha256"
+
+      - name: Upload signed Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: time-tasks-app-${{ steps.version.outputs.version }}-signed-release
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/release/app-release.apk.sha256
+          retention-days: 30
