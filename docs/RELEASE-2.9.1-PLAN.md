@@ -338,3 +338,24 @@ PR #6 ما زال Draft ولم يُدمج.
   - artifact: `time-tasks-app-2.9.0-candidate-web`.
   - SHA-256 لملف ZIP الداخلي: `dc004e5ba8df63458ea828cf7982dd4ec0ecf821de6b3b435c039b208c285d26`.
 - رقم التطبيق الداخلي في Web وAPK ما زال 2.9.0 عمدًا حتى تجميد مرشح 2.9.1.
+
+
+### آخر تحقق وبناء على رأس الفرع — 19 نوفمبر 2026
+
+- رأس الفرع: `c0bf39c51a285ee545a3ba68df1f5e2fa95dfb71`.
+- تحقق GitHub Actions على هذا الالتزام: **82/82 ناجحة، 0 فشل، 0 تخطٍ**.
+  - [اختبارات الفرع](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44602781355).
+  - [اختبارات PR #6](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44602797942).
+- بناء Android Debug على رأس الفرع اكتمل بنجاح:
+  - [Build APK](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44602781310).
+  - artifact: `time-tasks-app-apk`، والملف الناتج `app-debug.apk`.
+  - SHA-256 لأرشيف artifact: `c214444d8faa8be8114dd590e20ec5452dd45ee01eaab37cb19e051ea24f0b35`.
+  - SHA-256 لملف APK المستخرج: `b03fb39cc44e8d99d3c1685c1476bbf1eba14f1333789a3af20e35f7764bc483`.
+  - الحجم: 6,048,090 بايت.
+  - جرى التحقق من وجود لوحة المواعيد والبحث الموسّع ومزامنة تذكيرات المهام وإضافة Local Notifications داخل APK.
+- حزمة Web المرشحة من نفس رأس الفرع:
+  - artifact: `time-tasks-app-2.9.0-candidate-web`.
+  - SHA-256 لملف ZIP الداخلي: `1e1882658ad2edf2e36abf77df3a438aa962e38969c69e8e09dcf1828fb86c13`.
+  - تحتوي دليل `TESTING-2.9.1.md` وملفات PWA والأيقونات.
+- كلا البناءين ما زالا يحملان إصدار التطبيق الداخلي 2.9.0؛ لم يُرفع رقم الإصدار إلى 2.9.1 قبل تجميد المرشح.
+- PR #6 لا يزال Draft ومفتوحًا وغير مدمج.
