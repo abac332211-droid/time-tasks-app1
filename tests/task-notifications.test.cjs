@@ -41,9 +41,10 @@ function validTime(value) {
   return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
 }
 
-function makeNotificationHarness({ enabled = true, permission = 'granted', tasks = [], pending = [] } = {}) {
+function makeNotificationHarness({ enabled = true, permission = 'granted', tasks = [], pending = [], failCancelAll = false } = {}) {
   const calls = { cancel: [], schedule: [], checkPermissions: 0, requestPermissions: 0, cancelAll: 0 };
   let currentPending = pending.map((item) => ({ ...item }));
+  let enabledState = enabled;
   const LN = {
     async getPending() {
       return { notifications: currentPending.map((item) => ({ ...item })) };
@@ -68,18 +69,19 @@ function makeNotificationHarness({ enabled = true, permission = 'granted', tasks
     },
     async cancelAll() {
       calls.cancelAll++;
+      if (failCancelAll) throw new Error('simulated cancel-all failure');
       currentPending = [];
     }
   };
   const context = {
     console,
     tasks,
-    _getNotificationsPref: () => ({ enabled }),
+    _getNotificationsPref: () => ({ enabled: enabledState }),
     _hasCapacitorLocalNotifications: () => true,
     window: { Capacitor: { Plugins: { LocalNotifications: LN } } },
     isValidCalendarDate: validDate,
     isValidLocalTime: validTime,
-    _setNotificationsPref: (value) => { context.preference = value; return true; },
+    _setNotificationsPref: (value) => { enabledState = !!value; context.preference = enabledState; return true; },
     _queueAllTaskReminderSync: async () => true,
     _taskReminderSyncQueue: Promise.resolve(true),
     storageRecoveryRequired: false,
@@ -238,4 +240,24 @@ test('queued task reminder updates and cancellations run sequentially', async ()
   assert.equal(harness.calls.schedule[0].extra.taskId, '31');
   assert.equal(harness.calls.cancel.length, 2);
   assert.deepEqual(harness.pending(), []);
+});
+
+test('failed native cancel-all restores the prior enabled preference', async () => {
+  const harness = makeNotificationHarness({
+    enabled: true,
+    failCancelAll: true,
+    pending: [
+      { id: 777, extra: { kind: 'task-reminder', taskId: '42' } },
+      { id: 2000000000, extra: { kind: 'focus-transition' } }
+    ]
+  });
+  const { _setCapacitorNotificationsEnabled } = loadFunctions(
+    ['_setCapacitorNotificationsEnabled'],
+    harness.context
+  );
+
+  assert.equal(await _setCapacitorNotificationsEnabled(false), false);
+  assert.equal(harness.context.preference, true);
+  assert.deepEqual(harness.pending().map((item) => item.id), [777, 2000000000]);
+  assert.equal(harness.calls.cancelAll, 1);
 });
