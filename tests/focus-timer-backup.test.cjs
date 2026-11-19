@@ -449,3 +449,137 @@ test('timer loader preserves an ended Pomodoro phase pending user confirmation',
   assert.equal(harness.state.pendingPhaseEndedAt, 55_000);
   assert.equal(harness.state.taskId, 10);
 });
+
+
+test('paused stopwatch backup rehydrates from storage without restarting', () => {
+  const saved = buildSnapshot(
+    timer({ mode: 'stopwatch', phase: 'work', baseElapsed: 2_400 }),
+    90_000,
+    2_400,
+    Infinity,
+    new Set()
+  );
+  const storage = memoryStorage({ focusTimer: JSON.stringify(saved) });
+  const state = {
+    mode: 'pomodoro',
+    phase: 'work',
+    running: false,
+    baseElapsed: 0,
+    startedAt: null,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: null,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null
+  };
+  let writes = 0;
+  const context = {
+    FOCUS_TIMER_KEY: 'focusTimer',
+    localStorage: storage,
+    tasks: [],
+    _focusTimer: state,
+    _saveFocusTimer() { writes++; return true; }
+  };
+  const load = vm.runInNewContext(
+    '(' + extractTopLevelSource('_loadFocusTimer') + ')',
+    context
+  );
+
+  load();
+
+  assert.equal(state.mode, 'stopwatch');
+  assert.equal(state.running, false);
+  assert.equal(state.startedAt, null);
+  assert.equal(state.baseElapsed, 2_400);
+  assert.equal(writes, 0);
+});
+
+test('pending Pomodoro confirmation survives timer rehydration without auto-resuming', () => {
+  const saved = buildSnapshot(
+    timer({
+      mode: 'pomodoro',
+      phase: 'work',
+      baseElapsed: 1_500,
+      running: false,
+      awaitingConfirmation: true,
+      pendingPhaseEndedAt: 55_000
+    }),
+    60_000,
+    1_500,
+    1_500,
+    new Set([10])
+  );
+  const storage = memoryStorage({ focusTimer: JSON.stringify(saved) });
+  const state = {
+    mode: 'stopwatch',
+    phase: 'short-break',
+    running: false,
+    baseElapsed: 0,
+    startedAt: null,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: null,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null
+  };
+  const context = {
+    FOCUS_TIMER_KEY: 'focusTimer',
+    localStorage: storage,
+    tasks: [{ id: 10 }],
+    _focusTimer: state,
+    _saveFocusTimer() { return true; }
+  };
+  const load = vm.runInNewContext(
+    '(' + extractTopLevelSource('_loadFocusTimer') + ')',
+    context
+  );
+
+  load();
+
+  assert.equal(state.mode, 'pomodoro');
+  assert.equal(state.phase, 'work');
+  assert.equal(state.running, false);
+  assert.equal(state.startedAt, null);
+  assert.equal(state.baseElapsed, 1_500);
+  assert.equal(state.awaitingConfirmation, true);
+  assert.equal(state.pendingPhaseEndedAt, 55_000);
+  assert.equal(state.taskId, 10);
+});
+
+test('timer rehydration removes a reference to a task absent from restored tasks', () => {
+  const saved = buildSnapshot(timer({ running: false, startedAt: null }), 90_000, 300, 1_500, new Set([10]));
+  const storage = memoryStorage({ focusTimer: JSON.stringify(saved) });
+  const state = {
+    mode: 'pomodoro',
+    phase: 'work',
+    running: false,
+    baseElapsed: 0,
+    startedAt: null,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: null,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null
+  };
+  let savedState = null;
+  const context = {
+    FOCUS_TIMER_KEY: 'focusTimer',
+    localStorage: storage,
+    tasks: [],
+    _focusTimer: state,
+    _saveFocusTimer() {
+      savedState = JSON.parse(storage.getItem('focusTimer'));
+      return true;
+    }
+  };
+  const load = vm.runInNewContext(
+    '(' + extractTopLevelSource('_loadFocusTimer') + ')',
+    context
+  );
+
+  load();
+
+  assert.equal(state.taskId, null);
+  assert.equal(savedState.taskId, null);
+  assert.equal(state.running, false);
+});
