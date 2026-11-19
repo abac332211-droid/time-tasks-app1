@@ -640,8 +640,8 @@ function taskFormSandbox(options = {}) {
       }
     },
     todayStr: () => '2026-11-19',
-    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
-    isValidLocalTime: (value) => /^\\d{2}:\\d{2}$/.test(value),
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    isValidLocalTime: (value) => /^\d{2}:\d{2}$/.test(value),
     localDateTimeString: () => '2026-11-19T09:00:00',
     getNextTaskId: options.getNextTaskId || (() => 10),
     saveData: options.saveData || (() => true),
