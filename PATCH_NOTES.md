@@ -2,9 +2,9 @@
 
 ## Scope
 
-This patch corrects a data-integrity gap in the 2.9.0 source snapshot: the full backup previously exported focus sessions and focus settings, but omitted the current focus-timer state.
+This patch closes a data-integrity gap in the TimeTasks 2.9.0 source: the full backup exported focus sessions and focus settings, but omitted the current focus-timer state.
 
-### Changes
+## Changes
 
 1. Adds `data.focusTimer` to new backups.
 2. Exports the timer as a **paused snapshot**. A stopwatch or Pomodoro timer does not resume elapsed time automatically after restore.
@@ -21,28 +21,16 @@ This patch corrects a data-integrity gap in the 2.9.0 source snapshot: the full 
 Run from the repository root:
 
 ```bash
-node --test tests/focus-timer-backup.test.cjs
+npm test
 ```
 
-The test file covers snapshotting, paused stopwatch behavior, active and completed Pomodoro behavior, invalid task references, validator integration, and version-1 compatibility.
-
-For CI integration, update the existing `package.json` test script from:
-
-```json
-"test": "node --test tests/regression.test.cjs"
-```
-
-to:
-
-```json
-"test": "node --test tests/*.test.cjs"
-```
-
-This retains the existing regression suite and adds the new test file to the normal CI run.
+The test command runs both:
+- `tests/regression.test.cjs` — existing application regression coverage.
+- `tests/focus-timer-backup.test.cjs` — snapshotting, paused stopwatch behavior, active and completed Pomodoro behavior, invalid task references, validator integration, and version-1 compatibility.
 
 ## Review boundaries
 
-- No app runtime features were removed.
-- The app version string was not changed; release/version alignment must be completed against the live repository files, not this partial source snapshot.
-- This patch has not been committed or pushed. GitHub write access was not available in this session, so apply it to the repository branch and run the full repository CI before merging.
-- The tests here are focused unit/regression tests, not Android device or browser end-to-end tests.
+- No app runtime features were intentionally removed by this patch.
+- The app version remains 2.9.0 while this stability work is integrated; version 2.9.1 must be set consistently only after the release source is frozen.
+- The patch is committed on `codex/v2.9.1-stability`; it has not been merged into `main`.
+- These focused tests do not replace Android device or browser end-to-end testing.
