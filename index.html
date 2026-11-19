@@ -4646,13 +4646,34 @@ function setFilter(f, btn) {
   renderTasks();
 }
 
+function _taskMatchesSearch(task, search, projectMap) {
+  var query = typeof search === "string" ? search.trim().toLowerCase() : "";
+  if (!query) return true;
+  if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+  var values = [task.name, task.type, task.priority, task.recurrence];
+  if (Array.isArray(task.tags)) values = values.concat(task.tags);
+  if (Array.isArray(task.checklist)) {
+    task.checklist.forEach(function(item) {
+      if (item && typeof item.text === "string") values.push(item.text);
+    });
+  }
+  if (task.projectId && projectMap && projectMap[task.projectId]) {
+    values.push(projectMap[task.projectId].name);
+  }
+  return values.some(function(value) {
+    return typeof value === "string" && value.toLowerCase().includes(query);
+  });
+}
 function renderTasks() {
   const list = document.getElementById("taskList");
   if (!list) return;
   const search = document.getElementById("searchInput").value.toLowerCase().trim();
   const typeFilter = document.getElementById("typeFilter").value;
+  // Build the project lookup once so project names can participate in search.
+  var _projMap = {};
+  try { _loadProjects().forEach(function(p) { _projMap[p.id] = p; }); } catch (_pme) {}
   let filtered = tasks.filter(function(t) {
-    if (search && !t.name.toLowerCase().includes(search)) return false;
+    if (!_taskMatchesSearch(t, search, _projMap)) return false;
     if (typeFilter && t.type !== typeFilter) return false;
     if (currentFilter === "today") return t.plannedDate === todayStr();
     if (currentFilter === "done") return isTaskDone(t);
@@ -4671,9 +4692,8 @@ function renderTasks() {
     const db = parseTaskDate(b.plannedDate, b.plannedTime) || new Date(8640000000000000);
 return da - db;
   });
-  // FIX U2 (G6a): خريطة المشاريع للعرض في البطاقة (استعلام واحد)
-  var _projMap = {};
-  try { _loadProjects().forEach(function(p) { _projMap[p.id] = p; }); } catch (_pme) {}
+  // _projMap was prepared before filtering so search and cards share one lookup.
+
   if (filtered.length === 0) {
     list.innerHTML = '<div class="empty">لا توجد مهام مطابقة 🔍</div>';
     return;
