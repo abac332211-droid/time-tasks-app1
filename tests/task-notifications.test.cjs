@@ -81,6 +81,8 @@ function makeNotificationHarness({ enabled = true, permission = 'granted', tasks
     isValidLocalTime: validTime,
     _setNotificationsPref: (value) => { context.preference = value; return true; },
     _queueAllTaskReminderSync: async () => true,
+    _taskReminderSyncQueue: Promise.resolve(true),
+    storageRecoveryRequired: false,
     preference: enabled
   };
   return { context, calls, pending: () => currentPending };
@@ -213,3 +215,27 @@ test('saving tasks and app startup both queue reminder reconciliation', () => {
   assert.match(init, /_queueAllTaskReminderSync\(\)/);
 });
 
+
+
+test('queued task reminder updates and cancellations run sequentially', async () => {
+  const task = { id: 31, name: 'مهمة مجدولة', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
+  const harness = makeNotificationHarness({ tasks: [task], permission: 'granted' });
+  const names = [
+    '_taskNotificationId',
+    '_taskReminderAt',
+    '_cancelTaskNotification',
+    '_syncTaskNotification',
+    '_queueTaskReminderSync',
+    '_queueTaskReminderCancellation'
+  ];
+  const fns = loadFunctions(names, harness.context);
+
+  const update = fns._queueTaskReminderSync(task);
+  const cancel = fns._queueTaskReminderCancellation(task.id);
+  await Promise.all([update, cancel]);
+
+  assert.equal(harness.calls.schedule.length, 1);
+  assert.equal(harness.calls.schedule[0].extra.taskId, '31');
+  assert.equal(harness.calls.cancel.length, 2);
+  assert.deepEqual(harness.pending(), []);
+});
