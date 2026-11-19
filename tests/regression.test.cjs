@@ -561,8 +561,8 @@ function recurrencePersistenceSandbox(tasks, saveResult) {
     showToast: () => { toastCalls++; }
   };
   vm.runInNewContext(
-    extractFunction('_shouldGenerateToday') + '\\n' +
-    extractFunction('_generateRecurringTasksForToday') + '\\n' +
+    extractFunction('_shouldGenerateToday') + '\n' +
+    extractFunction('_generateRecurringTasksForToday') + '\n' +
     extractFunction('_generateAndPersistRecurringTasks'),
     sandbox
   );
