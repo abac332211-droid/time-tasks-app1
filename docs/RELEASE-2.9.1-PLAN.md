@@ -319,3 +319,22 @@ PR #6 ما زال Draft ولم يُدمج.
 - PR #6 مفتوح، Draft، وقابل للدمج من ناحية Git؛ لا يعني ذلك أن الاعتماد النهائي أو الاختبارات الفعلية قد اكتملت.
 - لم يتم تعديل `main` مباشرة ولم يُدمج PR #6.
 - بناء APK Debug على آخر التزام ما زال قيد التنفيذ؛ يوجد APK Debug ناجح على الالتزام `99fb6d7f65e74bd6603617589e85c6f058f93a5d`، وقد تطابقت ملفات التطبيق الأساسية (`index.html` و`package.json` و`sw.js`) بين مصدر ذلك البناء والفرع الحالي وقت الفحص.
+
+
+### نتائج البناء الأحدث — 19 نوفمبر 2026
+
+- اختبارات CI على التزام الوثائق الأخير `49403257a6b47bc8959395e344ba6dff350382da`: **82/82 ناجحة، 0 فشل، 0 تخطٍ**.
+  - [سجل الاختبارات](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44602596962).
+  - [سجل تحقق PR #6](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44602611363).
+- بناء Android Debug اكتمل بنجاح على الالتزام `2b6af2a1d299c1906b58eb930c7a26ce1aa95e56`:
+  - [سجل Build APK](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44602351618).
+  - artifact: `time-tasks-app-apk`، يحتوي `app-debug.apk`.
+  - SHA-256 لأرشيف artifact: `9447529a8a9402a75617d47768ba8671ee809fd59818cf91af302001ab565d85`.
+  - SHA-256 لملف APK بعد استخراجه: `5978ff07f24e8f36ade2e03d4d9670e4f9436d0bc65498c4c1d0f4f70ae4a967`.
+  - حجم APK: 6,048,090 بايت.
+  - فُحصت الحزمة وظهر مكوّن `@capacitor/local-notifications` ولوحة المواعيد والبحث الموسّع ومزامنة تذكيرات المهام.
+  - يبقى Debug للاختبار وليس Release موقّعًا للتوزيع.
+- حزمة Web المرشحة بُنيت ونجح رفعها في تشغيل التحقق `44602351589`:
+  - artifact: `time-tasks-app-2.9.0-candidate-web`.
+  - SHA-256 لملف ZIP الداخلي: `dc004e5ba8df63458ea828cf7982dd4ec0ecf821de6b3b435c039b208c285d26`.
+- رقم التطبيق الداخلي في Web وAPK ما زال 2.9.0 عمدًا حتى تجميد مرشح 2.9.1.
