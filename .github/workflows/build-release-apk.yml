@@ -132,6 +132,12 @@ jobs:
           "$APKSIGNER" verify --verbose "$APK"
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -n "$AAPT"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          printf '%s\n' "$BADGING" | grep -F "package: name='com.abac332211.timetasks'"
+          if grep -Fq "package: name='com.abac332211.timetasks.debug'" <<< "$BADGING"; then
+            echo "::error::Release APK must not use the Debug application ID."
+            exit 1
+          fi
           PERMISSIONS="$("$AAPT" dump permissions "$APK")"
           printf '%s\n' "$PERMISSIONS"
           grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
