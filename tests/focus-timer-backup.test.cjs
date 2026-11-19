@@ -337,7 +337,7 @@ test('interrupted import recovery restores the previous timer and clears both ma
   const harness = restoreContext(storage);
   const recovery = vm.runInNewContext(
     extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
-    extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+    extractTopLevelSource('_recoverInterruptedImport') + '\n_recoverInterruptedImport',
     harness.context
   );
 
@@ -354,7 +354,7 @@ test('interrupted import keeps its recovery marker when the saved snapshot is mi
   const harness = restoreContext(storage);
   const recovery = vm.runInNewContext(
     extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
-    extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+    extractTopLevelSource('_recoverInterruptedImport') + '\n_recoverInterruptedImport',
     harness.context
   );
 
