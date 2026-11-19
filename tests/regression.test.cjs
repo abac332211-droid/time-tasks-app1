@@ -940,5 +940,5 @@ test('home schedule separates overdue, today, and upcoming pending tasks', () =>
 
 test('task list offers a today filter based on operational todayStr', () => {
   assert.match(extractFunction('renderTasks'), /currentFilter === "today"[\s\S]*?t\.plannedDate === todayStr\(\)/);
-  assert.match(appScript, /setFilter\('today', this\)/);
+  assert.match(html, /setFilter\('today', this\)/);
 });
