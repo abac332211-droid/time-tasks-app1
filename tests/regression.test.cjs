@@ -979,3 +979,41 @@ test('task list offers a today filter based on operational todayStr', () => {
   assert.match(extractFunction('renderTasks'), /currentFilter === "today"[\s\S]*?t\.plannedDate === todayStr\(\)/);
   assert.match(html, /setFilter\('today', this\)/);
 });
+
+
+test('task search matches name, type, priority, recurrence, tags, checklist, and project', () => {
+  const source = extractFunction('_taskMatchesSearch');
+  const matcher = vm.runInNewContext('(' + source + ')');
+  const task = {
+    name: 'مراجعة خطة الإطلاق',
+    type: 'إدارية',
+    priority: 'urgent',
+    recurrence: 'weekly',
+    tags: ['منتج', 'مراجعة'],
+    checklist: [{ text: 'تدقيق النسخة', done: false }],
+    projectId: 7
+  };
+  const projects = { 7: { name: 'مشروع TimeTasks' } };
+
+  for (const query of ['الإطلاق', 'إدارية', 'urgent', 'weekly', 'منتج', 'تدقيق النسخة', 'TimeTasks']) {
+    assert.equal(matcher(task, query, projects), true, 'expected search match for ' + query);
+  }
+  assert.equal(matcher(task, 'غير موجود', projects), false);
+  assert.equal(matcher(task, '   ', projects), true);
+});
+
+test('task search ignores malformed optional tags and checklist data safely', () => {
+  const source = extractFunction('_taskMatchesSearch');
+  const matcher = vm.runInNewContext('(' + source + ')');
+  const task = {
+    name: 'مهمة سليمة',
+    tags: ['وسم', null, 123],
+    checklist: [null, 'نص', { text: 10 }, { text: 'عنصر صحيح' }],
+    projectId: 404
+  };
+
+  assert.equal(matcher(task, 'وسم', {}), true);
+  assert.equal(matcher(task, 'عنصر صحيح', {}), true);
+  assert.equal(matcher(task, 'غير موجود', {}), false);
+  assert.equal(matcher(null, 'بحث', {}), false);
+});
