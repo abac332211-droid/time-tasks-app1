@@ -582,6 +582,7 @@ function recurrencePersistenceSandbox(tasks, saveResult) {
   };
   let saveCalls = 0;
   let toastCalls = 0;
+  const reminderSyncs = [];
   const sandbox = {
     tasks,
     appSettings,
@@ -591,7 +592,7 @@ function recurrencePersistenceSandbox(tasks, saveResult) {
       saveCalls++;
       return saveResult;
     },
-    _queueTaskReminderSync: () => {},
+    _queueTaskReminderSync: (task) => { reminderSyncs.push(task.id); },
     showToast: () => { toastCalls++; }
   };
   vm.runInNewContext(
@@ -603,7 +604,8 @@ function recurrencePersistenceSandbox(tasks, saveResult) {
   return {
     sandbox,
     saveCalls: () => saveCalls,
-    toastCalls: () => toastCalls
+    toastCalls: () => toastCalls,
+    reminderSyncs: () => reminderSyncs.slice()
   };
 }
 
@@ -637,6 +639,7 @@ test('successful recurring-task persistence is idempotent on repeated startup', 
   assert.equal(harness.sandbox._generateAndPersistRecurringTasks(), 0);
   assert.equal(harness.sandbox.tasks.length, 2);
   assert.equal(harness.saveCalls(), 1);
+  assert.deepEqual(harness.reminderSyncs(), [6]);
   assert.equal(harness.sandbox.appSettings.lastRecurringDates['series:5'], '2026-11-04');
 });
 
@@ -679,8 +682,9 @@ function taskFormSandbox(options = {}) {
     localDateTimeString: () => '2026-11-19T09:00:00',
     getNextTaskId: options.getNextTaskId || (() => 10),
     saveData: options.saveData || (() => true),
-    _queueTaskReminderSync: () => {},
-    _queueTaskReminderCancellation: () => {},
+    reminderSyncs: [],
+    _queueTaskReminderSync: (task) => { sandbox.reminderSyncs.push(task.id); return Promise.resolve(true); },
+    _queueTaskReminderCancellation: (id) => { sandbox.cancelledReminders = (sandbox.cancelledReminders || []).concat(id); },
     clearForm: () => { sandbox.clearFormCalls++; },
     clearFormCalls: 0,
     showAlertModal: (title, message) => {
@@ -728,6 +732,7 @@ test('new task is retained and rendered only after successful persistence', () =
   assert.equal(harness.sandbox.tasks[0].plannedDate, '2026-11-19');
   assert.equal(harness.sandbox.renderCalls, 1);
   assert.equal(harness.sandbox.clearFormCalls, 1);
+  assert.deepEqual(harness.sandbox.reminderSyncs, [10]);
 });
 
 test('editing a task restores every edited field when persistence fails', () => {
@@ -840,4 +845,58 @@ test('weekly recurrence stays on the original anchor weekday', () => {
   assert.equal(sandbox._shouldGenerateToday(root, '2026-11-16'), true);
   assert.equal(sandbox._shouldGenerateToday(root, '2026-11-10'), false);
   assert.equal(sandbox._shouldGenerateToday(root, '2026-10-26'), false);
+});
+
+
+test('task completion and undo synchronize reminders after successful persistence', () => {
+  const task = {
+    id: 19, name: 'مهمة موعدها قادم', expected: 25,
+    actual: null, status: 'pending', completedAt: null
+  };
+  const queued = [];
+  const sandbox = {
+    tasks: [task],
+    _focusTimer: { taskId: null },
+    isTaskCancelled: () => false,
+    showPromptModal: (_title, _body, _value, _placeholder, callback) => callback('30'),
+    localDateTimeString: () => '2026-11-19T09:00:00',
+    saveData: () => true,
+    renderAll: () => {},
+    showToast: () => {},
+    showAlertModal: () => {},
+    _queueTaskReminderSync: (value) => { queued.push({ id: value.id, status: value.status }); }
+  };
+  vm.runInNewContext(extractFunction('toggleTask'), sandbox);
+
+  sandbox.toggleTask(19);
+  assert.equal(task.status, 'done');
+  assert.deepEqual(queued, [{ id: 19, status: 'done' }]);
+
+  sandbox.toggleTask(19);
+  assert.equal(task.status, 'pending');
+  assert.equal(task.actual, null);
+  assert.deepEqual(queued, [
+    { id: 19, status: 'done' },
+    { id: 19, status: 'pending' }
+  ]);
+});
+
+test('successful task deletion queues reminder cancellation after persistence', () => {
+  const task = { id: 21, name: 'مهمة للحذف', status: 'pending' };
+  const cancelled = [];
+  const sandbox = {
+    tasks: [task],
+    editingId: null,
+    _focusTimer: { taskId: null },
+    showConfirmModal: (_title, _body, callback) => callback(),
+    saveData: () => true,
+    renderAll: () => {},
+    showToast: () => {},
+    _queueTaskReminderCancellation: (id) => { cancelled.push(id); }
+  };
+  vm.runInNewContext(extractFunction('deleteTask'), sandbox);
+
+  sandbox.deleteTask(21);
+  assert.equal(sandbox.tasks.length, 0);
+  assert.deepEqual(cancelled, [21]);
 });
