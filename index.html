@@ -1310,9 +1310,13 @@ function _generateAndPersistRecurringTasks() {
     showToast("⚠️ تعذر حفظ المهام المتكررة؛ لم نعتمد الإضافات. تحقق من مساحة التخزين ثم أعد فتح التطبيق.");
     return 0;
   }
+  if (added > 0) {
+    for (var ni = previousTasks.length; ni < tasks.length; ni++) {
+      _queueTaskReminderSync(tasks[ni]);
+    }
+  }
   return added;
 }
-
 /* ============ IDs ============ */
 
 function getNextTaskId() {
@@ -3290,6 +3294,7 @@ function toggleTask(id) {
     t.status = "pending"; t.actual = null; t.completedAt = null;
     if (saveData()) {
       renderAll();
+      _queueTaskReminderSync(t);
       showToast("↩️ تم التراجع عن الإنجاز");
     } else {
       Object.assign(t, _old);
@@ -3311,7 +3316,7 @@ function deleteTask(id) {
       _wasLinked = true;
     }
     if (saveData()) {
-      _cancelTaskNotification(id);
+      _queueTaskReminderCancellation(id);
       renderAll();
       showToast("🗑️ تم حذف المهمة" + (_wasLinked ? " — فُصل المؤقت" : ""));
     } else {
@@ -5813,6 +5818,30 @@ async function _syncAllTaskNotifications() {
 }
 
 var _taskReminderSyncQueue = Promise.resolve(true);
+function _queueTaskReminderSync(task) {
+  if (!_hasCapacitorLocalNotifications() || storageRecoveryRequired || !task) return Promise.resolve(false);
+  _taskReminderSyncQueue = _taskReminderSyncQueue
+    .catch(function() { return false; })
+    .then(function() { return _syncTaskNotification(task); })
+    .catch(function(e) {
+      console.warn("Queued task reminder update failed:", e);
+      return false;
+    });
+  return _taskReminderSyncQueue;
+}
+
+function _queueTaskReminderCancellation(taskId) {
+  if (!_hasCapacitorLocalNotifications() || storageRecoveryRequired) return Promise.resolve(false);
+  _taskReminderSyncQueue = _taskReminderSyncQueue
+    .catch(function() { return false; })
+    .then(function() { return _cancelTaskNotification(taskId); })
+    .catch(function(e) {
+      console.warn("Queued task reminder cancellation failed:", e);
+      return false;
+    });
+  return _taskReminderSyncQueue;
+}
+
 function _queueAllTaskReminderSync() {
   if (!_hasCapacitorLocalNotifications() || storageRecoveryRequired) return Promise.resolve(false);
   _taskReminderSyncQueue = _taskReminderSyncQueue
