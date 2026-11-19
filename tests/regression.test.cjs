@@ -583,7 +583,7 @@ test('failed recurring-task persistence rolls back tasks, series dates, and next
 
   assert.equal(harness.sandbox._generateAndPersistRecurringTasks(), 0);
   assert.equal(harness.sandbox.tasks.length, 1);
-  assert.deepEqual(harness.sandbox.appSettings.lastRecurringDates, {});
+  assert.equal(Object.keys(harness.sandbox.appSettings.lastRecurringDates).length, 0);
   assert.equal(harness.sandbox.appSettings.lastTaskId, 5);
   assert.equal(harness.saveCalls(), 1);
   assert.equal(harness.toastCalls(), 1);
