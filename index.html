@@ -3276,6 +3276,7 @@ function toggleTask(id) {
             _renderFocusTimer();
           }
           renderAll();
+      _queueTaskReminderSync(t);
           showToast("🎉 ممتاز! تم إنجاز المهمة");
         } else {
           Object.assign(t, _old);
@@ -3308,6 +3309,7 @@ function deleteTask(id) {
       _wasLinked = true;
     }
     if (saveData()) {
+      _cancelTaskNotification(id);
       renderAll();
       showToast("🗑️ تم حذف المهمة" + (_wasLinked ? " — فُصل المؤقت" : ""));
     } else {
