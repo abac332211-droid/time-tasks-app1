@@ -647,8 +647,12 @@ function taskFormSandbox(options = {}) {
     saveData: options.saveData || (() => true),
     clearForm: () => { sandbox.clearFormCalls++; },
     clearFormCalls: 0,
-    showAlertModal: () => { sandbox.alertCalls++; },
+    showAlertModal: (title, message) => {
+      sandbox.alertCalls++;
+      sandbox.alertMessages.push({ title, message });
+    },
     alertCalls: 0,
+    alertMessages: [],
     showToast: () => { sandbox.toastCalls++; },
     toastCalls: 0,
     renderAll: () => { sandbox.renderCalls++; },
@@ -676,6 +680,11 @@ test('new task is retained and rendered only after successful persistence', () =
 
   harness.sandbox.saveTask();
 
+  assert.equal(
+    harness.sandbox.alertCalls,
+    0,
+    JSON.stringify(harness.sandbox.alertMessages)
+  );
   assert.equal(harness.sandbox.tasks.length, 1);
   assert.equal(harness.sandbox.tasks[0].id, 10);
   assert.equal(harness.sandbox.tasks[0].name, 'مهمة اختبار');
