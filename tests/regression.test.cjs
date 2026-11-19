@@ -88,6 +88,39 @@ function timerSandbox(saveSessions, saveTimer) {
   return sandbox;
 }
 
+test('replayed pending confirmation does not log the same focus phase twice', () => {
+  const startedAt = new Date(1_000).toISOString();
+  const existing = {
+    id: 1,
+    mode: 'pomodoro',
+    phase: 'work',
+    taskId: 10,
+    taskName: 'مهمة التركيز',
+    startedAt,
+    endedAt: new Date(55_000).toISOString(),
+    durationSec: 1_500,
+    completed: true
+  };
+  const sessions = [existing];
+  let saveCalls = 0;
+  const sandbox = {
+    _focusTimer: {
+      sessionStartAt: 1_000,
+      taskId: 10,
+      mode: 'pomodoro'
+    },
+    tasks: [{ id: 10, name: 'مهمة التركيز' }],
+    _loadSessions: () => sessions.slice(),
+    _saveSessions: () => { saveCalls++; return true; },
+    showToast: () => { throw new Error('duplicate confirmation must not announce a new save'); }
+  };
+  vm.runInNewContext(extractFunction('_logSession'), sandbox);
+
+  assert.equal(sandbox._logSession('work', 1_500, true, 55_000), true);
+  assert.equal(sessions.length, 1);
+  assert.equal(saveCalls, 0);
+});
+
 test('background return freezes one Pomodoro phase and waits for explicit approval', () => {
   const sandbox = timerSandbox(null, () => true);
   sandbox._catchUp(true);
