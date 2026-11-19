@@ -48,6 +48,9 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Align Android version with app sources
+        run: python3 scripts/configure-android-version.py
+
       - name: Fix Android project
         run: |
           sed -i 's|<string name="app_name">.*</string>|<string name="app_name">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
