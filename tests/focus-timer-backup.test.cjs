@@ -208,3 +208,156 @@ test('restored pending Pomodoro confirmation is presented after initialization',
   assert.notEqual(initTimer, -1);
   assert.ok(pendingPrompt > initTimer);
 });
+
+
+function extractTopLevelSource(name) {
+  const marker = `function ${name}(`;
+  const start = html.indexOf(marker);
+  assert.notEqual(start, -1, `Missing function ${name}`);
+  const end = html.indexOf('\\n}', start);
+  assert.notEqual(end, -1, `Could not find end of function ${name}`);
+  return html.slice(start, end + 2);
+}
+
+function memoryStorage(seed = {}, faults = {}) {
+  const values = new Map(Object.entries(seed));
+  return {
+    getItem(key) {
+      if (faults.mismatchReadKey === key) return '__readback_mismatch__';
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      if (faults.throwOnSetKey === key) throw new Error('simulated quota/write failure');
+      values.set(key, String(value));
+    },
+    removeItem(key) {
+      if (faults.throwOnRemoveKey === key) throw new Error('simulated remove failure');
+      values.delete(key);
+    },
+    values
+  };
+}
+
+function storageSnapshot(prefix) {
+  return {
+    main: prefix + '-main',
+    focusSessions: prefix + '-sessions',
+    focusTimer: prefix + '-timer',
+    mentalInbox: prefix + '-inbox',
+    thoughts: prefix + '-thoughts',
+    projects: prefix + '-projects',
+    focusSettings: prefix + '-settings',
+    notifications: prefix + '-notifications'
+  };
+}
+
+function restoreContext(storage) {
+  let invalidations = 0;
+  const context = {
+    localStorage: storage,
+    STORAGE_KEY: 'app-main',
+    THOUGHTS_KEY: 'app-thoughts',
+    PROJECTS_KEY: 'app-projects',
+    FOCUS_SETTINGS_KEY: 'app-focus-settings',
+    NOTIFICATIONS_KEY: 'app-notifications',
+    IMPORT_IN_PROGRESS_KEY: 'app-import-marker',
+    PRE_IMPORT_KEY: 'app-pre-import',
+    validateV2: () => true,
+    _invalidateProjectsCache: () => { invalidations++; }
+  };
+  return {
+    context,
+    invalidationCount: () => invalidations
+  };
+}
+
+test('rollback snapshot restores and reads back the focus timer with every other key', () => {
+  const storage = memoryStorage({
+    'app-main': 'new-main',
+    'timeTasksApp_focusSessions': 'new-sessions',
+    'timeTasksApp_focusTimer': 'new-timer',
+    'timeTasksApp_mentalInbox': 'new-inbox',
+    'app-thoughts': 'new-thoughts',
+    'app-projects': 'new-projects',
+    'app-focus-settings': 'new-settings',
+    'app-notifications': 'new-notifications'
+  });
+  const harness = restoreContext(storage);
+  const restore = vm.runInNewContext(
+    '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+    harness.context
+  );
+  const snapshot = storageSnapshot('previous');
+
+  assert.equal(restore(snapshot), true);
+  assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
+  assert.equal(storage.getItem('app-main'), 'previous-main');
+  assert.equal(storage.getItem('timeTasksApp_focusSessions'), 'previous-sessions');
+  assert.equal(storage.getItem('timeTasksApp_mentalInbox'), 'previous-inbox');
+  assert.equal(storage.getItem('app-thoughts'), 'previous-thoughts');
+  assert.equal(storage.getItem('app-projects'), 'previous-projects');
+  assert.equal(storage.getItem('app-focus-settings'), 'previous-settings');
+  assert.equal(storage.getItem('app-notifications'), 'previous-notifications');
+  assert.equal(harness.invalidationCount(), 1);
+});
+
+test('rollback reports failure when focus-timer storage write or read-back fails', () => {
+  const snapshot = storageSnapshot('previous');
+  const failedWrite = memoryStorage({}, { throwOnSetKey: 'timeTasksApp_focusTimer' });
+  const writeHarness = restoreContext(failedWrite);
+  const restoreAfterWriteFailure = vm.runInNewContext(
+    '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+    writeHarness.context
+  );
+  assert.equal(restoreAfterWriteFailure(snapshot), false);
+
+  const failedReadback = memoryStorage({}, { mismatchReadKey: 'timeTasksApp_focusTimer' });
+  const readHarness = restoreContext(failedReadback);
+  const restoreAfterReadbackFailure = vm.runInNewContext(
+    '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+    readHarness.context
+  );
+  assert.equal(restoreAfterReadbackFailure(snapshot), false);
+});
+
+test('interrupted import recovery restores the previous timer and clears both markers', () => {
+  const previous = storageSnapshot('previous');
+  const storage = memoryStorage({
+    'app-import-marker': '1',
+    'app-pre-import': JSON.stringify(previous),
+    'app-main': 'partially-imported-main',
+    'timeTasksApp_focusSessions': 'partially-imported-sessions',
+    'timeTasksApp_focusTimer': 'partially-imported-timer',
+    'timeTasksApp_mentalInbox': 'partially-imported-inbox',
+    'app-thoughts': 'partially-imported-thoughts',
+    'app-projects': 'partially-imported-projects',
+    'app-focus-settings': 'partially-imported-settings',
+    'app-notifications': 'partially-imported-notifications'
+  });
+  const harness = restoreContext(storage);
+  const recovery = vm.runInNewContext(
+    extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
+    extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+    harness.context
+  );
+
+  assert.equal(recovery(), true);
+  assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
+  assert.equal(storage.getItem('app-main'), 'previous-main');
+  assert.equal(storage.getItem('app-import-marker'), null);
+  assert.equal(storage.getItem('app-pre-import'), null);
+  assert.equal(harness.invalidationCount(), 1);
+});
+
+test('interrupted import keeps its recovery marker when the saved snapshot is missing', () => {
+  const storage = memoryStorage({ 'app-import-marker': '1' });
+  const harness = restoreContext(storage);
+  const recovery = vm.runInNewContext(
+    extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
+    extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+    harness.context
+  );
+
+  assert.equal(recovery(), false);
+  assert.equal(storage.getItem('app-import-marker'), '1');
+});
