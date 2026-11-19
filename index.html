@@ -1310,6 +1310,11 @@ function _generateAndPersistRecurringTasks() {
     showToast("⚠️ تعذر حفظ المهام المتكررة؛ لم نعتمد الإضافات. تحقق من مساحة التخزين ثم أعد فتح التطبيق.");
     return 0;
   }
+  if (added > 0) {
+    for (var ni = previousTasks.length; ni < tasks.length; ni++) {
+      _queueTaskReminderSync(tasks[ni]);
+    }
+  }
   return added;
 }
 
