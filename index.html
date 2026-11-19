@@ -5944,9 +5944,19 @@ function toggleNotifications() {
   var pref = _getNotificationsPref();
   if (_hasCapacitorLocalNotifications()) {
     var newVal = !pref.enabled;
-    if (!_setNotificationsPref(newVal)) { showToast('⚠️ تعذر الحفظ'); return; }
-    _updateNotifToggleUI();
-    showToast(newVal ? '🔔 الإشعارات مفعّلة' : '🔕 الإشعارات معطّلة');
+    _setCapacitorNotificationsEnabled(newVal).then(function(ok) {
+      _updateNotifToggleUI();
+      if (!ok) {
+        showAlertModal("الإشعارات", newVal
+          ? "لم يُمنح إذن الإشعارات أو تعذر حفظ الإعداد. يمكنك المحاولة مجددًا من هذا الزر."
+          : "تعذر إلغاء الإشعارات المجدولة؛ لم نغيّر الإعداد.");
+        return;
+      }
+      showToast(newVal ? "🔔 الإشعارات مفعّلة" : "🔕 الإشعارات معطّلة");
+    }).catch(function() {
+      _updateNotifToggleUI();
+      showAlertModal("الإشعارات", "تعذر تحديث إعداد الإشعارات.");
+    });
     return;
   }
   if (_isCapacitor() && typeof Notification === 'undefined') {
