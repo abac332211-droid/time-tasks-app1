@@ -291,7 +291,7 @@ test('rollback snapshot restores and reads back the focus timer with every other
 
   assert.equal(restore(snapshot), true);
   assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
-  assert.equal(storage.getItem('app-main'), 'previous-main');
+  assert.equal(storage.getItem('app-main'), previous.main);
   assert.equal(storage.getItem('timeTasksApp_focusSessions'), 'previous-sessions');
   assert.equal(storage.getItem('timeTasksApp_mentalInbox'), 'previous-inbox');
   assert.equal(storage.getItem('app-thoughts'), 'previous-thoughts');
@@ -322,6 +322,7 @@ test('rollback reports failure when focus-timer storage write or read-back fails
 
 test('interrupted import recovery restores the previous timer and clears both markers', () => {
   const previous = storageSnapshot('previous');
+  previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] });
   const storage = memoryStorage({
     'app-import-marker': '1',
     'app-pre-import': JSON.stringify(previous),
