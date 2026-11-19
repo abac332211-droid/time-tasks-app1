@@ -3155,6 +3155,7 @@ function saveTask() {
       cancelEdit();
       showToast("✏️ تم تعديل المهمة");
       renderAll();
+      _queueTaskReminderSync(t);
     } else {
       Object.assign(t, _snap);
     }
@@ -3169,6 +3170,7 @@ function saveTask() {
       clearForm();
       showToast("➕ تمت إضافة المهمة");
       renderAll();
+      _queueTaskReminderSync(tasks[tasks.length - 1]);
     } else {
       tasks.pop();
     }
