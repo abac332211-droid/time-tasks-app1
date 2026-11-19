@@ -362,3 +362,90 @@ test('interrupted import keeps its recovery marker when the saved snapshot is mi
   assert.equal(recovery(), false);
   assert.equal(storage.getItem('app-import-marker'), '1');
 });
+
+
+function loadTimerContext(snapshot, taskRows = [{ id: 10 }]) {
+  const saved = snapshot ? JSON.stringify(snapshot) : null;
+  const values = new Map(saved === null ? [] : [['timer-key', saved]]);
+  const state = {
+    mode: 'pomodoro',
+    phase: 'work',
+    running: false,
+    baseElapsed: 0,
+    startedAt: null,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: null,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null
+  };
+  let savedAfterLoad = null;
+  const context = {
+    FOCUS_TIMER_KEY: 'timer-key',
+    localStorage: {
+      getItem(key) {
+        return values.has(key) ? values.get(key) : null;
+      },
+      setItem(key, value) {
+        values.set(key, String(value));
+        savedAfterLoad = String(value);
+      }
+    },
+    _focusTimer: state,
+    tasks: taskRows,
+    _saveFocusTimer() {
+      values.set('timer-key', JSON.stringify(state));
+      savedAfterLoad = values.get('timer-key');
+      return true;
+    }
+  };
+  return { context, state, savedValue: () => savedAfterLoad };
+}
+
+test('timer loader restores a backed-up Pomodoro snapshot in paused state', () => {
+  const snapshot = buildSnapshot(
+    timer({ baseElapsed: 120 }),
+    9_000,
+    420,
+    1_500,
+    new Set([10])
+  );
+  const harness = loadTimerContext(snapshot);
+  const loadTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
+    harness.context
+  );
+
+  loadTimer();
+
+  assert.equal(harness.state.mode, 'pomodoro');
+  assert.equal(harness.state.phase, 'work');
+  assert.equal(harness.state.running, false);
+  assert.equal(harness.state.startedAt, null);
+  assert.equal(harness.state.baseElapsed, 420);
+  assert.equal(harness.state.taskId, 10);
+});
+
+test('timer loader preserves an ended Pomodoro phase pending user confirmation', () => {
+  const snapshot = buildSnapshot(
+    timer({ baseElapsed: 1_450, startedAt: 5_000 }),
+    60_000,
+    1_500,
+    1_500,
+    new Set([10])
+  );
+  const harness = loadTimerContext(snapshot);
+  const loadTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
+    harness.context
+  );
+
+  loadTimer();
+
+  assert.equal(harness.state.running, false);
+  assert.equal(harness.state.startedAt, null);
+  assert.equal(harness.state.baseElapsed, 1_500);
+  assert.equal(harness.state.awaitingConfirmation, true);
+  assert.equal(harness.state.pendingPhaseEndedAt, 55_000);
+  assert.equal(harness.state.taskId, 10);
+});
