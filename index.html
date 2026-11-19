@@ -1310,11 +1310,6 @@ function _generateAndPersistRecurringTasks() {
     showToast("⚠️ تعذر حفظ المهام المتكررة؛ لم نعتمد الإضافات. تحقق من مساحة التخزين ثم أعد فتح التطبيق.");
     return 0;
   }
-  if (added > 0) {
-    for (var ni = previousTasks.length; ni < tasks.length; ni++) {
-      _queueTaskReminderSync(tasks[ni]);
-    }
-  }
   return added;
 }
 
@@ -2029,7 +2024,6 @@ function resetAll() {
       appSettings = fresh.settings;
       createdByVersion = fresh.createdByVersion;
       tasks = [];
-      _queueAllTaskReminderSync();
       try {
         localStorage.removeItem(PRE_IMPORT_KEY);
         localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
@@ -2059,6 +2053,7 @@ function resetAll() {
       _awaySessionPromptOpen = false;
       _applyThemePreference();
       storageRecoveryRequired = false;
+      _queueAllTaskReminderSync();
       cancelEdit();
       cancelProjectEdit();
       renderAll();
@@ -7573,11 +7568,6 @@ if (_focusTimer.running) _startDisplayTick();
 
 _queueAllTaskReminderSync();
 _updateNotifToggleUI();
-if (_hasCapacitorLocalNotifications()) {
-  _syncAllTaskNotifications().then(function(ok) {
-    if (!ok) console.warn("Some task reminders could not be synchronized.");
-  }).catch(function(e) { console.warn("Task reminder startup sync failed:", e); });
-}
 
 // FIX F1: عرض التوست المؤجل بعد reload المستحث بالاستيراد أو التراجع
 try {
