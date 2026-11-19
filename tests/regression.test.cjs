@@ -938,6 +938,43 @@ test('home schedule separates overdue, today, and upcoming pending tasks', () =>
   })), { overdue: [2], today: [1], upcoming: [3] });
 });
 
+test('task search matches project, type, priority, recurrence, and checklist text', () => {
+  const match = (query) => {
+    const sandbox = {};
+    vm.runInNewContext(extractFunction('_taskMatchesSearch'), sandbox);
+    const task = {
+      id: 3,
+      name: 'مراجعة أسبوعية',
+      type: 'إدارية',
+      priority: 'urgent',
+      recurrence: 'weekly',
+      projectId: 7,
+      checklist: [{ text: 'مراجعة الفواتير', done: false }],
+      tags: ['ميزانية']
+    };
+    return sandbox._taskMatchesSearch(task, query, { 7: { name: 'مشروع التشغيل' } });
+  };
+
+  assert.equal(match('مراجعة أسبوعية'), true);
+  assert.equal(match('إدارية'), true);
+  assert.equal(match('urgent'), true);
+  assert.equal(match('weekly'), true);
+  assert.equal(match('مراجعة الفواتير'), true);
+  assert.equal(match('ميزانية'), true);
+  assert.equal(match('مشروع التشغيل'), true);
+  assert.equal(match('غير موجود'), false);
+});
+
+test('task search treats an empty query as a match and safely ignores malformed task fields', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_taskMatchesSearch'), sandbox);
+
+  assert.equal(sandbox._taskMatchesSearch(null, 'بحث', {}), false);
+  assert.equal(sandbox._taskMatchesSearch({ name: null, tags: [null, 4], checklist: [null, {}] }, 'بحث', {}), false);
+  assert.equal(sandbox._taskMatchesSearch({ name: null }, '   ', {}), true);
+  assert.equal(sandbox._taskMatchesSearch({ name: 'قراءة' }, 'قراءة', {}), true);
+});
+
 test('task list offers a today filter based on operational todayStr', () => {
   assert.match(extractFunction('renderTasks'), /currentFilter === "today"[\s\S]*?t\.plannedDate === todayStr\(\)/);
   assert.match(html, /setFilter\('today', this\)/);
