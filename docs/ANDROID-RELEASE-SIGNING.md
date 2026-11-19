@@ -1,6 +1,6 @@
 # Android Release Signing
 
-The normal **Build APK** workflow creates a Debug APK for development checks. It is not the distributable signed Release package.
+The normal **Build APK** workflow creates a Debug APK for development checks. Its application ID is suffixed with `.debug`, so it can be installed beside the production app without replacing it. It is not the distributable signed Release package.
 
 The manual **Build signed Android Release** workflow creates `app-release.apk`, verifies its signature with Android `apksigner`, and publishes the APK and SHA-256 checksum as a workflow artifact.
 
