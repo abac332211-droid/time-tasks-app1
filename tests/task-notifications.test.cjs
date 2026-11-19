@@ -312,7 +312,7 @@ test('startup reconciliation replaces a pending reminder when task title or due 
   const fns = loadFunctions(reminderFunctions, harness.context);
 
   assert.equal(await fns._syncAllTaskNotifications(), true);
-  assert.deepEqual(harness.calls.cancel, [[id]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.calls.cancel)), [[id]]);
   assert.equal(harness.calls.schedule.length, 1);
   assert.equal(harness.calls.schedule[0].body, task.name);
   assert.equal(new Date(harness.calls.schedule[0].schedule.at).getTime(), at.getTime());
