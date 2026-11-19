@@ -102,6 +102,28 @@ test('validator rejects an invalid task reference and incomplete pending confirm
   assert.equal(validateSnapshot(incomplete, new Set([10])).valid, false);
 });
 
+test('validator rejects a pending phase end before its session start', () => {
+  const pending = buildSnapshot(
+    timer({
+      mode: 'pomodoro',
+      phase: 'work',
+      baseElapsed: 1_500,
+      running: false,
+      startedAt: null,
+      awaitingConfirmation: true,
+      pendingPhaseEndedAt: 55_000
+    }),
+    60_000,
+    1_500,
+    1_500,
+    new Set([10])
+  );
+  const invalid = { ...pending, pendingPhaseEndedAt: pending.sessionStartAt - 1 };
+
+  assert.equal(validateSnapshot(pending, new Set([10])).valid, true);
+  assert.equal(validateSnapshot(invalid, new Set([10])).valid, false);
+});
+
 test('backup builder includes the paused focus timer and uses backup format v2', () => {
   const sourceStart = html.indexOf('function buildBackupObject(');
   const sourceEnd = html.indexOf('\n}', sourceStart);
