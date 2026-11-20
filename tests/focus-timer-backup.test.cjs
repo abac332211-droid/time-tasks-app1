@@ -298,6 +298,19 @@ test('legacy format-v1 backup without focusTimer remains import-compatible', () 
   assert.equal(validateBackup(legacy).valid, true);
 });
 
+test('cold-start finalization runs after focus settings are loaded', () => {
+  const normalizedHtml = html.replace(/\\r\\n/g, '\\n');
+  const loadTimer = normalizedHtml.lastIndexOf('_loadFocusTimer();');
+  const loadSettings = normalizedHtml.indexOf('_loadFocusSettings();', loadTimer);
+  const finalize = normalizedHtml.indexOf('_finalizeFocusTimerColdStartRestore();', loadSettings);
+  const render = normalizedHtml.indexOf('renderAll();', finalize);
+
+  assert.ok(loadTimer >= 0);
+  assert.ok(loadSettings > loadTimer);
+  assert.ok(finalize > loadSettings);
+  assert.ok(render > finalize);
+});
+
 test('restored pending Pomodoro confirmation is presented after initialization', () => {
   const normalizedHtml = html.replace(/\r\n/g, '\n');
   const initTimer = normalizedHtml.lastIndexOf('_renderFocusTimer();');
@@ -598,6 +611,109 @@ test('running timer checkpoints persist elapsed time and reset the checkpoint ti
   assert.equal(persisted.running, true);
   assert.equal(context._focusTimerCheckpointAt, saveTimestamp);
   assert.equal(state.baseElapsed, 120);
+});
+
+test('cold restart preserves a Pomodoro phase that expired after its last checkpoint for user confirmation', () => {
+  const snapshot = timer({
+    mode: 'pomodoro',
+    phase: 'work',
+    running: true,
+    baseElapsed: 1_502,
+    startedAt: 5_000,
+    sessionStartAt: 1_000,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null
+  });
+  snapshot.savedAt = 60_000;
+  const harness = loadTimerContext(snapshot);
+  harness.context._phaseTargetSec = () => 1_500;
+  const loadTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
+    harness.context
+  );
+  const finalizeRestore = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_finalizeFocusTimerColdStartRestore') + ')',
+    harness.context
+  );
+
+  loadTimer();
+  finalizeRestore();
+
+  assert.equal(harness.state.running, false);
+  assert.equal(harness.state.startedAt, null);
+  assert.equal(harness.state.baseElapsed, 1_500);
+  assert.equal(harness.state.awaitingConfirmation, true);
+  assert.equal(harness.state.pendingPhaseEndedAt, 58_000);
+  assert.equal(harness.state.sessionStartAt, 1_000);
+  const persisted = JSON.parse(harness.savedValue());
+  assert.equal(persisted.running, false);
+  assert.equal(persisted.awaitingConfirmation, true);
+  assert.equal(persisted.pendingPhaseEndedAt, 58_000);
+});
+
+test('cold restart finalization keeps an unexpired Pomodoro paused without creating a pending phase', () => {
+  const snapshot = timer({
+    mode: 'pomodoro',
+    phase: 'work',
+    running: true,
+    baseElapsed: 780,
+    startedAt: 5_000,
+    sessionStartAt: 1_000
+  });
+  snapshot.savedAt = 60_000;
+  const harness = loadTimerContext(snapshot);
+  harness.context._phaseTargetSec = () => 1_500;
+  const loadTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
+    harness.context
+  );
+  const finalizeRestore = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_finalizeFocusTimerColdStartRestore') + ')',
+    harness.context
+  );
+
+  loadTimer();
+  finalizeRestore();
+
+  assert.equal(harness.state.running, false);
+  assert.equal(harness.state.startedAt, null);
+  assert.equal(harness.state.baseElapsed, 780);
+  assert.equal(harness.state.awaitingConfirmation, false);
+  assert.equal(harness.state.pendingPhaseEndedAt, null);
+});
+
+test('focus timer display tick checkpoints even while hidden and skips UI work', () => {
+  let tick = null;
+  let checkpoints = 0;
+  let renders = 0;
+  let catchUps = 0;
+  const context = {
+    _focusDisplayInterval: null,
+    _focusTimerCheckpointAt: 0,
+    FOCUS_TIMER_CHECKPOINT_INTERVAL_MS: 5_000,
+    _focusTimer: { running: true, mode: 'stopwatch' },
+    document: { visibilityState: 'hidden' },
+    Date: { now: () => 5_000 },
+    setInterval(callback, interval) {
+      assert.equal(interval, 1_000);
+      tick = callback;
+      return 1;
+    },
+    _saveFocusTimer() { checkpoints++; return true; },
+    _renderFocusTimer() { renders++; },
+    _catchUp() { catchUps++; }
+  };
+  const startTick = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_startDisplayTick') + ')',
+    context
+  );
+
+  startTick();
+  tick();
+
+  assert.equal(checkpoints, 1);
+  assert.equal(renders, 0);
+  assert.equal(catchUps, 0);
 });
 
 test('timer loader restores a backed-up Pomodoro snapshot in paused state', () => {
