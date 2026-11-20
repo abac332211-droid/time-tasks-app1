@@ -235,6 +235,16 @@ test('backup validator is wired to focus-timer validation', () => {
 
   assert.equal(validateBackup(valid).valid, true);
   assert.equal(validateBackup(invalid).valid, false);
+  const missingFocusTimer = {
+    ...valid,
+    data: { tasks: valid.data.tasks, dailyLogs: [] }
+  };
+  const nullFocusTimer = {
+    ...valid,
+    data: { ...valid.data, focusTimer: null }
+  };
+  assert.equal(validateBackup(missingFocusTimer).valid, false);
+  assert.equal(validateBackup(nullFocusTimer).valid, false);
 
   const missingTimer = {
     ...valid,
