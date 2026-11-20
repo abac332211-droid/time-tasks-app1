@@ -547,6 +547,14 @@ test('stored schema rejects duplicate task IDs before normal app use', () => {
 });
 
 
+test('npm lockfile is committed, pinned, and matches the package manifest', () => {
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  assert.equal(lock.lockfileVersion, 3);
+  assert.equal(lock.version, pkg.version);
+  assert.deepEqual(lock.packages[''].dependencies, pkg.dependencies);
+  assert.deepEqual(lock.packages[''].devDependencies, pkg.devDependencies);
+});
+
 test('release workflow creates a downloadable web ZIP and uses Node 24 compatible actions', () => {
   const verify = fs.readFileSync(path.join(root, '.github/workflows/verify-pwa.yml'), 'utf8');
   const apk = fs.readFileSync(path.join(root, '.github/workflows/build-apk.yml'), 'utf8');
@@ -563,6 +571,9 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(apk, /actions\/setup-java@v6/);
   assert.match(apk, /name: Run regression tests/);
   assert.match(apk, /run: npm test/);
+  assert.match(apk, /run: npm ci --no-audit --no-fund/);
+  assert.doesNotMatch(apk, /run: npm install/);
+  assert.match(apk, /permissions:\\s*\\n\\s*contents: read/);
   assert.match(release, /actions\/setup-java@v6/);
   assert.doesNotMatch(apk + release, /actions\/setup-java@v5/);
   assert.match(release, /name: Run regression tests/);
