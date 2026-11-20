@@ -929,7 +929,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw) {
     },
     location: { reload() { reloads++; } },
     todayStr: () => '2026-11-20',
-    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     validateV2: () => true,
     _healTaskArray: () => false,
     _rollbackRestore: () => false,
@@ -943,7 +943,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw) {
     loadTopLevelFunction('_restoreFocusTimerSnapshot').toString(),
     loadTopLevelFunction('showImportPreview').toString(),
     'showImportPreview(' + JSON.stringify(backup) + ');'
-  ].join('\\n');
+  ].join('\n');
   vm.runInNewContext(source, sandbox);
   return { values, sessionValues, alerts, reloads: () => reloads };
 }
