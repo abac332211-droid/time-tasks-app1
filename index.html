@@ -3933,9 +3933,10 @@ function exportBackup() {
   }
 }
 
-function _getFocusTimerRestorePayload(data) {
-  if (!data || data.focusTimer === undefined || data.focusTimer === null) return null;
-  return JSON.stringify(data.focusTimer);
+function _restoreFocusTimerSnapshot(data, storage, storageKey) {
+  // A V1 backup has no timer field; preserve the timer already stored on this device.
+  if (!data || data.focusTimer === undefined || data.focusTimer === null) return;
+  storage.setItem(storageKey, JSON.stringify(data.focusTimer));
 }
 
 function validateBackup(obj) {
@@ -4366,12 +4367,8 @@ function showImportPreview(obj) {
           return;
         }
 
-        var _importedFocusTimerRaw = _getFocusTimerRestorePayload(d);
         try {
-          if (_importedFocusTimerRaw !== null) {
-            localStorage.setItem(FOCUS_TIMER_KEY, _importedFocusTimerRaw);
-          }
-          // Legacy V1 backups predate focusTimer; preserve the current timer instead of deleting it.
+          _restoreFocusTimerSnapshot(d, localStorage, FOCUS_TIMER_KEY);
         } catch (e) {
           var _focusTimerRollbackOk = _rollbackRestore(_rollback);
           if (_focusTimerRollbackOk) {
