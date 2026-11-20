@@ -1148,10 +1148,10 @@ const RESTORE_KEY_CASES = [
   ['timeTasksApp_focusSessions', 'focusSessions', 'focusSessions'],
   ['timeTasksApp_focusTimer', 'focusTimer', 'focusTimer'],
   ['timeTasksApp_mentalInbox', 'mentalInbox', 'mentalInbox'],
-  ['thoughts', 'thoughts', 'thoughts'],
-  ['projects', 'projects', 'projects'],
-  ['focus-settings', 'focusSettings', 'focusSettings'],
-  ['notifications', 'notifications', 'notifications']
+  ['app-thoughts', 'thoughts', 'thoughts'],
+  ['app-projects', 'projects', 'projects'],
+  ['app-focus-settings', 'focusSettings', 'focusSettings'],
+  ['app-notifications', 'notifications', 'notifications']
 ];
 
 test('snapshot restoration reports read, write and remove failures for every storage key', () => {
@@ -1198,8 +1198,8 @@ test('interrupted import recovery restores snapshots after interruption at every
     const storage = memoryStorage(seed);
     const harness = restoreContext(storage);
     const recover = vm.runInNewContext(
-      extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
-      extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+      extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
+      extractTopLevelSource('_recoverInterruptedImport') + '\n_recoverInterruptedImport',
       harness.context
     );
 
@@ -1223,8 +1223,8 @@ test('failed recovery retains both the recovery marker and original snapshot, th
   }, faults);
   const harness = restoreContext(storage);
   const recover = vm.runInNewContext(
-    extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
-    extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+    extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
+    extractTopLevelSource('_recoverInterruptedImport') + '\n_recoverInterruptedImport',
     harness.context
   );
 
@@ -1273,6 +1273,17 @@ test('import round trip restores all data collections and preserves extra settin
   assert.deepEqual(JSON.parse(harness.values.get('notifications')), data.notifications);
 });
 
+const IMPORT_WRITE_KEYS = [
+  'app-data',
+  'timeTasksApp_focusSessions',
+  'timeTasksApp_focusTimer',
+  'timeTasksApp_mentalInbox',
+  'thoughts',
+  'projects',
+  'focus-settings',
+  'notifications'
+];
+
 test('import write failure rolls back every collection before reporting failure', () => {
   const timerSnapshot = {
     mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 100,
@@ -1289,7 +1300,7 @@ test('import write failure rolls back every collection before reporting failure'
     focusSettings: { workMin: 25, shortMin: 5, longMin: 15 },
     notifications: { enabled: true }
   };
-  for (const [key] of RESTORE_KEY_CASES) {
+  for (const key of IMPORT_WRITE_KEYS) {
     const faults = { failSetOnceKey: key };
     const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer', faults);
     assert.equal(harness.reloads(), 0, 'must not reload after failed write: ' + key);
