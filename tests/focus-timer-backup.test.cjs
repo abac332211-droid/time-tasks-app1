@@ -432,14 +432,14 @@ function restoreContext(storage) {
 
 test('rollback snapshot restores and reads back the focus timer with every other key', () => {
   const storage = memoryStorage({
-    STORAGE_KEYS.MAIN: 'new-main',
+    [STORAGE_KEYS.MAIN]: 'new-main',
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'new-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: 'new-timer',
     [STORAGE_KEYS.MENTAL_INBOX]: 'new-inbox',
-    STORAGE_KEYS.THOUGHTS: 'new-thoughts',
-    STORAGE_KEYS.PROJECTS: 'new-projects',
-    STORAGE_KEYS.FOCUS_SETTINGS: 'new-settings',
-    STORAGE_KEYS.NOTIFICATIONS: 'new-notifications'
+    [STORAGE_KEYS.THOUGHTS]: 'new-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'new-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'new-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'new-notifications'
   });
   const harness = restoreContext(storage);
   const restore = vm.runInNewContext(
@@ -483,16 +483,16 @@ test('interrupted import recovery restores the previous timer and clears both ma
   const previous = storageSnapshot('previous');
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] });
   const storage = memoryStorage({
-    STORAGE_KEYS.IMPORT_IN_PROGRESS: '1',
-    STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous),
-    STORAGE_KEYS.MAIN: 'partially-imported-main',
+    [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1',
+    [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous),
+    [STORAGE_KEYS.MAIN]: 'partially-imported-main',
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'partially-imported-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: 'partially-imported-timer',
     [STORAGE_KEYS.MENTAL_INBOX]: 'partially-imported-inbox',
-    STORAGE_KEYS.THOUGHTS: 'partially-imported-thoughts',
-    STORAGE_KEYS.PROJECTS: 'partially-imported-projects',
-    STORAGE_KEYS.FOCUS_SETTINGS: 'partially-imported-settings',
-    STORAGE_KEYS.NOTIFICATIONS: 'partially-imported-notifications'
+    [STORAGE_KEYS.THOUGHTS]: 'partially-imported-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'partially-imported-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'partially-imported-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'partially-imported-notifications'
   });
   const harness = restoreContext(storage);
   const recovery = vm.runInNewContext(
@@ -948,13 +948,13 @@ test('timer rehydration removes a reference to a task absent from restored tasks
 
 function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
   const storage = memoryStorage({
-    STORAGE_KEYS.MAIN: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
+    [STORAGE_KEYS.MAIN]: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'previous-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: existingTimerRaw,
     [STORAGE_KEYS.MENTAL_INBOX]: 'previous-inbox',
     [STORAGE_KEYS.THOUGHTS]: 'previous-thoughts',
     [STORAGE_KEYS.PROJECTS]: 'previous-projects',
-    STORAGE_KEYS.FOCUS_SETTINGS: 'previous-focus-settings',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'previous-focus-settings',
     [STORAGE_KEYS.NOTIFICATIONS]: 'previous-notifications'
   }, faults);
   const values = storage.values;
@@ -1234,8 +1234,8 @@ test('interrupted import recovery restores snapshots after interruption at every
 
   for (let interruptedAfter = 0; interruptedAfter <= RESTORE_KEY_CASES.length; interruptedAfter++) {
     const seed = {
-      STORAGE_KEYS.IMPORT_IN_PROGRESS: '1',
-      STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous)
+      [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1',
+      [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous)
     };
     RESTORE_KEY_CASES.forEach(([key, property], index) => {
       seed[key] = index < interruptedAfter ? 'partially-imported-' + property : previous[property];
@@ -1307,8 +1307,8 @@ test('failed recovery retains both the recovery marker and original snapshot, th
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
   const faults = { throwOnSetKey: STORAGE_KEYS.THOUGHTS };
   const storage = memoryStorage({
-    STORAGE_KEYS.IMPORT_IN_PROGRESS: '1',
-    STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous),
+    [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1',
+    [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous),
     ...Object.fromEntries(RESTORE_KEY_CASES.map(([key, property]) => [key, 'partial-' + property]))
   }, faults);
   const harness = restoreContext(storage);
@@ -1482,15 +1482,15 @@ test('manual undo marks restoration in progress and startup recovery completes a
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
   const faults = { throwOnSetKey: STORAGE_KEYS.PROJECTS };
   const storage = memoryStorage({
-    STORAGE_KEYS.MAIN: 'current-main',
+    [STORAGE_KEYS.MAIN]: 'current-main',
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'current-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: 'current-timer',
     [STORAGE_KEYS.MENTAL_INBOX]: 'current-inbox',
-    STORAGE_KEYS.THOUGHTS: 'current-thoughts',
-    STORAGE_KEYS.PROJECTS: 'current-projects',
-    STORAGE_KEYS.FOCUS_SETTINGS: 'current-settings',
-    STORAGE_KEYS.NOTIFICATIONS: 'current-notifications',
-    STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous)
+    [STORAGE_KEYS.THOUGHTS]: 'current-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'current-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'current-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'current-notifications',
+    [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous)
   }, faults);
   const harness = restoreContext(storage);
   harness.context.showConfirmModal = (_title, _body, accept) => accept();
