@@ -502,6 +502,104 @@ function loadTimerContext(snapshot, taskRows = [{ id: 10 }]) {
   return { context, state, savedValue: () => savedAfterLoad };
 }
 
+test('timer loader pauses a running Stopwatch after a cold restart at the last persisted checkpoint', () => {
+  const snapshot = timer({
+    mode: 'stopwatch',
+    phase: 'work',
+    running: true,
+    baseElapsed: 420,
+    startedAt: 5_000,
+    sessionStartAt: 1_000,
+    taskId: 10
+  });
+  const harness = loadTimerContext(snapshot);
+  const loadTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
+    harness.context
+  );
+
+  loadTimer();
+
+  assert.equal(harness.state.mode, 'stopwatch');
+  assert.equal(harness.state.running, false);
+  assert.equal(harness.state.startedAt, null);
+  assert.equal(harness.state.baseElapsed, 420);
+  const persisted = JSON.parse(harness.savedValue());
+  assert.equal(persisted.running, false);
+  assert.equal(persisted.startedAt, null);
+  assert.equal(persisted.baseElapsed, 420);
+});
+
+test('timer loader pauses a running Pomodoro after a cold restart without counting downtime', () => {
+  const snapshot = timer({
+    mode: 'pomodoro',
+    phase: 'work',
+    running: true,
+    baseElapsed: 780,
+    startedAt: 5_000,
+    sessionStartAt: 1_000,
+    taskId: 10,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null
+  });
+  const harness = loadTimerContext(snapshot);
+  const loadTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
+    harness.context
+  );
+
+  loadTimer();
+
+  assert.equal(harness.state.mode, 'pomodoro');
+  assert.equal(harness.state.phase, 'work');
+  assert.equal(harness.state.running, false);
+  assert.equal(harness.state.startedAt, null);
+  assert.equal(harness.state.baseElapsed, 780);
+  assert.equal(harness.state.awaitingConfirmation, false);
+  const persisted = JSON.parse(harness.savedValue());
+  assert.equal(persisted.running, false);
+  assert.equal(persisted.baseElapsed, 780);
+});
+
+test('running timer checkpoints persist elapsed time and reset the checkpoint timestamp', () => {
+  const state = timer({
+    mode: 'stopwatch',
+    phase: 'work',
+    running: true,
+    baseElapsed: 120,
+    startedAt: 1_000
+  });
+  let stored = null;
+  let saveTimestamp = 0;
+  const context = {
+    FOCUS_TIMER_KEY: 'timer-key',
+    FOCUS_TIMER_CHECKPOINT_INTERVAL_MS: 5_000,
+    _focusTimerCheckpointAt: 1_000,
+    _focusTimer: state,
+    Date: { now: () => 7_000 },
+    _getElapsedSec: () => 305,
+    localStorage: {
+      setItem(key, value) {
+        assert.equal(key, 'timer-key');
+        stored = value;
+        saveTimestamp = 7_000;
+      }
+    }
+  };
+  const saveTimer = vm.runInNewContext(
+    '(' + loadTopLevelFunction('_saveFocusTimer') + ')',
+    context
+  );
+
+  assert.equal(saveTimer(), true);
+  const persisted = JSON.parse(stored);
+  assert.equal(persisted.baseElapsed, 305);
+  assert.equal(persisted.startedAt, saveTimestamp);
+  assert.equal(persisted.running, true);
+  assert.equal(context._focusTimerCheckpointAt, saveTimestamp);
+  assert.equal(state.baseElapsed, 120);
+});
+
 test('timer loader restores a backed-up Pomodoro snapshot in paused state', () => {
   const snapshot = buildSnapshot(
     timer({ baseElapsed: 120 }),
