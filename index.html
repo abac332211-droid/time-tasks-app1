@@ -4036,6 +4036,11 @@ function validateBackup(obj) {
           || d.focusTimer === undefined || d.focusTimer === null)) {
     return { valid: false, reason: "نسخة الاحتياط V2 تفتقد حالة مؤقت التركيز؛ أُوقِف التصدير لمنع فقدانها." };
   }
+  if (obj.backupFormatVersion >= 2
+      && (!Object.prototype.hasOwnProperty.call(d, "focusTimer")
+          || !d.focusTimer || typeof d.focusTimer !== "object" || Array.isArray(d.focusTimer)))
+    return { valid: false, reason: "حالة مؤقت التركيز مفقودة أو غير صالحة في النسخة V2." };
+
   if (d.focusTimer !== undefined && d.focusTimer !== null) {
     const focusTimerCheck = _validateFocusTimerBackupSnapshot(d.focusTimer, ids);
     if (!focusTimerCheck.valid) return focusTimerCheck;
