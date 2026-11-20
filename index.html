@@ -4311,6 +4311,9 @@ function showImportPreview(obj) {
   const tasksCount = d.tasks.length;
   const logsCount = d.dailyLogs.length;
   const exportedAt = obj.exportedAt || "غير معروف";
+  const legacyPartialCount = d.tasks.reduce(function(count, task) {
+    return count + (task && task.status === "partial" ? 1 : 0);
+  }, 0);
 
   let currentRaw;
   try {
@@ -4333,8 +4336,12 @@ function showImportPreview(obj) {
     "<b>📅 سجلات الأيام:</b> " + logsCount + "<br>" +
     "<b>⏱️ مؤقت التركيز:</b> " + (d.focusTimer ? "محفوظ كمتوقف مؤقتًا" : "غير موجود في هذه النسخة") + "<br>" +
     "<hr style='border:0;border-top:1px dashed var(--border);margin:10px 0;'>" +
-    "<b>الحالة الحالية:</b> " + currentTasks + " مهمة، " + currentLogs + " سجل.<br><br>" +
-    "<span style='color:var(--danger);font-weight:bold;'>⚠️ سيتم استبدال كل البيانات الحالية.</span>";
+    "<b>الحالة الحالية:</b> " + currentTasks + " مهمة، " + currentLogs + " سجل." +
+    (legacyPartialCount > 0
+      ? "<br><br><b>تنبيه توافق البيانات القديمة:</b> توجد " + legacyPartialCount +
+        " مهمة بحالة partial؛ بعد تأكيدك سيحوّلها التطبيق إلى pending ليتوافق مع نموذج البيانات الحالي. يمكنك إلغاء العملية إن لم توافق على هذا التحويل."
+      : "") +
+    "<br><br><span style='color:var(--danger);font-weight:bold;'>⚠️ سيتم استبدال كل البيانات الحالية.</span>";
 
   showConfirmModal("📦 معاينة النسخة الاحتياطية", textHtml, function() {
     showPromptModal(

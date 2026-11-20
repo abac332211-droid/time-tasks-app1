@@ -929,6 +929,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
   const values = storage.values;
   const sessionValues = new Map();
   const alerts = [];
+  const confirmations = [];
   let reloads = 0;
   const sandbox = {
     STORAGE_KEY: 'app-data',
@@ -951,7 +952,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
     validateV2: () => true,
     _healTaskArray: () => false,
     _invalidateProjectsCache: () => {},
-    showConfirmModal: (_title, _body, accept) => accept(),
+    showConfirmModal: (title, body, accept) => { confirmations.push({ title, body }); accept(); },
     showPromptModal: (_title, _body, _initial, _placeholder, submit) => submit('استبدال'),
     showAlertModal: (...args) => alerts.push(args),
     showToast: () => {},
@@ -967,7 +968,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
   ].join('\n');
   vm.runInNewContext(source, sandbox);
   const recover = vm.runInNewContext('_recoverInterruptedImport', sandbox);
-  return { values, sessionValues, alerts, reloads: () => reloads, recover, faults };
+  return { values, sessionValues, alerts, confirmations, reloads: () => reloads, recover, faults };
 }
 
 function integrationBackup(data) {
@@ -1105,6 +1106,20 @@ test('invalid backup is rejected by the text import gate before the preview can 
   assert.equal(previews, 0);
   assert.equal(alerts.length, 1);
   assert.match(alerts[0][1], /معرّف خاطرة مكرر/);
+});
+
+
+test('backup preview discloses the legacy partial-to-pending conversion before final confirmation', () => {
+  const backup = integrationBackup({
+    tasks: [validationTask({ id: 12, status: 'partial' })],
+    dailyLogs: []
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer');
+
+  assert.equal(harness.confirmations.length, 1);
+  assert.match(harness.confirmations[0].body, /1 مهمة بحالة partial/);
+  assert.match(harness.confirmations[0].body, /سيحوّلها التطبيق إلى pending/);
+  assert.match(harness.confirmations[0].body, /يمكنك إلغاء العملية/);
 });
 
 test('full import preview restores the focus timer and the system theme preference', () => {
