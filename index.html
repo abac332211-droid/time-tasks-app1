@@ -3756,30 +3756,58 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
 function buildBackupObject() {
   const raw = localStorage.getItem(STORAGE_KEY);
   const data = raw ? JSON.parse(raw) : buildEmptyV2();
-  return {
+  if (!data || typeof data !== "object" || Array.isArray(data)
+      || !Array.isArray(data.tasks) || !Array.isArray(data.dailyLogs)) {
+    throw new Error("تعذر تصدير النسخة: بنية بيانات المهام والسجلات غير مكتملة.");
+  }
+
+  // Read stored collections without UI-loader repair/filter fallbacks.
+  // A backup must never look complete after silently dropping malformed records.
+  function readStoredArray(key, label) {
+    var stored = localStorage.getItem(key);
+    if (stored === null) return [];
+    var parsed;
+    try {
+      parsed = JSON.parse(stored);
+    } catch (e) {
+      throw new Error("تعذر تصدير النسخة: بيانات " + label + " تالفة ولا يمكن تضمينها بأمان.");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("تعذر تصدير النسخة: بيانات " + label + " ليست قائمة صالحة.");
+    }
+    return parsed;
+  }
+
+  const backup = {
     backupFormatVersion: BACKUP_FORMAT_VERSION,
     exportedAt: localDateTimeString(),
     appVersion: APP_VERSION,
     schemaVersion: CURRENT_SCHEMA_VERSION,
     data: {
       settings: data.settings || {},
-      tasks: Array.isArray(data.tasks) ? data.tasks : [],
-      dailyLogs: Array.isArray(data.dailyLogs) ? data.dailyLogs : [],
-      focusSessions: _loadSessions(),
+      tasks: data.tasks,
+      dailyLogs: data.dailyLogs,
+      focusSessions: readStoredArray(FOCUS_SESSIONS_KEY, "جلسات التركيز"),
       focusTimer: _buildFocusTimerBackupSnapshot(
         _focusTimer,
         Date.now(),
         _getElapsedSec(),
         _phaseTargetSec(),
-        new Set((Array.isArray(data.tasks) ? data.tasks : []).map(function(task) { return task.id; }))
+        new Set(data.tasks.map(function(task) { return task && task.id; }))
       ),
-      mentalInbox: _loadMentalInbox(),
-      thoughts: _loadThoughts(),
-      projects: _loadProjects(),
+      mentalInbox: readStoredArray(MENTAL_INBOX_KEY, "العقل المفتوح"),
+      thoughts: readStoredArray(THOUGHTS_KEY, "الخواطر"),
+      projects: readStoredArray(PROJECTS_KEY, "المشاريع"),
       focusSettings: _getFocusSettingsSnapshot(),
       notifications: _getNotificationsPref()
     }
   };
+
+  const validation = validateBackup(backup);
+  if (!validation.valid) {
+    throw new Error("تعذر إنشاء نسخة احتياطية كاملة: " + validation.reason);
+  }
+  return backup;
 }
 
 function _getFocusSettingsSnapshot() {
@@ -4003,6 +4031,11 @@ function validateBackup(obj) {
       return { valid: false, reason: "مرجع أصل المهمة المتكررة غير صالح (" + (i+1) + ")." };
   }
 
+  if (obj.backupFormatVersion >= 2
+      && (!Object.prototype.hasOwnProperty.call(d, "focusTimer")
+          || d.focusTimer === undefined || d.focusTimer === null)) {
+    return { valid: false, reason: "نسخة الاحتياط V2 تفتقد حالة مؤقت التركيز؛ أُوقِف التصدير لمنع فقدانها." };
+  }
   if (d.focusTimer !== undefined && d.focusTimer !== null) {
     const focusTimerCheck = _validateFocusTimerBackupSnapshot(d.focusTimer, ids);
     if (!focusTimerCheck.valid) return focusTimerCheck;
