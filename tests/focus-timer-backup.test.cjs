@@ -260,6 +260,21 @@ test('backup validator is wired to focus-timer validation', () => {
   assert.equal(validateBackup(nullTimer).valid, false);
 });
 
+test('legacy V1 import without a timer snapshot preserves the current timer value', () => {
+  const getPayload = loadTopLevelFunction('_getFocusTimerRestorePayload');
+  const existing = JSON.stringify({ mode: 'stopwatch', running: false, baseElapsed: 900 });
+  const storage = memoryStorage({ focusTimer: existing });
+
+  assert.equal(getPayload({ tasks: [], dailyLogs: [] }), null);
+  assert.equal(getPayload({ tasks: [], dailyLogs: [], focusTimer: null }), null);
+  assert.equal(storage.getItem('focusTimer'), existing);
+
+  const replacement = { mode: 'pomodoro', running: false, baseElapsed: 120 };
+  const replacementRaw = getPayload({ focusTimer: replacement });
+  storage.setItem('focusTimer', replacementRaw);
+  assert.deepEqual(JSON.parse(storage.getItem('focusTimer')), replacement);
+});
+
 test('legacy format-v1 backup without focusTimer remains import-compatible', () => {
   const sourceStart = html.indexOf('function validateBackup(');
   const sourceEnd = html.indexOf('\n}', sourceStart);
