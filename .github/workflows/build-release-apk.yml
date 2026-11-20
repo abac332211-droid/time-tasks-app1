@@ -146,7 +146,7 @@ jobs:
           sha256sum "$APK" | tee "$APK.sha256"
 
       - name: Upload signed Release APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: time-tasks-app-${{ steps.version.outputs.version }}-signed-release
           path: |
