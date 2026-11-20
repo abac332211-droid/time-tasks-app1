@@ -560,7 +560,7 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(release, /run: npm test/);
   assert.match(release, /if: github\.ref == 'refs\/heads\/main'/);
   assert.match(release, /environment:\s*\n\s*name: android-release/);
-  assert.match(release, /ref: \\$\{\\{ github\.sha \\}\\}/);
+  assert.match(release, /ref: \$\{\{\s*github\.sha\s*\}\}/);
   assert.doesNotMatch(release, /inputs\.ref/);
   assert.match(release, /ANDROID_EXPECTED_CERT_SHA256/);
   assert.match(release, /Signer #1 certificate SHA-256 digest/);
