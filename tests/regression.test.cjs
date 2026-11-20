@@ -558,12 +558,16 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.doesNotMatch(apk + release, /actions\/setup-java@v5/);
   assert.match(release, /name: Run regression tests/);
   assert.match(release, /run: npm test/);
+  assert.match(release, /name: Install dependencies from lockfile/);
+  assert.match(release, /run: npm ci --no-audit --no-fund/);
+  assert.doesNotMatch(release, /run: npm install/);
+  assert.match(apk, /run: npm ci --no-audit --no-fund/);
   assert.match(release, /if: github\.ref == 'refs\/heads\/main'/);
   assert.match(release, /environment:\s*\n\s*name: android-release/);
   assert.match(release, /ref: \$\{\{\s*github\.sha\s*\}\}/);
   assert.doesNotMatch(release, /inputs\.ref/);
   assert.match(release, /ANDROID_EXPECTED_CERT_SHA256/);
-  assert.match(release, /Signer #\\[0-9\\]\\+ certificate SHA-256 digest/);
+  assert.ok(release.includes('Signer #[0-9]+ certificate SHA-256 digest'));
   assert.match(release, /verify --verbose --print-certs/);
   for (const workflow of [verify, apk, release]) {
     assert.ok(workflow.includes('actions/upload-artifact@v7.0.2'));
