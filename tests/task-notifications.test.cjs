@@ -389,7 +389,7 @@ test('colliding task reminder identifiers mark full reconciliation as incomplete
     _taskNotificationId: () => 501,
     _taskReminderAt: () => new Date(2099, 11, 31, 23, 59, 0, 0)
   });
-  const fns = loadFunctions(['_syncAllTaskNotifications'], context);
+  const fns = loadFunctions(['_syncTaskNotification', '_syncAllTaskNotifications'], context);
 
   assert.equal(await fns._syncAllTaskNotifications(), false);
   assert.equal(harness.calls.schedule.length, 1);
