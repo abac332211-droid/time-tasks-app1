@@ -331,3 +331,21 @@ test('startup reconciliation replaces a pending reminder when task title or due 
   assert.equal(harness.calls.schedule[0].body, task.name);
   assert.equal(new Date(harness.calls.schedule[0].schedule.at).getTime(), at.getTime());
 });
+
+
+test('native notification UI shows an enabled preference with failed reminder reconciliation', async () => {
+  const harness = makeNotificationHarness({ enabled: true, permission: 'granted' });
+  const button = { textContent: '', className: '', disabled: false };
+  harness.context.document = { getElementById: () => button };
+  harness.context._isCapacitor = () => true;
+  harness.context._taskReminderSyncStatus = null;
+  const fns = loadFunctions(
+    ['_recordTaskReminderSyncResult', '_updateNotifToggleUI'],
+    harness.context
+  );
+
+  assert.equal(fns._recordTaskReminderSyncResult(false), false);
+  await Promise.resolve();
+  assert.match(button.textContent, /المزامنة متعثرة/);
+  assert.equal(button.className, 'btn-ghost');
+});

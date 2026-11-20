@@ -4306,6 +4306,9 @@ function showImportPreview(obj) {
             operationalDayStart: importedDayStart,
             firstUseDate: importedFirstUseDate,
             darkMode: settings.darkMode === true,
+            themeMode: ["system", "light", "dark"].includes(settings.themeMode)
+              ? settings.themeMode
+              : (typeof settings.darkMode === "boolean" ? (settings.darkMode ? "dark" : "light") : "system"),
             lastTaskId: importedLastTaskId,
             lastRecurringDates: settings.lastRecurringDates || {}
           },
@@ -4330,6 +4333,9 @@ function showImportPreview(obj) {
           focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
           notifications: localStorage.getItem(NOTIFICATIONS_KEY)
         };
+        var _expectedFocusTimerRaw = (d.focusTimer !== undefined && d.focusTimer !== null)
+          ? JSON.stringify(d.focusTimer)
+          : _rollback.focusTimer;
         try {
           localStorage.setItem(PRE_IMPORT_KEY, JSON.stringify(_rollback));
           localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
@@ -4465,7 +4471,7 @@ function showImportPreview(obj) {
           [STORAGE_KEY, JSON.stringify(newData)],
           ["timeTasksApp_focusSessions",
             Array.isArray(d.focusSessions) ? JSON.stringify(d.focusSessions) : _rollback.focusSessions],
-          [FOCUS_TIMER_KEY, _importedFocusTimerRaw],
+          [FOCUS_TIMER_KEY, _expectedFocusTimerRaw],
           ["timeTasksApp_mentalInbox",
             Array.isArray(d.mentalInbox) ? JSON.stringify(d.mentalInbox) : _rollback.mentalInbox],
           [THOUGHTS_KEY, Array.isArray(d.thoughts) ? JSON.stringify(d.thoughts) : _rollback.thoughts],
@@ -5766,7 +5772,24 @@ function _catchUp(backgroundReturn) {
     transitions++;
   }
   if (transitions > 0) {
-    _saveFocusTimer();
+    if (!_saveFocusTimer()) {
+      // The completed session is already persisted. Pause the next phase and retry
+      // saving that state before rendering it as a durable transition or notifying.
+      _focusTimer.baseElapsed = _getElapsedSec();
+      _focusTimer.running = false;
+      _focusTimer.startedAt = null;
+      _stopDisplayTick();
+      var pausedStateSaved = _saveFocusTimer();
+      _renderFocusTimer();
+      renderFocusSessionsCard();
+      showAlertModal(
+        "⚠️ تعذر حفظ انتقال المؤقت",
+        pausedStateSaved
+          ? "تم تسجيل الجلسة، لكن تعذر حفظ الانتقال أثناء التشغيل. أُوقف المؤقت وحُفظت المرحلة التالية متوقفة؛ راجعها قبل المتابعة."
+          : "تم تسجيل الجلسة، لكن تعذر حفظ حالة المؤقت حتى بعد إيقافه. لا تغلق التطبيق قبل تصدير نسخة احتياطية والتحقق من التخزين."
+      );
+      return;
+    }
     renderFocusSessionsCard();
     _notifyPhaseTransition();
   }
@@ -5994,13 +6017,23 @@ async function _syncAllTaskNotifications() {
   }
 }
 var _taskReminderSyncQueue = Promise.resolve(true);
+var _taskReminderSyncStatus = null;
+
+function _recordTaskReminderSyncResult(success) {
+  _taskReminderSyncStatus = success === true;
+  _updateNotifToggleUI();
+  return success === true;
+}
+
 function _queueTaskReminderSync(task) {
   if (!_hasCapacitorLocalNotifications() || storageRecoveryRequired || !task) return Promise.resolve(false);
   _taskReminderSyncQueue = _taskReminderSyncQueue
     .catch(function() { return false; })
     .then(function() { return _syncAllTaskNotifications(); })
+    .then(_recordTaskReminderSyncResult)
     .catch(function(e) {
       console.warn("Queued task reminder update failed:", e);
+      _recordTaskReminderSyncResult(false);
       return false;
     });
   return _taskReminderSyncQueue;
@@ -6011,8 +6044,10 @@ function _queueTaskReminderCancellation(taskId) {
   _taskReminderSyncQueue = _taskReminderSyncQueue
     .catch(function() { return false; })
     .then(function() { return _cancelTaskNotification(taskId); })
+    .then(_recordTaskReminderSyncResult)
     .catch(function(e) {
       console.warn("Queued task reminder cancellation failed:", e);
+      _recordTaskReminderSyncResult(false);
       return false;
     });
   return _taskReminderSyncQueue;
@@ -6023,8 +6058,10 @@ function _queueAllTaskReminderSync() {
   _taskReminderSyncQueue = _taskReminderSyncQueue
     .catch(function() { return false; })
     .then(function() { return _syncAllTaskNotifications(); })
+    .then(_recordTaskReminderSyncResult)
     .catch(function(e) {
       console.warn("Queued task notification sync failed:", e);
+      _recordTaskReminderSyncResult(false);
       return false;
     });
   return _taskReminderSyncQueue;
@@ -6039,6 +6076,8 @@ async function _setCapacitorNotificationsEnabled(enabled) {
       if (!_setNotificationsPref(false)) return false;
       try {
         await LN.cancelAll();
+        _taskReminderSyncStatus = true;
+        _updateNotifToggleUI();
         return true;
       } catch (cancelError) {
         // Do not report "disabled" while native alarms may still be queued.
@@ -6052,6 +6091,8 @@ async function _setCapacitorNotificationsEnabled(enabled) {
     }
     if (!permission || permission.display !== "granted") {
       _setNotificationsPref(false);
+      _taskReminderSyncStatus = false;
+      _updateNotifToggleUI();
       return false;
     }
     if (!_setNotificationsPref(true)) return false;
@@ -6190,16 +6231,27 @@ function _updateNotifToggleUI() {
   }
   if (_hasCapacitorLocalNotifications()) {
     btn.disabled = false;
-    btn.textContent = pref.enabled ? '✓ مفعّل' : 'معطّل';
-    btn.className = pref.enabled ? 'btn-primary' : 'btn-ghost';
+    btn.textContent = !pref.enabled ? 'معطّل'
+      : (_taskReminderSyncStatus === false ? 'مفعّل — المزامنة متعثرة'
+        : (_taskReminderSyncStatus === null ? 'مفعّل — جارٍ التحقق' : '✓ مفعّل'));
+    btn.className = pref.enabled && _taskReminderSyncStatus !== false ? 'btn-primary' : 'btn-ghost';
     window.Capacitor.Plugins.LocalNotifications.checkPermissions().then(function(permission) {
       var current = _getNotificationsPref();
       if (!permission || permission.display !== 'granted') {
         btn.textContent = current.enabled ? 'إذن مطلوب' : 'تفعيل';
         btn.className = 'btn-ghost';
+      } else if (!current.enabled) {
+        btn.textContent = 'معطّل';
+        btn.className = 'btn-ghost';
+      } else if (_taskReminderSyncStatus === false) {
+        btn.textContent = 'مفعّل — المزامنة متعثرة';
+        btn.className = 'btn-ghost';
+      } else if (_taskReminderSyncStatus === null) {
+        btn.textContent = 'مفعّل — جارٍ التحقق';
+        btn.className = 'btn-ghost';
       } else {
-        btn.textContent = current.enabled ? '✓ مفعّل' : 'معطّل';
-        btn.className = current.enabled ? 'btn-primary' : 'btn-ghost';
+        btn.textContent = '✓ مفعّل';
+        btn.className = 'btn-primary';
       }
     }).catch(function() {});
     return;

@@ -1060,3 +1060,42 @@ test('task search ignores malformed optional tags and checklist data safely', ()
   assert.equal(matcher(task, 'غير موجود', {}), false);
   assert.equal(matcher(null, 'بحث', {}), false);
 });
+
+
+test('failed timer-transition checkpoint pauses safely and suppresses the success notification', () => {
+  const state = {
+    running: true, mode: 'pomodoro', phase: 'short-break',
+    startedAt: 1_000, sessionStartAt: 1_000, baseElapsed: 0,
+    cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null
+  };
+  let savedSessions = 0;
+  let timerSaves = 0;
+  let notifications = 0;
+  let stopped = 0;
+  const alerts = [];
+  const sandbox = {
+    _focusTimer: state,
+    tasks: [],
+    _getElapsedSec: () => state.phase === 'short-break' ? 420 : 0,
+    _phaseTargetSec: () => 300,
+    _logSession: () => { savedSessions++; return true; },
+    _saveFocusTimer: () => { timerSaves++; return timerSaves > 1; },
+    _stopDisplayTick: () => { stopped++; },
+    _renderFocusTimer: () => {},
+    renderFocusSessionsCard: () => {},
+    _notifyPhaseTransition: () => { notifications++; },
+    showAlertModal: (...args) => alerts.push(args)
+  };
+  vm.runInNewContext(extractFunction('_catchUp'), sandbox);
+  sandbox._catchUp(false);
+
+  assert.equal(savedSessions, 1);
+  assert.equal(state.phase, 'work');
+  assert.equal(state.running, false);
+  assert.equal(state.startedAt, null);
+  assert.equal(state.baseElapsed, 0);
+  assert.equal(timerSaves, 2);
+  assert.equal(stopped, 1);
+  assert.equal(notifications, 0);
+  assert.equal(alerts.length, 1);
+});

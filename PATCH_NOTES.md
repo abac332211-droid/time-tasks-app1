@@ -11,7 +11,7 @@ This patch closes a data-integrity gap in the TimeTasks 2.9.0 source: the full b
 3. If a Pomodoro phase has already ended at export time, preserves it as a pending confirmation with the calculated phase-end timestamp. It does not silently complete or double-log that phase.
 4. Clears a timer's task reference in the exported snapshot if that task is not among the exported tasks.
 5. Validates imported timer snapshots, including timer mode, phase, elapsed time, cycle position, task reference, and pending-confirmation fields.
-6. Restores the timer state inside the existing import/rollback transaction and verifies it during read-back. Legacy backups without `focusTimer` keep the previous reset-on-import behavior.
+6. Restores the timer state inside the existing import/rollback transaction and verifies it during read-back. Legacy V1 backups without `focusTimer` preserve the timer already stored on the device; the import read-back check verifies that unchanged value.
 7. Increments `BACKUP_FORMAT_VERSION` from 1 to 2. Version-1 backups remain accepted; older application builds should reject version-2 backups rather than silently discard the new timer field.
 8. Shows the timer state in the import preview.
 9. Displays the pending-session confirmation after app initialization when a restored snapshot contains an ended Pomodoro phase.

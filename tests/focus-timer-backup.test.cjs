@@ -898,3 +898,91 @@ test('timer rehydration removes a reference to a task absent from restored tasks
   assert.equal(savedState.taskId, null);
   assert.equal(state.running, false);
 });
+
+
+function runImportPreviewIntegration(backup, existingTimerRaw) {
+  const values = new Map([
+    ['app-data', JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} })],
+    ['timer-key', existingTimerRaw]
+  ]);
+  const sessionValues = new Map();
+  const alerts = [];
+  let reloads = 0;
+  const sandbox = {
+    STORAGE_KEY: 'app-data',
+    FOCUS_TIMER_KEY: 'timer-key',
+    IMPORT_IN_PROGRESS_KEY: 'import-marker',
+    PRE_IMPORT_KEY: 'pre-import',
+    THOUGHTS_KEY: 'thoughts',
+    PROJECTS_KEY: 'projects',
+    FOCUS_SETTINGS_KEY: 'focus-settings',
+    NOTIFICATIONS_KEY: 'notifications',
+    CURRENT_SCHEMA_VERSION: 2,
+    APP_VERSION: '2.9.0',
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(key, String(value)); },
+      removeItem(key) { values.delete(key); }
+    },
+    sessionStorage: {
+      setItem(key, value) { sessionValues.set(key, String(value)); }
+    },
+    location: { reload() { reloads++; } },
+    todayStr: () => '2026-11-20',
+    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    validateV2: () => true,
+    _healTaskArray: () => false,
+    _rollbackRestore: () => false,
+    showConfirmModal: (_title, _body, accept) => accept(),
+    showPromptModal: (_title, _body, _initial, _placeholder, submit) => submit('استبدال'),
+    showAlertModal: (...args) => alerts.push(args),
+    showToast: () => {},
+    escapeHTML: (value) => String(value)
+  };
+  const source = [
+    loadTopLevelFunction('_restoreFocusTimerSnapshot').toString(),
+    loadTopLevelFunction('showImportPreview').toString(),
+    'showImportPreview(' + JSON.stringify(backup) + ');'
+  ].join('\\n');
+  vm.runInNewContext(source, sandbox);
+  return { values, sessionValues, alerts, reloads: () => reloads };
+}
+
+function integrationBackup(data) {
+  return { backupFormatVersion: data.focusTimer ? 2 : 1, schemaVersion: 2, data };
+}
+
+test('full import preview restores the focus timer and the system theme preference', () => {
+  const timerSnapshot = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 420,
+    startedAt: null, cyclePosition: 1, taskId: null, sessionStartAt: 1000,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null
+  };
+  const backup = integrationBackup({
+    settings: { operationalDayStart: 4, firstUseDate: '2026-11-20', darkMode: false, themeMode: 'system' },
+    tasks: [], dailyLogs: [], focusTimer: timerSnapshot
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer');
+
+  const restored = JSON.parse(harness.values.get('app-data'));
+  assert.equal(restored.settings.themeMode, 'system');
+  assert.equal(harness.values.get('timer-key'), JSON.stringify(timerSnapshot));
+  assert.equal(harness.values.has('import-marker'), false);
+  assert.equal(harness.reloads(), 1);
+  assert.deepEqual(harness.alerts, []);
+});
+
+test('legacy V1 import without focusTimer preserves the device timer and maps legacy darkMode', () => {
+  const backup = integrationBackup({
+    settings: { operationalDayStart: 4, firstUseDate: '2026-11-20', darkMode: true },
+    tasks: [], dailyLogs: []
+  });
+  const harness = runImportPreviewIntegration(backup, 'keep-existing-timer');
+
+  const restored = JSON.parse(harness.values.get('app-data'));
+  assert.equal(restored.settings.themeMode, 'dark');
+  assert.equal(harness.values.get('timer-key'), 'keep-existing-timer');
+  assert.equal(harness.values.has('import-marker'), false);
+  assert.equal(harness.reloads(), 1);
+  assert.deepEqual(harness.alerts, []);
+});
