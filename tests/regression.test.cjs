@@ -542,19 +542,19 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   const verify = fs.readFileSync(path.join(root, '.github/workflows/verify-pwa.yml'), 'utf8');
   const apk = fs.readFileSync(path.join(root, '.github/workflows/build-apk.yml'), 'utf8');
   const release = fs.readFileSync(path.join(root, '.github/workflows/build-release-apk.yml'), 'utf8');
-  assert.match(verify, /actions\/checkout@v5/);
-  assert.match(verify, /actions\/setup-node@v5/);
+  assert.match(verify, /actions\/checkout@v7/);
+  assert.match(verify, /actions\/setup-node@v7/);
   assert.match(verify, /node-version:\s*'22'/);
   assert.match(verify, /zip -9 -r \.\.\/time-tasks-app-2\.9\.0-web\.zip/);
   assert.match(verify, /name:\s*time-tasks-app-2\.9\.0-web/);
   assert.match(verify, /retention-days:\s*90/);
   assert.match(verify, /if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
-  assert.match(apk, /actions\/checkout@v5/);
-  assert.match(apk, /actions\/setup-node@v5/);
-  assert.match(apk, /actions\/setup-java@v5/);
+  assert.match(apk, /actions\/checkout@v7/);
+  assert.match(apk, /actions\/setup-node@v7/);
+  assert.match(apk, /actions\/setup-java@v6/);
   assert.match(apk, /name: Run regression tests/);
   assert.match(apk, /run: npm test/);
-  assert.match(release, /actions\/setup-java@v5/);
+  assert.match(release, /actions\/setup-java@v6/);
   assert.doesNotMatch(apk + release, /actions\/setup-java@v4/);
   assert.match(release, /name: Run regression tests/);
   assert.match(release, /run: npm test/);
@@ -569,7 +569,7 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
     assert.ok(workflow.includes('actions/upload-artifact@v7.0.2'));
     assert.ok(!workflow.includes('actions/upload-artifact@v4'));
   }
-  assert.doesNotMatch(verify + apk + release, /actions\/(?:checkout|setup-node)@v4/);
+  assert.doesNotMatch(verify + apk + release, /actions\/(?:checkout|setup-node)@v7/);
 });;;
 
 
