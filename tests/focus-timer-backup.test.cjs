@@ -903,14 +903,14 @@ test('timer rehydration removes a reference to a task absent from restored tasks
 function runImportPreviewIntegration(backup, existingTimerRaw) {
   const values = new Map([
     ['app-data', JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} })],
-    ['timer-key', existingTimerRaw]
+    ['timeTasksApp_focusTimer', existingTimerRaw]
   ]);
   const sessionValues = new Map();
   const alerts = [];
   let reloads = 0;
   const sandbox = {
     STORAGE_KEY: 'app-data',
-    FOCUS_TIMER_KEY: 'timer-key',
+    FOCUS_TIMER_KEY: 'timeTasksApp_focusTimer',
     IMPORT_IN_PROGRESS_KEY: 'import-marker',
     PRE_IMPORT_KEY: 'pre-import',
     THOUGHTS_KEY: 'thoughts',
@@ -966,7 +966,7 @@ test('full import preview restores the focus timer and the system theme preferen
 
   const restored = JSON.parse(harness.values.get('app-data'));
   assert.equal(restored.settings.themeMode, 'system');
-  assert.equal(harness.values.get('timer-key'), JSON.stringify(timerSnapshot));
+  assert.equal(harness.values.get('timeTasksApp_focusTimer'), JSON.stringify(timerSnapshot));
   assert.equal(harness.values.has('import-marker'), false);
   assert.equal(harness.reloads(), 1);
   assert.deepEqual(harness.alerts, []);
@@ -981,7 +981,7 @@ test('legacy V1 import without focusTimer preserves the device timer and maps le
 
   const restored = JSON.parse(harness.values.get('app-data'));
   assert.equal(restored.settings.themeMode, 'dark');
-  assert.equal(harness.values.get('timer-key'), 'keep-existing-timer');
+  assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'keep-existing-timer');
   assert.equal(harness.values.has('import-marker'), false);
   assert.equal(harness.reloads(), 1);
   assert.deepEqual(harness.alerts, []);

@@ -95,7 +95,8 @@ const reminderFunctions = [
   '_taskReminderAt',
   '_cancelTaskNotification',
   '_syncTaskNotification',
-  '_syncAllTaskNotifications'
+  '_syncAllTaskNotifications',
+  '_recordTaskReminderSyncResult'
 ];
 
 test('task reminder IDs are stable and stay separate from the reserved focus notification ID', () => {

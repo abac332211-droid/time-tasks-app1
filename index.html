@@ -6021,7 +6021,7 @@ var _taskReminderSyncStatus = null;
 
 function _recordTaskReminderSyncResult(success) {
   _taskReminderSyncStatus = success === true;
-  _updateNotifToggleUI();
+  if (typeof _updateNotifToggleUI === "function") _updateNotifToggleUI();
   return success === true;
 }
 
