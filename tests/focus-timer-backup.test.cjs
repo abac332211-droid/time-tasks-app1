@@ -8,6 +8,37 @@ const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 
+const STORAGE_KEYS = Object.freeze({
+  MAIN: 'timeTasksApp_v1',
+  PRE_IMPORT: 'timeTasksApp_preImportBackup',
+  IMPORT_IN_PROGRESS: 'timeTasksApp_importInProgress',
+  FOCUS_SESSIONS: 'timeTasksApp_focusSessions',
+  FOCUS_TIMER: 'timeTasksApp_focusTimer',
+  MENTAL_INBOX: 'timeTasksApp_mentalInbox',
+  THOUGHTS: 'timeTasksApp_thoughts_v1',
+  PROJECTS: 'timeTasksApp_projects_v1',
+  FOCUS_SETTINGS: 'timeTasksApp_focusSettings',
+  NOTIFICATIONS: 'timeTasksApp_notifications'
+});
+
+test('backup fault-injection harness uses the exact LocalStorage keys declared by the app', () => {
+  const declarations = [
+    ['const STORAGE_KEY = "timeTasksApp_v1"', STORAGE_KEYS.MAIN],
+    ['const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup"', STORAGE_KEYS.PRE_IMPORT],
+    ['const IMPORT_IN_PROGRESS_KEY = "timeTasksApp_importInProgress"', STORAGE_KEYS.IMPORT_IN_PROGRESS],
+    ['var FOCUS_SESSIONS_KEY = "timeTasksApp_focusSessions"', STORAGE_KEYS.FOCUS_SESSIONS],
+    ['var FOCUS_TIMER_KEY = "timeTasksApp_focusTimer"', STORAGE_KEYS.FOCUS_TIMER],
+    ['var MENTAL_INBOX_KEY = "timeTasksApp_mentalInbox"', STORAGE_KEYS.MENTAL_INBOX],
+    ['var THOUGHTS_KEY = "timeTasksApp_thoughts_v1"', STORAGE_KEYS.THOUGHTS],
+    ['var PROJECTS_KEY = "timeTasksApp_projects_v1"', STORAGE_KEYS.PROJECTS],
+    ['var FOCUS_SETTINGS_KEY = "timeTasksApp_focusSettings"', STORAGE_KEYS.FOCUS_SETTINGS],
+    ['var NOTIFICATIONS_KEY = "timeTasksApp_notifications"', STORAGE_KEYS.NOTIFICATIONS]
+  ];
+  for (const [declaration, key] of declarations) {
+    assert.ok(html.includes(declaration), 'missing app storage declaration: ' + key);
+  }
+});
+
 function loadTopLevelFunction(name) {
   const marker = `function ${name}(`;
   const start = html.indexOf(marker);
@@ -134,8 +165,8 @@ test('backup builder includes the paused focus timer and uses backup format v2',
     STORAGE_KEY: 'main',
     FOCUS_SESSIONS_KEY: 'sessions',
     MENTAL_INBOX_KEY: 'inbox',
-    THOUGHTS_KEY: 'thoughts',
-    PROJECTS_KEY: 'projects',
+    THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
+    PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
     APP_VERSION: '2.9.0',
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 2,
@@ -175,8 +206,8 @@ test('backup builder validates raw session records instead of silently filtering
     STORAGE_KEY: 'main',
     FOCUS_SESSIONS_KEY: 'sessions',
     MENTAL_INBOX_KEY: 'inbox',
-    THOUGHTS_KEY: 'thoughts',
-    PROJECTS_KEY: 'projects',
+    THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
+    PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
     APP_VERSION: '2.9.0',
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 2,
@@ -383,13 +414,13 @@ function restoreContext(storage) {
   let invalidations = 0;
   const context = {
     localStorage: storage,
-    STORAGE_KEY: 'app-main',
-    THOUGHTS_KEY: 'app-thoughts',
-    PROJECTS_KEY: 'app-projects',
-    FOCUS_SETTINGS_KEY: 'app-focus-settings',
-    NOTIFICATIONS_KEY: 'app-notifications',
-    IMPORT_IN_PROGRESS_KEY: 'app-import-marker',
-    PRE_IMPORT_KEY: 'app-pre-import',
+    STORAGE_KEY: STORAGE_KEYS.MAIN,
+    THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
+    PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
+    FOCUS_SETTINGS_KEY: STORAGE_KEYS.FOCUS_SETTINGS,
+    NOTIFICATIONS_KEY: STORAGE_KEYS.NOTIFICATIONS,
+    IMPORT_IN_PROGRESS_KEY: STORAGE_KEYS.IMPORT_IN_PROGRESS,
+    PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
     validateV2: () => true,
     _invalidateProjectsCache: () => { invalidations++; }
   };
@@ -401,14 +432,14 @@ function restoreContext(storage) {
 
 test('rollback snapshot restores and reads back the focus timer with every other key', () => {
   const storage = memoryStorage({
-    'app-main': 'new-main',
-    'timeTasksApp_focusSessions': 'new-sessions',
-    'timeTasksApp_focusTimer': 'new-timer',
-    'timeTasksApp_mentalInbox': 'new-inbox',
-    'app-thoughts': 'new-thoughts',
-    'app-projects': 'new-projects',
-    'app-focus-settings': 'new-settings',
-    'app-notifications': 'new-notifications'
+    STORAGE_KEYS.MAIN: 'new-main',
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'new-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'new-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'new-inbox',
+    STORAGE_KEYS.THOUGHTS: 'new-thoughts',
+    STORAGE_KEYS.PROJECTS: 'new-projects',
+    STORAGE_KEYS.FOCUS_SETTINGS: 'new-settings',
+    STORAGE_KEYS.NOTIFICATIONS: 'new-notifications'
   });
   const harness = restoreContext(storage);
   const restore = vm.runInNewContext(
@@ -419,13 +450,13 @@ test('rollback snapshot restores and reads back the focus timer with every other
 
   assert.equal(restore(snapshot), true);
   assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
-  assert.equal(storage.getItem('app-main'), 'previous-main');
+  assert.equal(storage.getItem(STORAGE_KEYS.MAIN), 'previous-main');
   assert.equal(storage.getItem('timeTasksApp_focusSessions'), 'previous-sessions');
   assert.equal(storage.getItem('timeTasksApp_mentalInbox'), 'previous-inbox');
-  assert.equal(storage.getItem('app-thoughts'), 'previous-thoughts');
-  assert.equal(storage.getItem('app-projects'), 'previous-projects');
-  assert.equal(storage.getItem('app-focus-settings'), 'previous-settings');
-  assert.equal(storage.getItem('app-notifications'), 'previous-notifications');
+  assert.equal(storage.getItem(STORAGE_KEYS.THOUGHTS), 'previous-thoughts');
+  assert.equal(storage.getItem(STORAGE_KEYS.PROJECTS), 'previous-projects');
+  assert.equal(storage.getItem(STORAGE_KEYS.FOCUS_SETTINGS), 'previous-settings');
+  assert.equal(storage.getItem(STORAGE_KEYS.NOTIFICATIONS), 'previous-notifications');
   assert.equal(harness.invalidationCount(), 1);
 });
 
@@ -452,16 +483,16 @@ test('interrupted import recovery restores the previous timer and clears both ma
   const previous = storageSnapshot('previous');
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] });
   const storage = memoryStorage({
-    'app-import-marker': '1',
-    'app-pre-import': JSON.stringify(previous),
-    'app-main': 'partially-imported-main',
-    'timeTasksApp_focusSessions': 'partially-imported-sessions',
-    'timeTasksApp_focusTimer': 'partially-imported-timer',
-    'timeTasksApp_mentalInbox': 'partially-imported-inbox',
-    'app-thoughts': 'partially-imported-thoughts',
-    'app-projects': 'partially-imported-projects',
-    'app-focus-settings': 'partially-imported-settings',
-    'app-notifications': 'partially-imported-notifications'
+    STORAGE_KEYS.IMPORT_IN_PROGRESS: '1',
+    STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous),
+    STORAGE_KEYS.MAIN: 'partially-imported-main',
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'partially-imported-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'partially-imported-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'partially-imported-inbox',
+    STORAGE_KEYS.THOUGHTS: 'partially-imported-thoughts',
+    STORAGE_KEYS.PROJECTS: 'partially-imported-projects',
+    STORAGE_KEYS.FOCUS_SETTINGS: 'partially-imported-settings',
+    STORAGE_KEYS.NOTIFICATIONS: 'partially-imported-notifications'
   });
   const harness = restoreContext(storage);
   const recovery = vm.runInNewContext(
@@ -472,14 +503,14 @@ test('interrupted import recovery restores the previous timer and clears both ma
 
   assert.equal(recovery(), true);
   assert.equal(storage.getItem('timeTasksApp_focusTimer'), 'previous-timer');
-  assert.equal(storage.getItem('app-main'), previous.main);
-  assert.equal(storage.getItem('app-import-marker'), null);
-  assert.equal(storage.getItem('app-pre-import'), null);
+  assert.equal(storage.getItem(STORAGE_KEYS.MAIN), previous.main);
+  assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), null);
+  assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), null);
   assert.equal(harness.invalidationCount(), 1);
 });
 
 test('interrupted import keeps its recovery marker when the saved snapshot is missing', () => {
-  const storage = memoryStorage({ 'app-import-marker': '1' });
+  const storage = memoryStorage({ STORAGE_KEYS.IMPORT_IN_PROGRESS: '1' });
   const harness = restoreContext(storage);
   const recovery = vm.runInNewContext(
     extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
@@ -488,7 +519,7 @@ test('interrupted import keeps its recovery marker when the saved snapshot is mi
   );
 
   assert.equal(recovery(), false);
-  assert.equal(storage.getItem('app-import-marker'), '1');
+  assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), '1');
 });
 
 
@@ -917,14 +948,14 @@ test('timer rehydration removes a reference to a task absent from restored tasks
 
 function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
   const storage = memoryStorage({
-    'app-data': JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
-    'timeTasksApp_focusSessions': 'previous-sessions',
-    'timeTasksApp_focusTimer': existingTimerRaw,
-    'timeTasksApp_mentalInbox': 'previous-inbox',
-    thoughts: 'previous-thoughts',
-    projects: 'previous-projects',
-    'focus-settings': 'previous-focus-settings',
-    notifications: 'previous-notifications'
+    STORAGE_KEYS.MAIN: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'previous-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: existingTimerRaw,
+    [STORAGE_KEYS.MENTAL_INBOX]: 'previous-inbox',
+    [STORAGE_KEYS.THOUGHTS]: 'previous-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'previous-projects',
+    STORAGE_KEYS.FOCUS_SETTINGS: 'previous-focus-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'previous-notifications'
   }, faults);
   const values = storage.values;
   const sessionValues = new Map();
@@ -932,14 +963,14 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
   const confirmations = [];
   let reloads = 0;
   const sandbox = {
-    STORAGE_KEY: 'app-data',
-    FOCUS_TIMER_KEY: 'timeTasksApp_focusTimer',
-    IMPORT_IN_PROGRESS_KEY: 'import-marker',
-    PRE_IMPORT_KEY: 'pre-import',
-    THOUGHTS_KEY: 'thoughts',
-    PROJECTS_KEY: 'projects',
-    FOCUS_SETTINGS_KEY: 'focus-settings',
-    NOTIFICATIONS_KEY: 'notifications',
+    STORAGE_KEY: STORAGE_KEYS.MAIN,
+    FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
+    IMPORT_IN_PROGRESS_KEY: STORAGE_KEYS.IMPORT_IN_PROGRESS,
+    PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
+    THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
+    PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
+    FOCUS_SETTINGS_KEY: STORAGE_KEYS.FOCUS_SETTINGS,
+    NOTIFICATIONS_KEY: STORAGE_KEYS.NOTIFICATIONS,
     CURRENT_SCHEMA_VERSION: 2,
     APP_VERSION: '2.9.0',
     localStorage: storage,
@@ -999,23 +1030,27 @@ function validationTask(overrides = {}) {
   };
 }
 
-test('backup validator checks loader-required thought and project fields without rejecting legacy timestamp formats or extra fields', () => {
+
+
+test('backup validator preserves loader-repairable legacy fields and unknown properties without mutating records', () => {
   const validate = vm.runInNewContext(
     '(' + extractTopLevelSource('validateBackup') + ')',
     backupValidationContext()
   );
   const backup = integrationBackup({
     tasks: [], dailyLogs: [],
-    thoughts: [{ id: 1, text: 'فكرة قديمة', createdAt: 'legacy-date-string', customField: { retained: true } }],
-    projects: [{ id: 4, name: 'مشروع قديم', status: 'paused', createdAt: 'legacy-created-at', extension: 'kept' }]
+    thoughts: [{ id: 1, customField: { retained: true } }],
+    projects: [{ id: 4, status: 'legacy-status', extension: 'kept' }]
   });
+  const before = JSON.stringify(backup);
 
   assert.equal(validate(backup).valid, true);
+  assert.equal(JSON.stringify(backup), before);
   assert.equal(backup.data.thoughts[0].customField.retained, true);
   assert.equal(backup.data.projects[0].extension, 'kept');
 });
 
-test('backup validator rejects duplicate or loader-repaired thought and project records', () => {
+test('backup validator rejects duplicate or invalid stable identifiers in thought and project records', () => {
   const validate = vm.runInNewContext(
     '(' + extractTopLevelSource('validateBackup') + ')',
     backupValidationContext()
@@ -1025,13 +1060,8 @@ test('backup validator rejects duplicate or loader-repaired thought and project 
   const cases = [
     { thoughts: [validThought, { ...validThought, text: 'أخرى' }], reason: 'معرّف خاطرة مكرر' },
     { thoughts: [{ ...validThought, id: 0 }], reason: 'معرّف خاطرة غير صالح' },
-    { thoughts: [{ ...validThought, text: '  ' }], reason: 'نص الخاطرة' },
-    { thoughts: [{ ...validThought, createdAt: '' }], reason: 'تاريخ إنشاء الخاطرة' },
     { projects: [validProject, { ...validProject, name: 'مشروع آخر' }], reason: 'معرّف مشروع مكرر' },
-    { projects: [{ ...validProject, id: -1 }], reason: 'معرّف مشروع غير صالح' },
-    { projects: [{ ...validProject, name: '' }], reason: 'اسم المشروع' },
-    { projects: [{ ...validProject, status: 'unknown' }], reason: 'حالة المشروع' },
-    { projects: [{ ...validProject, createdAt: '' }], reason: 'تاريخ إنشاء المشروع' }
+    { projects: [{ ...validProject, id: -1 }], reason: 'معرّف مشروع غير صالح' }
   ];
 
   for (const item of cases) {
@@ -1134,10 +1164,10 @@ test('full import preview restores the focus timer and the system theme preferen
   });
   const harness = runImportPreviewIntegration(backup, 'previous-timer');
 
-  const restored = JSON.parse(harness.values.get('app-data'));
+  const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
   assert.equal(restored.settings.themeMode, 'system');
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), JSON.stringify(timerSnapshot));
-  assert.equal(harness.values.has('import-marker'), false);
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
   assert.equal(harness.reloads(), 1);
   assert.deepEqual(harness.alerts, []);
 });
@@ -1149,24 +1179,24 @@ test('legacy V1 import without focusTimer preserves the device timer and maps le
   });
   const harness = runImportPreviewIntegration(backup, 'keep-existing-timer');
 
-  const restored = JSON.parse(harness.values.get('app-data'));
+  const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
   assert.equal(restored.settings.themeMode, 'dark');
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'keep-existing-timer');
-  assert.equal(harness.values.has('import-marker'), false);
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
   assert.equal(harness.reloads(), 1);
   assert.deepEqual(harness.alerts, []);
 });
 
 
 const RESTORE_KEY_CASES = [
-  ['app-main', 'main', 'main'],
-  ['timeTasksApp_focusSessions', 'focusSessions', 'focusSessions'],
-  ['timeTasksApp_focusTimer', 'focusTimer', 'focusTimer'],
-  ['timeTasksApp_mentalInbox', 'mentalInbox', 'mentalInbox'],
-  ['app-thoughts', 'thoughts', 'thoughts'],
-  ['app-projects', 'projects', 'projects'],
-  ['app-focus-settings', 'focusSettings', 'focusSettings'],
-  ['app-notifications', 'notifications', 'notifications']
+  [STORAGE_KEYS.MAIN, 'main', 'main'],
+  [STORAGE_KEYS.FOCUS_SESSIONS, 'focusSessions', 'focusSessions'],
+  [STORAGE_KEYS.FOCUS_TIMER, 'focusTimer', 'focusTimer'],
+  [STORAGE_KEYS.MENTAL_INBOX, 'mentalInbox', 'mentalInbox'],
+  [STORAGE_KEYS.THOUGHTS, 'thoughts', 'thoughts'],
+  [STORAGE_KEYS.PROJECTS, 'projects', 'projects'],
+  [STORAGE_KEYS.FOCUS_SETTINGS, 'focusSettings', 'focusSettings'],
+  [STORAGE_KEYS.NOTIFICATIONS, 'notifications', 'notifications']
 ];
 
 test('snapshot restoration reports read, write and remove failures for every storage key', () => {
@@ -1204,8 +1234,8 @@ test('interrupted import recovery restores snapshots after interruption at every
 
   for (let interruptedAfter = 0; interruptedAfter <= RESTORE_KEY_CASES.length; interruptedAfter++) {
     const seed = {
-      'app-import-marker': '1',
-      'app-pre-import': JSON.stringify(previous)
+      STORAGE_KEYS.IMPORT_IN_PROGRESS: '1',
+      STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous)
     };
     RESTORE_KEY_CASES.forEach(([key, property], index) => {
       seed[key] = index < interruptedAfter ? 'partially-imported-' + property : previous[property];
@@ -1222,18 +1252,63 @@ test('interrupted import recovery restores snapshots after interruption at every
     for (const [key, property] of RESTORE_KEY_CASES) {
       assert.equal(storage.getItem(key), previous[property], 'restored ' + key);
     }
-    assert.equal(storage.getItem('app-import-marker'), null);
-    assert.equal(storage.getItem('app-pre-import'), null);
+    assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), null);
+    assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), null);
+  }
+});
+
+test('interrupted-import recovery preserves marker and snapshot when either control key cannot be read', () => {
+  const previous = storageSnapshot('previous');
+  previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
+  for (const failedKey of [STORAGE_KEYS.IMPORT_IN_PROGRESS, STORAGE_KEYS.PRE_IMPORT]) {
+    const storage = memoryStorage({
+      [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1',
+      [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous),
+      [STORAGE_KEYS.MAIN]: 'partially-imported-main'
+    }, { throwOnGetKey: failedKey });
+    const harness = restoreContext(storage);
+    const recover = vm.runInNewContext(
+      extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
+      extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+      harness.context
+    );
+
+    assert.equal(recover(), false, failedKey);
+    assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), '1');
+    assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), JSON.stringify(previous));
+    assert.equal(storage.getItem(STORAGE_KEYS.MAIN), 'partially-imported-main');
+  }
+});
+
+test('failure to write either import control key does not change any user data collection', () => {
+  const backup = integrationBackup({ tasks: [], dailyLogs: [] });
+  const original = {
+    [STORAGE_KEYS.MAIN]: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'previous-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'previous-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'previous-inbox',
+    [STORAGE_KEYS.THOUGHTS]: 'previous-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'previous-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'previous-focus-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'previous-notifications'
+  };
+  for (const failedKey of [STORAGE_KEYS.PRE_IMPORT, STORAGE_KEYS.IMPORT_IN_PROGRESS]) {
+    const harness = runImportPreviewIntegration(backup, 'previous-timer', { throwOnSetKey: failedKey });
+    for (const [key, value] of Object.entries(original)) {
+      assert.equal(harness.values.get(key), value, 'unchanged user data key: ' + key);
+    }
+    assert.equal(harness.reloads(), 0);
+    assert.ok(harness.alerts.length > 0);
   }
 });
 
 test('failed recovery retains both the recovery marker and original snapshot, then succeeds on retry', () => {
   const previous = storageSnapshot('previous');
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
-  const faults = { throwOnSetKey: 'app-thoughts' };
+  const faults = { throwOnSetKey: STORAGE_KEYS.THOUGHTS };
   const storage = memoryStorage({
-    'app-import-marker': '1',
-    'app-pre-import': JSON.stringify(previous),
+    STORAGE_KEYS.IMPORT_IN_PROGRESS: '1',
+    STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous),
     ...Object.fromEntries(RESTORE_KEY_CASES.map(([key, property]) => [key, 'partial-' + property]))
   }, faults);
   const harness = restoreContext(storage);
@@ -1244,8 +1319,8 @@ test('failed recovery retains both the recovery marker and original snapshot, th
   );
 
   assert.equal(recover(), false);
-  assert.equal(storage.getItem('app-import-marker'), '1');
-  assert.equal(storage.getItem('app-pre-import'), JSON.stringify(previous));
+  assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), '1');
+  assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), JSON.stringify(previous));
   faults.throwOnSetKey = null;
   assert.equal(recover(), true);
   for (const [key, property] of RESTORE_KEY_CASES) {
@@ -1287,7 +1362,7 @@ test('import round trip restores all data collections and preserves extra settin
   };
   const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer');
 
-  const restoredMain = JSON.parse(harness.values.get('app-data'));
+  const restoredMain = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
   assert.deepEqual(restoredMain.tasks, data.tasks);
   assert.equal(restoredMain.tasks[0].id, 11);
   assert.deepEqual(restoredMain.tasks[0].customTaskField, { retained: true });
@@ -1297,20 +1372,20 @@ test('import round trip restores all data collections and preserves extra settin
   assert.deepEqual(JSON.parse(harness.values.get('timeTasksApp_focusSessions')), data.focusSessions);
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), JSON.stringify(timerSnapshot));
   assert.deepEqual(JSON.parse(harness.values.get('timeTasksApp_mentalInbox')), data.mentalInbox);
-  assert.deepEqual(JSON.parse(harness.values.get('thoughts')), data.thoughts);
-  assert.deepEqual(JSON.parse(harness.values.get('projects')), data.projects);
-  assert.deepEqual(JSON.parse(harness.values.get('focus-settings')), data.focusSettings);
-  assert.deepEqual(JSON.parse(harness.values.get('notifications')), data.notifications);
+  assert.deepEqual(JSON.parse(harness.values.get(STORAGE_KEYS.THOUGHTS)), data.thoughts);
+  assert.deepEqual(JSON.parse(harness.values.get(STORAGE_KEYS.PROJECTS)), data.projects);
+  assert.deepEqual(JSON.parse(harness.values.get(STORAGE_KEYS.FOCUS_SETTINGS)), data.focusSettings);
+  assert.deepEqual(JSON.parse(harness.values.get(STORAGE_KEYS.NOTIFICATIONS)), data.notifications);
 });
 
 const IMPORT_WRITE_KEYS = [
-  'app-data',
+  STORAGE_KEYS.MAIN,
   'timeTasksApp_focusSessions',
   'timeTasksApp_focusTimer',
   'timeTasksApp_mentalInbox',
   'thoughts',
   'projects',
-  'focus-settings',
+  STORAGE_KEYS.FOCUS_SETTINGS,
   'notifications'
 ];
 
@@ -1335,15 +1410,15 @@ test('import write failure rolls back every collection before reporting failure'
     const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer', faults);
     assert.equal(harness.reloads(), 0, 'must not reload after failed write: ' + key);
     assert.ok(harness.alerts.length > 0, 'must report failed write: ' + key);
-    assert.equal(harness.values.get('app-data'), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
+    assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
     assert.equal(harness.values.get('timeTasksApp_focusSessions'), 'previous-sessions');
     assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'previous-timer');
     assert.equal(harness.values.get('timeTasksApp_mentalInbox'), 'previous-inbox');
-    assert.equal(harness.values.get('thoughts'), 'previous-thoughts');
-    assert.equal(harness.values.get('projects'), 'previous-projects');
-    assert.equal(harness.values.get('focus-settings'), 'previous-focus-settings');
-    assert.equal(harness.values.get('notifications'), 'previous-notifications');
-    assert.equal(harness.values.has('import-marker'), false);
+    assert.equal(harness.values.get(STORAGE_KEYS.THOUGHTS), 'previous-thoughts');
+    assert.equal(harness.values.get(STORAGE_KEYS.PROJECTS), 'previous-projects');
+    assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_SETTINGS), 'previous-focus-settings');
+    assert.equal(harness.values.get(STORAGE_KEYS.NOTIFICATIONS), 'previous-notifications');
+    assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
   }
 });
 
@@ -1367,19 +1442,19 @@ test('when rollback itself fails, marker and snapshot survive and startup recove
 
   assert.equal(harness.reloads(), 0);
   assert.ok(harness.alerts.length > 0);
-  assert.equal(harness.values.get('import-marker'), '1');
-  assert.ok(harness.values.has('pre-import'));
+  assert.equal(harness.values.get(STORAGE_KEYS.IMPORT_IN_PROGRESS), '1');
+  assert.ok(harness.values.has(STORAGE_KEYS.PRE_IMPORT));
 
   delete faults.failSetAt.thoughts;
   assert.equal(harness.recover(), true);
-  assert.equal(harness.values.get('app-data'), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
+  assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
   assert.equal(harness.values.get('timeTasksApp_focusSessions'), 'previous-sessions');
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'previous-timer');
   assert.equal(harness.values.get('timeTasksApp_mentalInbox'), 'previous-inbox');
-  assert.equal(harness.values.get('thoughts'), 'previous-thoughts');
-  assert.equal(harness.values.get('projects'), 'previous-projects');
-  assert.equal(harness.values.get('focus-settings'), 'previous-focus-settings');
-  assert.equal(harness.values.get('notifications'), 'previous-notifications');
+  assert.equal(harness.values.get(STORAGE_KEYS.THOUGHTS), 'previous-thoughts');
+  assert.equal(harness.values.get(STORAGE_KEYS.PROJECTS), 'previous-projects');
+  assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_SETTINGS), 'previous-focus-settings');
+  assert.equal(harness.values.get(STORAGE_KEYS.NOTIFICATIONS), 'previous-notifications');
 });
 
 
@@ -1389,33 +1464,33 @@ test('snapshot capture read failure for every storage key aborts import before a
     const harness = runImportPreviewIntegration(backup, 'previous-timer', { throwOnGetKey: key });
     assert.equal(harness.reloads(), 0, 'must not reload after snapshot read failure: ' + key);
     assert.ok(harness.alerts.length > 0, 'must report snapshot read failure: ' + key);
-    assert.equal(harness.values.get('app-data'), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
+    assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
     assert.equal(harness.values.get('timeTasksApp_focusSessions'), 'previous-sessions');
     assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'previous-timer');
     assert.equal(harness.values.get('timeTasksApp_mentalInbox'), 'previous-inbox');
-    assert.equal(harness.values.get('thoughts'), 'previous-thoughts');
-    assert.equal(harness.values.get('projects'), 'previous-projects');
-    assert.equal(harness.values.get('focus-settings'), 'previous-focus-settings');
-    assert.equal(harness.values.get('notifications'), 'previous-notifications');
-    assert.equal(harness.values.has('import-marker'), false);
-    assert.equal(harness.values.has('pre-import'), false);
+    assert.equal(harness.values.get(STORAGE_KEYS.THOUGHTS), 'previous-thoughts');
+    assert.equal(harness.values.get(STORAGE_KEYS.PROJECTS), 'previous-projects');
+    assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_SETTINGS), 'previous-focus-settings');
+    assert.equal(harness.values.get(STORAGE_KEYS.NOTIFICATIONS), 'previous-notifications');
+    assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+    assert.equal(harness.values.has(STORAGE_KEYS.PRE_IMPORT), false);
   }
 });
 
 test('manual undo marks restoration in progress and startup recovery completes a failed undo', () => {
   const previous = storageSnapshot('previous');
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
-  const faults = { throwOnSetKey: 'app-projects' };
+  const faults = { throwOnSetKey: STORAGE_KEYS.PROJECTS };
   const storage = memoryStorage({
-    'app-main': 'current-main',
-    'timeTasksApp_focusSessions': 'current-sessions',
-    'timeTasksApp_focusTimer': 'current-timer',
-    'timeTasksApp_mentalInbox': 'current-inbox',
-    'app-thoughts': 'current-thoughts',
-    'app-projects': 'current-projects',
-    'app-focus-settings': 'current-settings',
-    'app-notifications': 'current-notifications',
-    'app-pre-import': JSON.stringify(previous)
+    STORAGE_KEYS.MAIN: 'current-main',
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'current-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'current-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'current-inbox',
+    STORAGE_KEYS.THOUGHTS: 'current-thoughts',
+    STORAGE_KEYS.PROJECTS: 'current-projects',
+    STORAGE_KEYS.FOCUS_SETTINGS: 'current-settings',
+    STORAGE_KEYS.NOTIFICATIONS: 'current-notifications',
+    STORAGE_KEYS.PRE_IMPORT: JSON.stringify(previous)
   }, faults);
   const harness = restoreContext(storage);
   harness.context.showConfirmModal = (_title, _body, accept) => accept();
@@ -1432,8 +1507,8 @@ test('manual undo marks restoration in progress and startup recovery completes a
   );
 
   undo();
-  assert.equal(storage.getItem('app-import-marker'), '1');
-  assert.equal(storage.getItem('app-pre-import'), JSON.stringify(previous));
+  assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), '1');
+  assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), JSON.stringify(previous));
   assert.equal(harness.context.reloads, 0);
   assert.equal(harness.context.alerts.length, 1);
 
@@ -1445,17 +1520,17 @@ test('manual undo marks restoration in progress and startup recovery completes a
   );
   assert.equal(recover(), true);
   for (const [key, property] of [
-    ['app-main', 'main'],
-    ['timeTasksApp_focusSessions', 'focusSessions'],
-    ['timeTasksApp_focusTimer', 'focusTimer'],
-    ['timeTasksApp_mentalInbox', 'mentalInbox'],
-    ['app-thoughts', 'thoughts'],
-    ['app-projects', 'projects'],
-    ['app-focus-settings', 'focusSettings'],
-    ['app-notifications', 'notifications']
+    [STORAGE_KEYS.MAIN, 'main'],
+    [STORAGE_KEYS.FOCUS_SESSIONS, 'focusSessions'],
+    [STORAGE_KEYS.FOCUS_TIMER, 'focusTimer'],
+    [STORAGE_KEYS.MENTAL_INBOX, 'mentalInbox'],
+    [STORAGE_KEYS.THOUGHTS, 'thoughts'],
+    [STORAGE_KEYS.PROJECTS, 'projects'],
+    [STORAGE_KEYS.FOCUS_SETTINGS, 'focusSettings'],
+    [STORAGE_KEYS.NOTIFICATIONS, 'notifications']
   ]) {
     assert.equal(storage.getItem(key), previous[property]);
   }
-  assert.equal(storage.getItem('app-import-marker'), null);
-  assert.equal(storage.getItem('app-pre-import'), null);
+  assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), null);
+  assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), null);
 });

@@ -4087,6 +4087,7 @@ function validateBackup(obj) {
   // Match the non-destructive fields that the existing loaders rely on.
   // Optional and unknown properties are deliberately left untouched.
   if (Array.isArray(d.thoughts)) {
+    // Legacy loaders fill missing text/timestamps in memory; validation must not rewrite these records.
     const thoughtIds = new Set();
     for (let i = 0; i < d.thoughts.length; i++) {
       const thought = d.thoughts[i];
@@ -4097,14 +4098,11 @@ function validateBackup(obj) {
       if (thoughtIds.has(thought.id))
         return { valid: false, reason: "معرّف خاطرة مكرر: " + thought.id + "." };
       thoughtIds.add(thought.id);
-      if (typeof thought.text !== "string" || thought.text.trim() === "")
-        return { valid: false, reason: "نص الخاطرة مفقود أو فارغ (" + (i+1) + ")." };
-      if (typeof thought.createdAt !== "string" || !thought.createdAt)
-        return { valid: false, reason: "تاريخ إنشاء الخاطرة غير صالح (" + (i+1) + ")." };
     }
   }
 
   if (Array.isArray(d.projects)) {
+    // Legacy project loader supplies display fallbacks for these fields; preserve the raw backup unchanged.
     const projectIds = new Set();
     for (let i = 0; i < d.projects.length; i++) {
       const project = d.projects[i];
@@ -4115,12 +4113,6 @@ function validateBackup(obj) {
       if (projectIds.has(project.id))
         return { valid: false, reason: "معرّف مشروع مكرر: " + project.id + "." };
       projectIds.add(project.id);
-      if (typeof project.name !== "string" || project.name.trim() === "")
-        return { valid: false, reason: "اسم المشروع مفقود أو فارغ (" + (i+1) + ")." };
-      if (!VALID_PROJECT_STATUS.includes(project.status))
-        return { valid: false, reason: "حالة المشروع غير صالحة (" + (i+1) + ")." };
-      if (typeof project.createdAt !== "string" || !project.createdAt)
-        return { valid: false, reason: "تاريخ إنشاء المشروع غير صالح (" + (i+1) + ")." };
     }
 
     // Only enforce references when this backup actually contains the projects
