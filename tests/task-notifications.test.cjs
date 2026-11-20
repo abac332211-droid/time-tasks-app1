@@ -368,3 +368,30 @@ test('successful single-reminder cancellation does not mask a prior full-sync fa
   assert.equal(await fns._queueTaskReminderCancellation(task.id), true);
   assert.equal(harness.context._taskReminderSyncStatus, false);
 });
+
+
+test('invalid task reminder identifiers mark full reconciliation as incomplete', async () => {
+  const task = { id: 0, name: 'معرّف غير صالح', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
+  const harness = makeNotificationHarness({ tasks: [task], permission: 'granted' });
+  const fns = loadFunctions(reminderFunctions, harness.context);
+
+  assert.equal(await fns._syncAllTaskNotifications(), false);
+  assert.equal(harness.calls.schedule.length, 0);
+});
+
+test('colliding task reminder identifiers mark full reconciliation as incomplete', async () => {
+  const tasks = [
+    { id: 31, name: 'المهمة الأولى', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' },
+    { id: 32, name: 'المهمة الثانية', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' }
+  ];
+  const harness = makeNotificationHarness({ tasks, permission: 'granted' });
+  const context = Object.assign({}, harness.context, {
+    _taskNotificationId: () => 501,
+    _taskReminderAt: () => new Date(2099, 11, 31, 23, 59, 0, 0)
+  });
+  const fns = loadFunctions(['_syncAllTaskNotifications'], context);
+
+  assert.equal(await fns._syncAllTaskNotifications(), false);
+  assert.equal(harness.calls.schedule.length, 1);
+  assert.equal(harness.calls.schedule[0].id, 501);
+});
