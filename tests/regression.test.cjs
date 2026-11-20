@@ -573,7 +573,7 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(apk, /run: npm test/);
   assert.match(apk, /run: npm ci --no-audit --no-fund/);
   assert.doesNotMatch(apk, /run: npm install/);
-  assert.match(apk, /permissions:\\s*\\n\\s*contents: read/);
+  assert.match(apk, /permissions:\s*\n\s*contents: read/);
   assert.match(release, /actions\/setup-java@v6/);
   assert.doesNotMatch(apk + release, /actions\/setup-java@v5/);
   assert.match(release, /name: Run regression tests/);
