@@ -261,17 +261,16 @@ test('backup validator is wired to focus-timer validation', () => {
 });
 
 test('legacy V1 import without a timer snapshot preserves the current timer value', () => {
-  const getPayload = loadTopLevelFunction('_getFocusTimerRestorePayload');
+  const restoreSnapshot = loadTopLevelFunction('_restoreFocusTimerSnapshot');
   const existing = JSON.stringify({ mode: 'stopwatch', running: false, baseElapsed: 900 });
   const storage = memoryStorage({ focusTimer: existing });
 
-  assert.equal(getPayload({ tasks: [], dailyLogs: [] }), null);
-  assert.equal(getPayload({ tasks: [], dailyLogs: [], focusTimer: null }), null);
+  restoreSnapshot({ tasks: [], dailyLogs: [] }, storage, 'focusTimer');
+  restoreSnapshot({ tasks: [], dailyLogs: [], focusTimer: null }, storage, 'focusTimer');
   assert.equal(storage.getItem('focusTimer'), existing);
 
   const replacement = { mode: 'pomodoro', running: false, baseElapsed: 120 };
-  const replacementRaw = getPayload({ focusTimer: replacement });
-  storage.setItem('focusTimer', replacementRaw);
+  restoreSnapshot({ focusTimer: replacement }, storage, 'focusTimer');
   assert.deepEqual(JSON.parse(storage.getItem('focusTimer')), replacement);
 });
 
