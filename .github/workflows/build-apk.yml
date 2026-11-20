@@ -17,6 +17,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Run regression tests
+        run: npm test
+
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
