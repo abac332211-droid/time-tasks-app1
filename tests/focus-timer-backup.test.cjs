@@ -1380,13 +1380,13 @@ test('import round trip restores all data collections and preserves extra settin
 
 const IMPORT_WRITE_KEYS = [
   STORAGE_KEYS.MAIN,
-  'timeTasksApp_focusSessions',
-  'timeTasksApp_focusTimer',
-  'timeTasksApp_mentalInbox',
-  'thoughts',
-  'projects',
+  STORAGE_KEYS.FOCUS_SESSIONS,
+  STORAGE_KEYS.FOCUS_TIMER,
+  STORAGE_KEYS.MENTAL_INBOX,
+  STORAGE_KEYS.THOUGHTS,
+  STORAGE_KEYS.PROJECTS,
   STORAGE_KEYS.FOCUS_SETTINGS,
-  'notifications'
+  STORAGE_KEYS.NOTIFICATIONS
 ];
 
 test('import write failure rolls back every collection before reporting failure', () => {
@@ -1437,7 +1437,10 @@ test('when rollback itself fails, marker and snapshot survive and startup recove
     focusSettings: { workMin: 25, shortMin: 5, longMin: 15 },
     notifications: { enabled: true }
   };
-  const faults = { failSetOnceKey: 'notifications', failSetAt: { thoughts: 2 } };
+  const faults = {
+    failSetOnceKey: STORAGE_KEYS.NOTIFICATIONS,
+    failSetAt: { [STORAGE_KEYS.THOUGHTS]: 2 }
+  };
   const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer', faults);
 
   assert.equal(harness.reloads(), 0);
