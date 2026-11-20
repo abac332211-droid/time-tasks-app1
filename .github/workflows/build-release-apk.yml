@@ -21,7 +21,7 @@ jobs:
       - name: Checkout trusted main commit
         uses: actions/checkout@v5
         with:
-          ref: ${ github.sha }
+          ref: ${{ github.sha }}
 
       - name: Confirm trusted source
         run: |
@@ -87,11 +87,11 @@ jobs:
 
       - name: Validate and decode release keystore
         env:
-          ANDROID_KEYSTORE_BASE64: ${ secrets.ANDROID_KEYSTORE_BASE64 }
-          ANDROID_KEYSTORE_PASSWORD: ${ secrets.ANDROID_KEYSTORE_PASSWORD }
-          ANDROID_KEY_ALIAS: ${ secrets.ANDROID_KEY_ALIAS }
-          ANDROID_KEY_PASSWORD: ${ secrets.ANDROID_KEY_PASSWORD }
-          ANDROID_KEYSTORE_PATH: ${ github.workspace }/android/app/release-signing.keystore
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
         run: |
           if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
             echo "::error::Configure the four signing secrets in the protected android-release environment."
@@ -125,17 +125,17 @@ jobs:
       - name: Build signed Release APK
         working-directory: android
         env:
-          ANDROID_KEYSTORE_PATH: ${ github.workspace }/android/app/release-signing.keystore
-          ANDROID_KEYSTORE_PASSWORD: ${ secrets.ANDROID_KEYSTORE_PASSWORD }
-          ANDROID_KEY_ALIAS: ${ secrets.ANDROID_KEY_ALIAS }
-          ANDROID_KEY_PASSWORD: ${ secrets.ANDROID_KEY_PASSWORD }
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew clean assembleRelease --no-daemon
 
       - name: Verify APK signature, application identity, and certificate continuity
         env:
-          ANDROID_EXPECTED_CERT_SHA256: ${ vars.ANDROID_EXPECTED_CERT_SHA256 }
+          ANDROID_EXPECTED_CERT_SHA256: ${{ vars.ANDROID_EXPECTED_CERT_SHA256 }}
         run: |
           APK="android/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
@@ -180,7 +180,7 @@ jobs:
       - name: Upload signed Release APK
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: time-tasks-app-${ steps.version.outputs.version }-signed-release
+          name: time-tasks-app-${{ steps.version.outputs.version }}-signed-release
           path: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/apk/release/app-release.apk.sha256
