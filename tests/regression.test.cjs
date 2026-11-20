@@ -9,6 +9,7 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
 
 const inlineScripts = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
   .map((match) => match[1])
@@ -33,6 +34,14 @@ test('application, package, and PWA cache versions agree', () => {
   assert.match(appScript, /const APP_VERSION = "2\.9\.0";/);
   assert.equal(pkg.version, '2.9.0');
   assert.match(sw, /timetasks-cache-v2\.9\.0/);
+});
+
+test('npm lockfile pins the root package manifest and uses lockfile version 3', () => {
+  assert.equal(lock.lockfileVersion, 3);
+  assert.equal(lock.packages[''].name, pkg.name);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.deepEqual(lock.packages[''].dependencies, pkg.dependencies);
+  assert.deepEqual(lock.packages[''].devDependencies, pkg.devDependencies);
 });
 
 test('service worker precache only references files that exist', () => {
