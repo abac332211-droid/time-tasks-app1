@@ -3933,6 +3933,11 @@ function exportBackup() {
   }
 }
 
+function _getFocusTimerRestorePayload(data) {
+  if (!data || data.focusTimer === undefined || data.focusTimer === null) return null;
+  return JSON.stringify(data.focusTimer);
+}
+
 function validateBackup(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj))
     return { valid: false, reason: "الملف ليس كائن JSON صالحًا." };
@@ -4361,13 +4366,12 @@ function showImportPreview(obj) {
           return;
         }
 
-        var _importedFocusTimerRaw = d.focusTimer ? JSON.stringify(d.focusTimer) : null;
+        var _importedFocusTimerRaw = _getFocusTimerRestorePayload(d);
         try {
           if (_importedFocusTimerRaw !== null) {
             localStorage.setItem(FOCUS_TIMER_KEY, _importedFocusTimerRaw);
-          } else {
-            localStorage.removeItem(FOCUS_TIMER_KEY);
           }
+          // Legacy V1 backups predate focusTimer; preserve the current timer instead of deleting it.
         } catch (e) {
           var _focusTimerRollbackOk = _rollbackRestore(_rollback);
           if (_focusTimerRollbackOk) {
