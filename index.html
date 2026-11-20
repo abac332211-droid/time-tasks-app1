@@ -4312,7 +4312,13 @@ function showImportPreview(obj) {
   const logsCount = d.dailyLogs.length;
   const exportedAt = obj.exportedAt || "غير معروف";
 
-  const currentRaw = localStorage.getItem(STORAGE_KEY);
+  let currentRaw;
+  try {
+    currentRaw = localStorage.getItem(STORAGE_KEY);
+  } catch (e) {
+    showAlertModal("فشل الاستعادة", "تعذرت قراءة بياناتك الحالية. لم تبدأ الاستعادة ولم تُعدّل أي بيانات.");
+    return;
+  }
   let currentTasks = 0, currentLogs = 0;
   try {
     const cur = currentRaw ? JSON.parse(currentRaw) : {};
@@ -4376,16 +4382,22 @@ function showImportPreview(obj) {
           return;
         }
 
-        var _rollback = {
-          main: currentRaw || null,
-          focusSessions: localStorage.getItem("timeTasksApp_focusSessions"),
-          focusTimer: localStorage.getItem("timeTasksApp_focusTimer"),
-          mentalInbox: localStorage.getItem("timeTasksApp_mentalInbox"),
-          thoughts: localStorage.getItem(THOUGHTS_KEY),
-          projects: localStorage.getItem(PROJECTS_KEY),
-          focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
-          notifications: localStorage.getItem(NOTIFICATIONS_KEY)
-        };
+        var _rollback;
+        try {
+          _rollback = {
+            main: currentRaw || null,
+            focusSessions: localStorage.getItem("timeTasksApp_focusSessions"),
+            focusTimer: localStorage.getItem("timeTasksApp_focusTimer"),
+            mentalInbox: localStorage.getItem("timeTasksApp_mentalInbox"),
+            thoughts: localStorage.getItem(THOUGHTS_KEY),
+            projects: localStorage.getItem(PROJECTS_KEY),
+            focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
+            notifications: localStorage.getItem(NOTIFICATIONS_KEY)
+          };
+        } catch (e) {
+          showAlertModal("فشل الاستعادة", "تعذرت قراءة جميع البيانات اللازمة لتجهيز نقطة التراجع. لم تبدأ كتابة أي بيانات ولم يتغير التخزين الحالي.");
+          return;
+        }
         var _expectedFocusTimerRaw = (d.focusTimer !== undefined && d.focusTimer !== null)
           ? JSON.stringify(d.focusTimer)
           : _rollback.focusTimer;
@@ -4581,7 +4593,13 @@ function showImportPreview(obj) {
 }
 
 function undoLastImport() {
-  const raw = localStorage.getItem(PRE_IMPORT_KEY);
+  var raw;
+  try {
+    raw = localStorage.getItem(PRE_IMPORT_KEY);
+  } catch (e) {
+    showAlertModal("فشل قراءة نسخة التراجع", "تعذر قراءة النسخة السابقة. لم تُغيّر بياناتك الحالية.");
+    return;
+  }
   if (!raw) { showAlertModal("تنبيه", "لا توجد نسخة سابقة للتراجع."); return; }
   showConfirmModal("التراجع عن الاستعادة", "سيتم استرجاع الحالة السابقة قبل آخر استعادة. متابعة؟", function() {
     try {
@@ -4591,8 +4609,15 @@ function undoLastImport() {
           const mainParsed = JSON.parse(parsed.main);
           if (!validateV2(mainParsed)) { showAlertModal("خطأ", "النسخة السابقة تالفة."); return; }
         }
+        // Mark undo as an in-progress restore so a partial failure is retried at next startup.
+        try {
+          localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
+        } catch (e) {
+          showAlertModal("تعذر بدء التراجع", "تعذر حفظ علامة حماية التراجع. لم تبدأ استعادة البيانات.");
+          return;
+        }
         if (!_restoreStorageSnapshot(parsed)) {
-          showAlertModal("فشل الاسترجاع", "تعذر التحقق من استعادة جميع البيانات. احتُفظ بنسخة التراجع؛ صدّر بياناتك قبل أي إجراء آخر.");
+          showAlertModal("فشل الاسترجاع", "تعذر التحقق من استعادة جميع البيانات. احتُفظ بعلامة الاسترداد ونسخة التراجع؛ سيحاول التطبيق استكمالها عند إعادة فتحه.");
           return;
         }
       } else {
