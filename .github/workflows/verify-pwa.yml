@@ -43,7 +43,7 @@ jobs:
 
       - name: Upload 2.9.1 candidate web ZIP
         if: github.event_name == 'push' && github.ref == 'refs/heads/codex/v2.9.1-stability'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: time-tasks-app-${{ steps.candidate_web.outputs.version }}-candidate-web
           path: time-tasks-app-${{ steps.candidate_web.outputs.version }}-candidate-web.zip
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload downloadable web ZIP
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: time-tasks-app-2.9.0-web
           path: time-tasks-app-2.9.0-web.zip
