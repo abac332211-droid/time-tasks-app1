@@ -5604,6 +5604,8 @@ var _focusTimer = {
 var _focusDisplayInterval = null;
 var FOCUS_TIMER_CHECKPOINT_INTERVAL_MS = 5000;
 var _focusTimerCheckpointAt = 0;
+var _focusTimerColdStartWasRunning = false;
+var _focusTimerSavedAtAtLoad = null;
 
 function _loadFocusTimer() {
   try {
@@ -5612,6 +5614,8 @@ function _loadFocusTimer() {
     var d = JSON.parse(raw);
     if (!d || typeof d !== 'object') return;
     var wasRunning = d.running === true;
+    _focusTimerColdStartWasRunning = wasRunning;
+    _focusTimerSavedAtAtLoad = (typeof d.savedAt === 'number' && Number.isFinite(d.savedAt)) ? d.savedAt : null;
     _focusTimer.mode = (d.mode === 'stopwatch') ? 'stopwatch' : 'pomodoro';
     _focusTimer.phase = (['work','short-break','long-break'].indexOf(d.phase) !== -1) ? d.phase : 'work';
     _focusTimer.running = false;
@@ -5635,6 +5639,36 @@ function _loadFocusTimer() {
       console.warn("Could not persist the paused focus timer after restart; it remains paused in memory.");
     }
   } catch (e) {}
+}
+
+function _finalizeFocusTimerColdStartRestore() {
+  if (!_focusTimerColdStartWasRunning) return;
+  _focusTimerColdStartWasRunning = false;
+
+  // A Pomodoro may have crossed its phase boundary after the last checkpoint
+  // while the app was in the background. Preserve the pending confirmation,
+  // but never log or roll into the next phase automatically on a cold start.
+  if (_focusTimer.mode === "pomodoro" && !_focusTimer.awaitingConfirmation) {
+    var target = _phaseTargetSec();
+    if (Number.isFinite(target) && _focusTimer.baseElapsed >= target) {
+      var overflowSec = Math.max(0, _focusTimer.baseElapsed - target);
+      _focusTimer.baseElapsed = target;
+      if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
+        _focusTimer.sessionStartAt = (_focusTimerSavedAtAtLoad || Date.now()) - target * 1000;
+      }
+      var checkpointAt = _focusTimerSavedAtAtLoad || Date.now();
+      _focusTimer.pendingPhaseEndedAt = checkpointAt - overflowSec * 1000;
+      if (_focusTimer.pendingPhaseEndedAt < _focusTimer.sessionStartAt) {
+        _focusTimer.pendingPhaseEndedAt = _focusTimer.sessionStartAt;
+      }
+      _focusTimer.awaitingConfirmation = true;
+    }
+  }
+
+  _focusTimerSavedAtAtLoad = null;
+  if (!_saveFocusTimer()) {
+    console.warn("Could not persist the recovered focus timer after restart.");
+  }
 }
 
 function _saveFocusTimer() {
@@ -7744,6 +7778,7 @@ document.getElementById("taskDate").value = todayStr();
 
 _loadFocusTimer();
 _loadFocusSettings();
+_finalizeFocusTimerColdStartRestore();
 renderAll();
 
 /* ===== focus-timer-v2 init ===== */
