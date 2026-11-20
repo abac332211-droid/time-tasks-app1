@@ -132,6 +132,10 @@ test('backup builder includes the paused focus timer and uses backup format v2',
 
   const context = {
     STORAGE_KEY: 'main',
+    FOCUS_SESSIONS_KEY: 'sessions',
+    MENTAL_INBOX_KEY: 'inbox',
+    THOUGHTS_KEY: 'thoughts',
+    PROJECTS_KEY: 'projects',
     APP_VERSION: '2.9.0',
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 2,
@@ -143,6 +147,7 @@ test('backup builder includes the paused focus timer and uses backup format v2',
       }
     },
     buildEmptyV2: () => ({ settings: {}, tasks: [], dailyLogs: [] }),
+    validateBackup: () => ({ valid: true }),
     localDateTimeString: () => '2026-11-19T18:00:00',
     _loadSessions: () => [],
     _buildFocusTimerBackupSnapshot: buildSnapshot,
@@ -161,6 +166,42 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.equal(backup.backupFormatVersion, 2);
   assert.equal(backup.data.focusTimer.running, false);
   assert.equal(backup.data.focusTimer.baseElapsed, 300);
+});
+
+test('backup builder validates raw session records instead of silently filtering corrupted sessions', () => {
+  const sourceStart = html.indexOf('function buildBackupObject(');
+  const sourceEnd = html.indexOf('\n}', sourceStart);
+  const context = {
+    STORAGE_KEY: 'main',
+    FOCUS_SESSIONS_KEY: 'sessions',
+    MENTAL_INBOX_KEY: 'inbox',
+    THOUGHTS_KEY: 'thoughts',
+    PROJECTS_KEY: 'projects',
+    APP_VERSION: '2.9.0',
+    CURRENT_SCHEMA_VERSION: 2,
+    BACKUP_FORMAT_VERSION: 2,
+    localStorage: {
+      getItem(key) {
+        if (key === 'main') return JSON.stringify({ settings: {}, tasks: [], dailyLogs: [] });
+        if (key === 'sessions') return JSON.stringify([{ id: 1, durationSec: 'broken', startedAt: 'not-a-date', mode: 'stopwatch', phase: 'work' }]);
+        return null;
+      }
+    },
+    buildEmptyV2: () => ({ settings: {}, tasks: [], dailyLogs: [] }),
+    localDateTimeString: () => '2026-11-19T18:00:00',
+    _buildFocusTimerBackupSnapshot: () => timer(),
+    _focusTimer: timer(),
+    _getElapsedSec: () => 300,
+    _phaseTargetSec: () => 1_500,
+    _getFocusSettingsSnapshot: () => ({ workMin: 25, shortMin: 5, longMin: 15 }),
+    _getNotificationsPref: () => ({ enabled: false }),
+    validateBackup: (backup) => backup.data.focusSessions.some((session) => typeof session.durationSec !== 'number')
+      ? { valid: false, reason: 'جلسة تركيز غير صالحة' }
+      : { valid: true }
+  };
+  const buildBackup = vm.runInNewContext(`(${html.slice(sourceStart, sourceEnd + 2)})`, context);
+
+  assert.throws(() => buildBackup(), /تعذر إنشاء نسخة احتياطية كاملة: جلسة تركيز غير صالحة/);
 });
 
 test('backup validator is wired to focus-timer validation', () => {
@@ -194,6 +235,19 @@ test('backup validator is wired to focus-timer validation', () => {
 
   assert.equal(validateBackup(valid).valid, true);
   assert.equal(validateBackup(invalid).valid, false);
+
+  const missingTimer = {
+    ...valid,
+    data: { ...valid.data }
+  };
+  delete missingTimer.data.focusTimer;
+  assert.equal(validateBackup(missingTimer).valid, false);
+
+  const nullTimer = {
+    ...valid,
+    data: { ...valid.data, focusTimer: null }
+  };
+  assert.equal(validateBackup(nullTimer).valid, false);
 });
 
 test('legacy format-v1 backup without focusTimer remains import-compatible', () => {
