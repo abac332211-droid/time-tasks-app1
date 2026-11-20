@@ -551,6 +551,9 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(verify, /if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
   assert.match(apk, /actions\/checkout@v5/);
   assert.match(apk, /actions\/setup-node@v5/);
+  assert.match(release, /name: Run regression tests/);
+  assert.match(release, /run: npm test/);
+  assert.match(release, /apksigner verify --verbose/);
   for (const workflow of [verify, apk, release]) {
     assert.ok(workflow.includes('actions/upload-artifact@v7.0.2'));
     assert.ok(!workflow.includes('actions/upload-artifact@v4'));
