@@ -211,6 +211,19 @@ test('first native toggle requests permission instead of silently switching off 
   assert.equal(harness.context.preference, true);
 });
 
+test('enabling notifications reports a failed reminder reconciliation instead of false success', async () => {
+  const harness = makeNotificationHarness({ enabled: false, permission: 'granted' });
+  harness.context._queueAllTaskReminderSync = async () => false;
+  const { _setCapacitorNotificationsEnabled } = loadFunctions(
+    ['_setCapacitorNotificationsEnabled'],
+    harness.context
+  );
+
+  const result = await _setCapacitorNotificationsEnabled(true);
+  assert.equal(result, false);
+  assert.equal(harness.context.preference, true);
+});
+
 test('saving tasks and app startup both queue reminder reconciliation', () => {
   const saveData = extractFunction('saveData');
   assert.match(saveData, /_queueAllTaskReminderSync\(\)/);
