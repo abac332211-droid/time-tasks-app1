@@ -332,7 +332,7 @@ test('legacy format-v1 backup without focusTimer remains import-compatible', () 
 });
 
 test('cold-start finalization runs after focus settings are loaded', () => {
-  const normalizedHtml = html.replace(/\\r\\n/g, '\\n');
+  const normalizedHtml = html.replace(/\\r\\n/g, '\n');
   const loadTimer = normalizedHtml.lastIndexOf('_loadFocusTimer();');
   const loadSettings = normalizedHtml.indexOf('_loadFocusSettings();', loadTimer);
   const finalize = normalizedHtml.indexOf('_finalizeFocusTimerColdStartRestore();', loadSettings);
@@ -1268,7 +1268,7 @@ test('interrupted-import recovery preserves marker and snapshot when either cont
     }, { throwOnGetKey: failedKey });
     const harness = restoreContext(storage);
     const recover = vm.runInNewContext(
-      extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
+      extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
       extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
       harness.context
     );
