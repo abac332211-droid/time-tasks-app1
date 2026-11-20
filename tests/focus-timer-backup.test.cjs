@@ -1175,12 +1175,14 @@ test('full import preview restores the focus timer and the system theme preferen
 test('legacy V1 import without focusTimer preserves the device timer and maps legacy darkMode', () => {
   const backup = integrationBackup({
     settings: { operationalDayStart: 4, firstUseDate: '2026-11-20', darkMode: true },
-    tasks: [], dailyLogs: []
+    tasks: [validationTask({ id: 91, projectId: 42 })], dailyLogs: []
   });
   const harness = runImportPreviewIntegration(backup, 'keep-existing-timer');
 
   const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
   assert.equal(restored.settings.themeMode, 'dark');
+  assert.equal(restored.tasks[0].projectId, 42);
+  assert.equal(harness.values.get(STORAGE_KEYS.PROJECTS), 'previous-projects');
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'keep-existing-timer');
   assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
   assert.equal(harness.reloads(), 1);
@@ -1261,11 +1263,12 @@ test('interrupted-import recovery preserves marker and snapshot when either cont
   const previous = storageSnapshot('previous');
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
   for (const failedKey of [STORAGE_KEYS.IMPORT_IN_PROGRESS, STORAGE_KEYS.PRE_IMPORT]) {
+    const faults = { throwOnGetKey: failedKey };
     const storage = memoryStorage({
       [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1',
       [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous),
       [STORAGE_KEYS.MAIN]: 'partially-imported-main'
-    }, { throwOnGetKey: failedKey });
+    }, faults);
     const harness = restoreContext(storage);
     const recover = vm.runInNewContext(
       extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
@@ -1274,6 +1277,7 @@ test('interrupted-import recovery preserves marker and snapshot when either cont
     );
 
     assert.equal(recover(), false, failedKey);
+    faults.throwOnGetKey = null;
     assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), '1');
     assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), JSON.stringify(previous));
     assert.equal(storage.getItem(STORAGE_KEYS.MAIN), 'partially-imported-main');
