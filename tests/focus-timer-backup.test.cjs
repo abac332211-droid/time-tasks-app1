@@ -1215,7 +1215,7 @@ test('interrupted import recovery restores snapshots after interruption at every
 test('failed recovery retains both the recovery marker and original snapshot, then succeeds on retry', () => {
   const previous = storageSnapshot('previous');
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
-  const faults = { throwOnSetKey: 'thoughts' };
+  const faults = { throwOnSetKey: 'app-thoughts' };
   const storage = memoryStorage({
     'app-import-marker': '1',
     'app-pre-import': JSON.stringify(previous),
