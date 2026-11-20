@@ -510,7 +510,7 @@ test('interrupted import recovery restores the previous timer and clears both ma
 });
 
 test('interrupted import keeps its recovery marker when the saved snapshot is missing', () => {
-  const storage = memoryStorage({ STORAGE_KEYS.IMPORT_IN_PROGRESS: '1' });
+  const storage = memoryStorage({ [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1' });
   const harness = restoreContext(storage);
   const recovery = vm.runInNewContext(
     extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
