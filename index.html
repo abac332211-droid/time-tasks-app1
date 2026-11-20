@@ -6044,7 +6044,11 @@ function _queueTaskReminderCancellation(taskId) {
   _taskReminderSyncQueue = _taskReminderSyncQueue
     .catch(function() { return false; })
     .then(function() { return _cancelTaskNotification(taskId); })
-    .then(_recordTaskReminderSyncResult)
+    .then(function(cancelled) {
+      // Cancelling one task does not prove that every remaining reminder is synchronized.
+      if (cancelled !== true) _recordTaskReminderSyncResult(false);
+      return cancelled === true;
+    })
     .catch(function(e) {
       console.warn("Queued task reminder cancellation failed:", e);
       _recordTaskReminderSyncResult(false);

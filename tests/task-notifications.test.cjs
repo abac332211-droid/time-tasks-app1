@@ -351,3 +351,20 @@ test('native notification UI shows an enabled preference with failed reminder re
   assert.match(button.textContent, /المزامنة متعثرة/);
   assert.equal(button.className, 'btn-ghost');
 });
+
+
+test('successful single-reminder cancellation does not mask a prior full-sync failure', async () => {
+  const task = { id: 51, name: 'مهمة', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
+  const harness = makeNotificationHarness({ tasks: [task], permission: 'granted' });
+  harness.context._taskReminderSyncStatus = false;
+  harness.context._taskReminderSyncQueue = Promise.resolve(true);
+  const fns = loadFunctions([
+    '_taskNotificationId',
+    '_cancelTaskNotification',
+    '_queueTaskReminderCancellation',
+    '_recordTaskReminderSyncResult'
+  ], harness.context);
+
+  assert.equal(await fns._queueTaskReminderCancellation(task.id), true);
+  assert.equal(harness.context._taskReminderSyncStatus, false);
+});
