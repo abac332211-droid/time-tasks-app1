@@ -6,17 +6,27 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: android-signed-release
+  cancel-in-progress: false
+
 jobs:
   release:
+    # Signing secrets must never be exposed to code from an arbitrary branch or PR.
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
     environment:
       name: android-release
-    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout reviewed commit
+      - name: Checkout trusted main commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.sha }}
+          ref: ${ github.sha }
+
+      - name: Confirm trusted source
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -29,9 +39,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install locked dependencies
-        run: npm ci --no-audit --no-fund
-
       - name: Run regression tests
         run: npm test
 
@@ -40,6 +47,9 @@ jobs:
           mkdir -p web
           cp index.html manifest.json sw.js web/
           cp *.png web/ 2>/dev/null || true
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
 
       - name: Configure Capacitor
         run: |
@@ -77,19 +87,14 @@ jobs:
 
       - name: Validate and decode release keystore
         env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
-          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
+          ANDROID_KEYSTORE_BASE64: ${ secrets.ANDROID_KEYSTORE_BASE64 }
+          ANDROID_KEYSTORE_PASSWORD: ${ secrets.ANDROID_KEYSTORE_PASSWORD }
+          ANDROID_KEY_ALIAS: ${ secrets.ANDROID_KEY_ALIAS }
+          ANDROID_KEY_PASSWORD: ${ secrets.ANDROID_KEY_PASSWORD }
+          ANDROID_KEYSTORE_PATH: ${ github.workspace }/android/app/release-signing.keystore
         run: |
-          if [[ ! "$ANDROID_RELEASE_CERT_SHA256" =~ ^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$ && ! "$ANDROID_RELEASE_CERT_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]; then
-            echo "::error::Configure ANDROID_RELEASE_CERT_SHA256 with the trusted SHA-256 fingerprint of the already-distributed app certificate in the android-release environment variables."
-            exit 1
-          fi
           if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "::error::Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD in GitHub Actions secrets."
+            echo "::error::Configure the four signing secrets in the protected android-release environment."
             exit 1
           fi
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
@@ -120,32 +125,43 @@ jobs:
       - name: Build signed Release APK
         working-directory: android
         env:
-          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${ github.workspace }/android/app/release-signing.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${ secrets.ANDROID_KEYSTORE_PASSWORD }
+          ANDROID_KEY_ALIAS: ${ secrets.ANDROID_KEY_ALIAS }
+          ANDROID_KEY_PASSWORD: ${ secrets.ANDROID_KEY_PASSWORD }
         run: |
           chmod +x gradlew
           ./gradlew clean assembleRelease --no-daemon
 
-      - name: Verify APK signature, production certificate, and checksum
+      - name: Verify APK signature, application identity, and certificate continuity
         env:
-          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+          ANDROID_EXPECTED_CERT_SHA256: ${ vars.ANDROID_EXPECTED_CERT_SHA256 }
         run: |
           APK="android/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose "$APK"
-          EXPECTED_CERT="$(printf '%s' "$ANDROID_RELEASE_CERT_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
-          mapfile -t CERT_DIGESTS < <("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | tr -d ':' | tr '[:lower:]' '[:upper:]')
-          if [[ ${#CERT_DIGESTS[@]} -ne 1 || "${CERT_DIGESTS[0]:-}" != "$EXPECTED_CERT" ]]; then
-            echo "::error::APK signing certificate does not match the trusted production certificate fingerprint."
-            printf 'Expected SHA-256: %s\n' "$EXPECTED_CERT"
-            printf 'Actual signer count: %s\n' "${#CERT_DIGESTS[@]}"
+          SIGNATURE_REPORT="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+          printf '%s\n' "$SIGNATURE_REPORT"
+
+          EXPECTED_CERT="$(printf '%s' "$ANDROID_EXPECTED_CERT_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          EXPECTED_CERT_LENGTH="$(printf '%s' "$EXPECTED_CERT" | wc -c | tr -d ' ')"
+          if [ "$EXPECTED_CERT_LENGTH" -ne 64 ] || [[ "$EXPECTED_CERT" == *[!0-9a-f]* ]]; then
+            echo "::error::Set ANDROID_EXPECTED_CERT_SHA256 to the SHA-256 fingerprint of the currently distributed app certificate."
             exit 1
           fi
-          echo "Production signing certificate fingerprint matched."
+          ACTUAL_CERTS="$(printf '%s\n' "$SIGNATURE_REPORT" | awk -F': ' '/Signer #[0-9]+ certificate SHA-256 digest:/ { gsub(/:/, "", $NF); print tolower($NF) }')"
+          CERT_COUNT="$(printf '%s\n' "$ACTUAL_CERTS" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+          if [ "$CERT_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly one APK signer certificate; found $CERT_COUNT."
+            exit 1
+          fi
+          ACTUAL_CERT="$(printf '%s' "$ACTUAL_CERTS" | tr -d '[:space:]')"
+          if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
+            echo "::error::Release signing certificate does not match the pinned production certificate."
+            exit 1
+          fi
+
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -n "$AAPT"
           BADGING="$("$AAPT" dump badging "$APK")"
@@ -164,7 +180,7 @@ jobs:
       - name: Upload signed Release APK
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: time-tasks-app-${{ steps.version.outputs.version }}-signed-release
+          name: time-tasks-app-${ steps.version.outputs.version }-signed-release
           path: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/apk/release/app-release.apk.sha256
