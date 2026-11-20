@@ -6011,8 +6011,8 @@ async function _setCapacitorNotificationsEnabled(enabled) {
       return false;
     }
     if (!_setNotificationsPref(true)) return false;
-    await _queueAllTaskReminderSync();
-    return true;
+    // A permission grant alone is not success: surface a failed reminder sync to the user.
+    return await _queueAllTaskReminderSync() === true;
   } catch (e) {
     console.warn("Notification preference update failed:", e);
     return false;
