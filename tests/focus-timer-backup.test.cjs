@@ -1269,7 +1269,7 @@ test('interrupted-import recovery preserves marker and snapshot when either cont
     const harness = restoreContext(storage);
     const recover = vm.runInNewContext(
       extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
-      extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+      extractTopLevelSource('_recoverInterruptedImport') + '\n_recoverInterruptedImport',
       harness.context
     );
 
