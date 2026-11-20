@@ -1249,7 +1249,19 @@ test('import round trip restores all data collections and preserves extra settin
       operationalDayStart: 4, firstUseDate: '2026-11-20',
       darkMode: false, themeMode: 'system', customSetting: { keep: true }
     },
-    tasks: [], dailyLogs: [],
+    tasks: [{
+      id: 11, name: 'مهمة مستعادة', status: 'pending', type: 'معرفية',
+      expected: 35, actual: 10, plannedDate: '2026-11-20', plannedTime: '09:30',
+      completedAt: null, createdAt: 1795150000000, projectId: 4, priority: 'high',
+      recurrence: 'weekly', checklist: [{ text: 'خطوة', done: true }],
+      customTaskField: { retained: true }
+    }],
+    dailyLogs: [{
+      date: '2026-11-20', control: null, execution: null, wellbeing: null,
+      energy: null, distractions: null, bufferUsed: null,
+      mentalTask: 'تركيز', mentalNext: 'متابعة', createdAt: 1795150000000,
+      updatedAt: 1795150001000, customLogField: 'retained'
+    }],
     focusSessions: [{ id: 1, durationSec: 900, startedAt: '2026-11-20T09:00:00.000Z', custom: 'session' }],
     focusTimer: timerSnapshot,
     mentalInbox: [{ id: 2, text: 'فكرة', createdAt: 'legacy-created-at', custom: 7 }],
@@ -1262,7 +1274,10 @@ test('import round trip restores all data collections and preserves extra settin
 
   const restoredMain = JSON.parse(harness.values.get('app-data'));
   assert.deepEqual(restoredMain.tasks, data.tasks);
+  assert.equal(restoredMain.tasks[0].id, 11);
+  assert.deepEqual(restoredMain.tasks[0].customTaskField, { retained: true });
   assert.deepEqual(restoredMain.dailyLogs, data.dailyLogs);
+  assert.equal(restoredMain.dailyLogs[0].customLogField, 'retained');
   assert.deepEqual(restoredMain.settings.customSetting, data.settings.customSetting);
   assert.deepEqual(JSON.parse(harness.values.get('timeTasksApp_focusSessions')), data.focusSessions);
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), JSON.stringify(timerSnapshot));
