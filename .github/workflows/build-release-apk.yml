@@ -49,8 +49,8 @@ jobs:
           cp index.html manifest.json sw.js web/
           cp *.png web/ 2>/dev/null || true
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Install dependencies from lockfile
+        run: npm ci --no-audit --no-fund
 
       - name: Configure Capacitor
         run: |
