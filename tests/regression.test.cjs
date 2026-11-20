@@ -555,7 +555,7 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
   assert.match(apk, /name: Run regression tests/);
   assert.match(apk, /run: npm test/);
   assert.match(release, /actions\/setup-java@v6/);
-  assert.doesNotMatch(apk + release, /actions\/setup-java@v4/);
+  assert.doesNotMatch(apk + release, /actions\/setup-java@v5/);
   assert.match(release, /name: Run regression tests/);
   assert.match(release, /run: npm test/);
   assert.match(release, /if: github\.ref == 'refs\/heads\/main'/);
@@ -569,7 +569,7 @@ test('release workflow creates a downloadable web ZIP and uses Node 24 compatibl
     assert.ok(workflow.includes('actions/upload-artifact@v7.0.2'));
     assert.ok(!workflow.includes('actions/upload-artifact@v4'));
   }
-  assert.doesNotMatch(verify + apk + release, /actions\/(?:checkout|setup-node)@v7/);
+  assert.doesNotMatch(verify + apk + release, /actions\/(?:checkout|setup-node)@v5/);
 });;;
 
 
