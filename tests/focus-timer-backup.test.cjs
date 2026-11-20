@@ -215,6 +215,7 @@ test('backup validator is wired to focus-timer validation', () => {
     CURRENT_SCHEMA_VERSION: 2,
     VALID_STATUS: ['pending'],
     VALID_TYPES: ['معرفية'],
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
     isValidCalendarDate: () => true,
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
@@ -282,6 +283,7 @@ test('legacy format-v1 backup without focusTimer remains import-compatible', () 
     CURRENT_SCHEMA_VERSION: 2,
     VALID_STATUS: [],
     VALID_TYPES: [],
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
     isValidCalendarDate: () => true,
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
@@ -334,13 +336,26 @@ function extractTopLevelSource(name) {
 
 function memoryStorage(seed = {}, faults = {}) {
   const values = new Map(Object.entries(seed));
+  const getCounts = new Map();
+  const setCounts = new Map();
   return {
     getItem(key) {
+      const count = (getCounts.get(key) || 0) + 1;
+      getCounts.set(key, count);
+      if (faults.throwOnGetKey === key) throw new Error('simulated read failure');
+      if (faults.failGetAt && faults.failGetAt[key] === count) throw new Error('simulated staged read failure');
       if (faults.mismatchReadKey === key) return '__readback_mismatch__';
       return values.has(key) ? values.get(key) : null;
     },
     setItem(key, value) {
+      const count = (setCounts.get(key) || 0) + 1;
+      setCounts.set(key, count);
       if (faults.throwOnSetKey === key) throw new Error('simulated quota/write failure');
+      if (faults.failSetOnceKey === key && !faults.didFailSetOnce) {
+        faults.didFailSetOnce = true;
+        throw new Error('simulated one-time write failure');
+      }
+      if (faults.failSetAt && faults.failSetAt[key] === count) throw new Error('simulated staged write failure');
       values.set(key, String(value));
     },
     removeItem(key) {
@@ -900,11 +915,18 @@ test('timer rehydration removes a reference to a task absent from restored tasks
 });
 
 
-function runImportPreviewIntegration(backup, existingTimerRaw) {
-  const values = new Map([
-    ['app-data', JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} })],
-    ['timeTasksApp_focusTimer', existingTimerRaw]
-  ]);
+function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
+  const storage = memoryStorage({
+    'app-data': JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
+    'timeTasksApp_focusSessions': 'previous-sessions',
+    'timeTasksApp_focusTimer': existingTimerRaw,
+    'timeTasksApp_mentalInbox': 'previous-inbox',
+    thoughts: 'previous-thoughts',
+    projects: 'previous-projects',
+    'focus-settings': 'previous-focus-settings',
+    notifications: 'previous-notifications'
+  }, faults);
+  const values = storage.values;
   const sessionValues = new Map();
   const alerts = [];
   let reloads = 0;
@@ -919,11 +941,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw) {
     NOTIFICATIONS_KEY: 'notifications',
     CURRENT_SCHEMA_VERSION: 2,
     APP_VERSION: '2.9.0',
-    localStorage: {
-      getItem(key) { return values.has(key) ? values.get(key) : null; },
-      setItem(key, value) { values.set(key, String(value)); },
-      removeItem(key) { values.delete(key); }
-    },
+    localStorage: storage,
     sessionStorage: {
       setItem(key, value) { sessionValues.set(key, String(value)); }
     },
@@ -932,7 +950,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw) {
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     validateV2: () => true,
     _healTaskArray: () => false,
-    _rollbackRestore: () => false,
+    _invalidateProjectsCache: () => {},
     showConfirmModal: (_title, _body, accept) => accept(),
     showPromptModal: (_title, _body, _initial, _placeholder, submit) => submit('استبدال'),
     showAlertModal: (...args) => alerts.push(args),
@@ -940,17 +958,154 @@ function runImportPreviewIntegration(backup, existingTimerRaw) {
     escapeHTML: (value) => String(value)
   };
   const source = [
-    loadTopLevelFunction('_restoreFocusTimerSnapshot').toString(),
-    loadTopLevelFunction('showImportPreview').toString(),
+    extractTopLevelSource('_restoreFocusTimerSnapshot'),
+    extractTopLevelSource('_restoreStorageSnapshot'),
+    extractTopLevelSource('_rollbackRestore'),
+    extractTopLevelSource('_recoverInterruptedImport'),
+    extractTopLevelSource('showImportPreview'),
     'showImportPreview(' + JSON.stringify(backup) + ');'
-  ].join('\n');
+  ].join('\\n');
   vm.runInNewContext(source, sandbox);
-  return { values, sessionValues, alerts, reloads: () => reloads };
+  const recover = vm.runInNewContext('_recoverInterruptedImport', sandbox);
+  return { values, sessionValues, alerts, reloads: () => reloads, recover, faults };
 }
 
 function integrationBackup(data) {
   return { backupFormatVersion: data.focusTimer ? 2 : 1, schemaVersion: 2, data };
 }
+
+
+function backupValidationContext() {
+  return {
+    BACKUP_FORMAT_VERSION: 2,
+    CURRENT_SCHEMA_VERSION: 2,
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
+    isValidCalendarDate: () => true,
+    isValidLocalTime: () => true,
+    isValidLocalDateTime: () => true,
+    validateDailyLog: () => true,
+    _validateFocusTimerBackupSnapshot: () => ({ valid: true })
+  };
+}
+
+function validationTask(overrides = {}) {
+  return {
+    id: 7, name: 'مهمة اختبار', status: 'pending', type: 'معرفية',
+    expected: 20, actual: null, plannedDate: '2026-11-20',
+    plannedTime: '', completedAt: null, ...overrides
+  };
+}
+
+test('backup validator checks loader-required thought and project fields without rejecting legacy timestamp formats or extra fields', () => {
+  const validate = vm.runInNewContext(
+    '(' + extractTopLevelSource('validateBackup') + ')',
+    backupValidationContext()
+  );
+  const backup = integrationBackup({
+    tasks: [], dailyLogs: [],
+    thoughts: [{ id: 1, text: 'فكرة قديمة', createdAt: 'legacy-date-string', customField: { retained: true } }],
+    projects: [{ id: 4, name: 'مشروع قديم', status: 'paused', createdAt: 'legacy-created-at', extension: 'kept' }]
+  });
+
+  assert.equal(validate(backup).valid, true);
+  assert.equal(backup.data.thoughts[0].customField.retained, true);
+  assert.equal(backup.data.projects[0].extension, 'kept');
+});
+
+test('backup validator rejects duplicate or loader-repaired thought and project records', () => {
+  const validate = vm.runInNewContext(
+    '(' + extractTopLevelSource('validateBackup') + ')',
+    backupValidationContext()
+  );
+  const validThought = { id: 1, text: 'فكرة', createdAt: 'stored-date', extra: 'preserve' };
+  const validProject = { id: 3, name: 'مشروع', status: 'active', createdAt: 'stored-date', extra: 'preserve' };
+  const cases = [
+    { thoughts: [validThought, { ...validThought, text: 'أخرى' }], reason: 'معرّف خاطرة مكرر' },
+    { thoughts: [{ ...validThought, id: 0 }], reason: 'معرّف خاطرة غير صالح' },
+    { thoughts: [{ ...validThought, text: '  ' }], reason: 'نص الخاطرة' },
+    { thoughts: [{ ...validThought, createdAt: '' }], reason: 'تاريخ إنشاء الخاطرة' },
+    { projects: [validProject, { ...validProject, name: 'مشروع آخر' }], reason: 'معرّف مشروع مكرر' },
+    { projects: [{ ...validProject, id: -1 }], reason: 'معرّف مشروع غير صالح' },
+    { projects: [{ ...validProject, name: '' }], reason: 'اسم المشروع' },
+    { projects: [{ ...validProject, status: 'unknown' }], reason: 'حالة المشروع' },
+    { projects: [{ ...validProject, createdAt: '' }], reason: 'تاريخ إنشاء المشروع' }
+  ];
+
+  for (const item of cases) {
+    const backup = integrationBackup({
+      tasks: [], dailyLogs: [],
+      thoughts: item.thoughts || [],
+      projects: item.projects || []
+    });
+    const result = validate(backup);
+    assert.equal(result.valid, false, item.reason);
+    assert.match(result.reason, new RegExp(item.reason));
+  }
+});
+
+test('backup validator rejects duplicate mental-inbox identifiers', () => {
+  const validate = vm.runInNewContext(
+    '(' + extractTopLevelSource('validateBackup') + ')',
+    backupValidationContext()
+  );
+  const item = { id: 3, text: 'فكرة', createdAt: 'legacy' };
+  const result = validate(integrationBackup({
+    tasks: [], dailyLogs: [], mentalInbox: [item, { ...item }]
+  }));
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /معرّف فكرة مكرر/);
+});
+
+test('backup validator rejects dangling task project references only when a projects collection is supplied', () => {
+  const validate = vm.runInNewContext(
+    '(' + extractTopLevelSource('validateBackup') + ')',
+    backupValidationContext()
+  );
+  const task = validationTask({ projectId: 99 });
+  const project = { id: 99, name: 'مرتبط', status: 'active', createdAt: 'legacy' };
+
+  assert.equal(validate(integrationBackup({
+    tasks: [task], dailyLogs: [], projects: [project]
+  })).valid, true);
+  assert.equal(validate(integrationBackup({
+    tasks: [task], dailyLogs: [], projects: []
+  })).valid, false);
+  assert.equal(validate(integrationBackup({
+    tasks: [task], dailyLogs: []
+  })).valid, true);
+});
+
+test('invalid backup is rejected by the text import gate before the preview can write storage', () => {
+  const invalid = integrationBackup({
+    tasks: [], dailyLogs: [],
+    thoughts: [
+      { id: 5, text: 'أولى', createdAt: 'legacy' },
+      { id: 5, text: 'مكررة', createdAt: 'legacy' }
+    ]
+  });
+  const alerts = [];
+  let previews = 0;
+  const context = {
+    ...backupValidationContext(),
+    showTextAreaModal: (_title, _body, _initial, submit) => submit(JSON.stringify(invalid)),
+    showAlertModal: (...args) => alerts.push(args),
+    showToast: () => {},
+    escapeHTML: (value) => String(value),
+    showImportPreview: () => { previews++; }
+  };
+  const importText = vm.runInNewContext(
+    extractTopLevelSource('validateBackup') + '\\n' +
+    extractTopLevelSource('importFromText') + '\\nimportFromText',
+    context
+  );
+
+  importText();
+  assert.equal(previews, 0);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0][1], /معرّف خاطرة مكرر/);
+});
 
 test('full import preview restores the focus timer and the system theme preference', () => {
   const timerSnapshot = {
@@ -985,4 +1140,203 @@ test('legacy V1 import without focusTimer preserves the device timer and maps le
   assert.equal(harness.values.has('import-marker'), false);
   assert.equal(harness.reloads(), 1);
   assert.deepEqual(harness.alerts, []);
+});
+
+
+const RESTORE_KEY_CASES = [
+  ['app-data', 'main', 'main'],
+  ['timeTasksApp_focusSessions', 'focusSessions', 'focusSessions'],
+  ['timeTasksApp_focusTimer', 'focusTimer', 'focusTimer'],
+  ['timeTasksApp_mentalInbox', 'mentalInbox', 'mentalInbox'],
+  ['thoughts', 'thoughts', 'thoughts'],
+  ['projects', 'projects', 'projects'],
+  ['focus-settings', 'focusSettings', 'focusSettings'],
+  ['notifications', 'notifications', 'notifications']
+];
+
+test('snapshot restoration reports read, write and remove failures for every storage key', () => {
+  const snapshot = storageSnapshot('known-good');
+  for (const [key, property] of RESTORE_KEY_CASES) {
+    const writeStorage = memoryStorage({}, { throwOnSetKey: key });
+    const writeHarness = restoreContext(writeStorage);
+    const restoreWrite = vm.runInNewContext(
+      '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+      writeHarness.context
+    );
+    assert.equal(restoreWrite(snapshot), false, 'write failure: ' + key);
+
+    const readStorage = memoryStorage({}, { throwOnGetKey: key });
+    const readHarness = restoreContext(readStorage);
+    const restoreRead = vm.runInNewContext(
+      '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+      readHarness.context
+    );
+    assert.equal(restoreRead(snapshot), false, 'read-back failure: ' + key);
+
+    const removeStorage = memoryStorage({ [key]: 'current-value' }, { throwOnRemoveKey: key });
+    const removeHarness = restoreContext(removeStorage);
+    const restoreRemove = vm.runInNewContext(
+      '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+      removeHarness.context
+    );
+    assert.equal(restoreRemove({ ...snapshot, [property]: null }), false, 'remove failure: ' + key);
+  }
+});
+
+test('interrupted import recovery restores snapshots after interruption at every collection boundary', () => {
+  const previous = storageSnapshot('previous');
+  previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
+
+  for (let interruptedAfter = 0; interruptedAfter <= RESTORE_KEY_CASES.length; interruptedAfter++) {
+    const seed = {
+      'app-import-marker': '1',
+      'app-pre-import': JSON.stringify(previous)
+    };
+    RESTORE_KEY_CASES.forEach(([key, property], index) => {
+      seed[key] = index < interruptedAfter ? 'partially-imported-' + property : previous[property];
+    });
+    const storage = memoryStorage(seed);
+    const harness = restoreContext(storage);
+    const recover = vm.runInNewContext(
+      extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
+      extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+      harness.context
+    );
+
+    assert.equal(recover(), true, 'recovery boundary: ' + interruptedAfter);
+    for (const [key, property] of RESTORE_KEY_CASES) {
+      assert.equal(storage.getItem(key), previous[property], 'restored ' + key);
+    }
+    assert.equal(storage.getItem('app-import-marker'), null);
+    assert.equal(storage.getItem('app-pre-import'), null);
+  }
+});
+
+test('failed recovery retains both the recovery marker and original snapshot, then succeeds on retry', () => {
+  const previous = storageSnapshot('previous');
+  previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
+  const faults = { throwOnSetKey: 'thoughts' };
+  const storage = memoryStorage({
+    'app-import-marker': '1',
+    'app-pre-import': JSON.stringify(previous),
+    ...Object.fromEntries(RESTORE_KEY_CASES.map(([key, property]) => [key, 'partial-' + property]))
+  }, faults);
+  const harness = restoreContext(storage);
+  const recover = vm.runInNewContext(
+    extractTopLevelSource('_restoreStorageSnapshot') + '\\n' +
+    extractTopLevelSource('_recoverInterruptedImport') + '\\n_recoverInterruptedImport',
+    harness.context
+  );
+
+  assert.equal(recover(), false);
+  assert.equal(storage.getItem('app-import-marker'), '1');
+  assert.equal(storage.getItem('app-pre-import'), JSON.stringify(previous));
+  faults.throwOnSetKey = null;
+  assert.equal(recover(), true);
+  for (const [key, property] of RESTORE_KEY_CASES) {
+    assert.equal(storage.getItem(key), previous[property]);
+  }
+});
+
+test('import round trip restores all data collections and preserves extra setting fields', () => {
+  const timerSnapshot = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 420,
+    startedAt: null, cyclePosition: 1, taskId: null, sessionStartAt: 1000,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null
+  };
+  const data = {
+    settings: {
+      operationalDayStart: 4, firstUseDate: '2026-11-20',
+      darkMode: false, themeMode: 'system', customSetting: { keep: true }
+    },
+    tasks: [], dailyLogs: [],
+    focusSessions: [{ id: 1, durationSec: 900, startedAt: '2026-11-20T09:00:00.000Z', custom: 'session' }],
+    focusTimer: timerSnapshot,
+    mentalInbox: [{ id: 2, text: 'فكرة', createdAt: 'legacy-created-at', custom: 7 }],
+    thoughts: [{ id: 3, text: 'خاطرة', createdAt: 'legacy-created-at', custom: { kept: true } }],
+    projects: [{ id: 4, name: 'مشروع', status: 'active', createdAt: 'legacy-created-at', extra: 'kept' }],
+    focusSettings: { workMin: 25, shortMin: 5, longMin: 15, customDurationRule: 'keep' },
+    notifications: { enabled: false, futurePreference: 'keep' }
+  };
+  const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer');
+
+  const restoredMain = JSON.parse(harness.values.get('app-data'));
+  assert.deepEqual(restoredMain.tasks, data.tasks);
+  assert.deepEqual(restoredMain.dailyLogs, data.dailyLogs);
+  assert.deepEqual(restoredMain.settings.customSetting, data.settings.customSetting);
+  assert.deepEqual(JSON.parse(harness.values.get('timeTasksApp_focusSessions')), data.focusSessions);
+  assert.equal(harness.values.get('timeTasksApp_focusTimer'), JSON.stringify(timerSnapshot));
+  assert.deepEqual(JSON.parse(harness.values.get('timeTasksApp_mentalInbox')), data.mentalInbox);
+  assert.deepEqual(JSON.parse(harness.values.get('thoughts')), data.thoughts);
+  assert.deepEqual(JSON.parse(harness.values.get('projects')), data.projects);
+  assert.deepEqual(JSON.parse(harness.values.get('focus-settings')), data.focusSettings);
+  assert.deepEqual(JSON.parse(harness.values.get('notifications')), data.notifications);
+});
+
+test('import write failure rolls back every collection before reporting failure', () => {
+  const timerSnapshot = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 100,
+    startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: 1000,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null
+  };
+  const data = {
+    settings: { operationalDayStart: 4, firstUseDate: '2026-11-20', darkMode: false },
+    tasks: [], dailyLogs: [], focusSessions: [{ id: 1, durationSec: 10, startedAt: '2026-11-20T00:00:00.000Z' }],
+    focusTimer: timerSnapshot,
+    mentalInbox: [{ id: 2, text: 'فكرة', createdAt: 'legacy' }],
+    thoughts: [{ id: 3, text: 'خاطرة', createdAt: 'legacy' }],
+    projects: [{ id: 4, name: 'مشروع', status: 'active', createdAt: 'legacy' }],
+    focusSettings: { workMin: 25, shortMin: 5, longMin: 15 },
+    notifications: { enabled: true }
+  };
+  for (const [key] of RESTORE_KEY_CASES) {
+    const faults = { failSetOnceKey: key };
+    const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer', faults);
+    assert.equal(harness.reloads(), 0, 'must not reload after failed write: ' + key);
+    assert.ok(harness.alerts.length > 0, 'must report failed write: ' + key);
+    assert.equal(harness.values.get('app-data'), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
+    assert.equal(harness.values.get('timeTasksApp_focusSessions'), 'previous-sessions');
+    assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'previous-timer');
+    assert.equal(harness.values.get('timeTasksApp_mentalInbox'), 'previous-inbox');
+    assert.equal(harness.values.get('thoughts'), 'previous-thoughts');
+    assert.equal(harness.values.get('projects'), 'previous-projects');
+    assert.equal(harness.values.get('focus-settings'), 'previous-focus-settings');
+    assert.equal(harness.values.get('notifications'), 'previous-notifications');
+    assert.equal(harness.values.has('import-marker'), false);
+  }
+});
+
+test('when rollback itself fails, marker and snapshot survive and startup recovery can finish later', () => {
+  const data = {
+    settings: { operationalDayStart: 4, firstUseDate: '2026-11-20', darkMode: false },
+    tasks: [], dailyLogs: [], focusSessions: [{ id: 1, durationSec: 10, startedAt: '2026-11-20T00:00:00.000Z' }],
+    focusTimer: {
+      mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 100,
+      startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: 1000,
+      awaitingConfirmation: false, pendingPhaseEndedAt: null
+    },
+    mentalInbox: [{ id: 2, text: 'فكرة', createdAt: 'legacy' }],
+    thoughts: [{ id: 3, text: 'خاطرة', createdAt: 'legacy' }],
+    projects: [{ id: 4, name: 'مشروع', status: 'active', createdAt: 'legacy' }],
+    focusSettings: { workMin: 25, shortMin: 5, longMin: 15 },
+    notifications: { enabled: true }
+  };
+  const faults = { failSetOnceKey: 'notifications', failSetAt: { thoughts: 2 } };
+  const harness = runImportPreviewIntegration(integrationBackup(data), 'previous-timer', faults);
+
+  assert.equal(harness.reloads(), 0);
+  assert.ok(harness.alerts.length > 0);
+  assert.equal(harness.values.get('import-marker'), '1');
+  assert.ok(harness.values.has('pre-import'));
+
+  delete faults.failSetAt.thoughts;
+  assert.equal(harness.recover(), true);
+  assert.equal(harness.values.get('app-data'), JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }));
+  assert.equal(harness.values.get('timeTasksApp_focusSessions'), 'previous-sessions');
+  assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'previous-timer');
+  assert.equal(harness.values.get('timeTasksApp_mentalInbox'), 'previous-inbox');
+  assert.equal(harness.values.get('thoughts'), 'previous-thoughts');
+  assert.equal(harness.values.get('projects'), 'previous-projects');
+  assert.equal(harness.values.get('focus-settings'), 'previous-focus-settings');
+  assert.equal(harness.values.get('notifications'), 'previous-notifications');
 });

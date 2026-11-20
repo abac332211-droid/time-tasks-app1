@@ -4062,12 +4062,16 @@ function validateBackup(obj) {
   if (d.mentalInbox !== undefined && d.mentalInbox !== null) {
     if (!Array.isArray(d.mentalInbox))
       return { valid: false, reason: "حقل العقل المفتوح ليس مصفوفة." };
+    const mentalInboxIds = new Set();
     for (let i = 0; i < d.mentalInbox.length; i++) {
       const m = d.mentalInbox[i];
       if (!m || typeof m !== "object" || Array.isArray(m))
         return { valid: false, reason: "فكرة رقم " + (i+1) + " تالفة." };
       if (typeof m.id !== "number" || !Number.isInteger(m.id) || m.id <= 0)
         return { valid: false, reason: "معرّف فكرة غير صالح (" + (i+1) + ")." };
+      if (mentalInboxIds.has(m.id))
+        return { valid: false, reason: "معرّف فكرة مكرر: " + m.id + "." };
+      mentalInboxIds.add(m.id);
       if (typeof m.text !== "string" || m.text.trim() === "")
         return { valid: false, reason: "نص فكرة فارغ (" + (i+1) + ")." };
       if (typeof m.createdAt !== "string")
@@ -4079,6 +4083,55 @@ function validateBackup(obj) {
     return { valid: false, reason: "حقل الخواطر ليس مصفوفة." };
   if (d.projects !== undefined && d.projects !== null && !Array.isArray(d.projects))
     return { valid: false, reason: "حقل المشاريع ليس مصفوفة." };
+
+  // Match the non-destructive fields that the existing loaders rely on.
+  // Optional and unknown properties are deliberately left untouched.
+  if (Array.isArray(d.thoughts)) {
+    const thoughtIds = new Set();
+    for (let i = 0; i < d.thoughts.length; i++) {
+      const thought = d.thoughts[i];
+      if (!thought || typeof thought !== "object" || Array.isArray(thought))
+        return { valid: false, reason: "الخاطرة رقم " + (i+1) + " تالفة." };
+      if (!Number.isInteger(thought.id) || thought.id <= 0)
+        return { valid: false, reason: "معرّف خاطرة غير صالح (" + (i+1) + ")." };
+      if (thoughtIds.has(thought.id))
+        return { valid: false, reason: "معرّف خاطرة مكرر: " + thought.id + "." };
+      thoughtIds.add(thought.id);
+      if (typeof thought.text !== "string" || thought.text.trim() === "")
+        return { valid: false, reason: "نص الخاطرة مفقود أو فارغ (" + (i+1) + ")." };
+      if (typeof thought.createdAt !== "string" || !thought.createdAt)
+        return { valid: false, reason: "تاريخ إنشاء الخاطرة غير صالح (" + (i+1) + ")." };
+    }
+  }
+
+  if (Array.isArray(d.projects)) {
+    const projectIds = new Set();
+    for (let i = 0; i < d.projects.length; i++) {
+      const project = d.projects[i];
+      if (!project || typeof project !== "object" || Array.isArray(project))
+        return { valid: false, reason: "المشروع رقم " + (i+1) + " تالف." };
+      if (!Number.isInteger(project.id) || project.id <= 0)
+        return { valid: false, reason: "معرّف مشروع غير صالح (" + (i+1) + ")." };
+      if (projectIds.has(project.id))
+        return { valid: false, reason: "معرّف مشروع مكرر: " + project.id + "." };
+      projectIds.add(project.id);
+      if (typeof project.name !== "string" || project.name.trim() === "")
+        return { valid: false, reason: "اسم المشروع مفقود أو فارغ (" + (i+1) + ")." };
+      if (!VALID_PROJECT_STATUS.includes(project.status))
+        return { valid: false, reason: "حالة المشروع غير صالحة (" + (i+1) + ")." };
+      if (typeof project.createdAt !== "string" || !project.createdAt)
+        return { valid: false, reason: "تاريخ إنشاء المشروع غير صالح (" + (i+1) + ")." };
+    }
+
+    // Only enforce references when this backup actually contains the projects
+    // collection. Older backups that omit it keep the device's existing projects.
+    for (let i = 0; i < d.tasks.length; i++) {
+      const task = d.tasks[i];
+      if (task && task.projectId !== undefined && task.projectId !== null
+          && !projectIds.has(task.projectId))
+        return { valid: false, reason: "المهمة رقم " + (i+1) + " تشير إلى مشروع غير موجود: " + task.projectId + "." };
+    }
+  }
   if (d.focusSettings !== undefined && d.focusSettings !== null) {
     const fs = d.focusSettings;
     if (!fs || typeof fs !== "object" || Array.isArray(fs)
@@ -4302,7 +4355,7 @@ function showImportPreview(obj) {
         const newData = {
           schemaVersion: CURRENT_SCHEMA_VERSION,
           createdByVersion: APP_VERSION,
-          settings: {
+          settings: Object.assign({}, settings, {
             operationalDayStart: importedDayStart,
             firstUseDate: importedFirstUseDate,
             darkMode: settings.darkMode === true,
@@ -4311,7 +4364,7 @@ function showImportPreview(obj) {
               : (typeof settings.darkMode === "boolean" ? (settings.darkMode ? "dark" : "light") : "system"),
             lastTaskId: importedLastTaskId,
             lastRecurringDates: settings.lastRecurringDates || {}
-          },
+          }),
           tasks: d.tasks,
           dailyLogs: d.dailyLogs
         };
@@ -4437,9 +4490,7 @@ function showImportPreview(obj) {
                 && Number.isInteger(_fs.workMin) && _fs.workMin >= 1 && _fs.workMin <= 180
                 && Number.isInteger(_fs.shortMin) && _fs.shortMin >= 1 && _fs.shortMin <= 60
                 && Number.isInteger(_fs.longMin) && _fs.longMin >= 1 && _fs.longMin <= 120) {
-              localStorage.setItem(FOCUS_SETTINGS_KEY, JSON.stringify({
-                workMin: _fs.workMin, shortMin: _fs.shortMin, longMin: _fs.longMin
-              }));
+              localStorage.setItem(FOCUS_SETTINGS_KEY, JSON.stringify(_fs));
             }
           }
         } catch (e) {
@@ -4455,7 +4506,7 @@ function showImportPreview(obj) {
           if (d.notifications !== undefined && d.notifications !== null
               && typeof d.notifications === "object" && !Array.isArray(d.notifications)
               && typeof d.notifications.enabled === "boolean") {
-            localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify({ enabled: d.notifications.enabled }));
+            localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(d.notifications));
           }
         } catch (e) {
           var _rollbackOk = _rollbackRestore(_rollback);
@@ -4481,12 +4532,12 @@ function showImportPreview(obj) {
               && Number.isInteger(d.focusSettings.workMin) && d.focusSettings.workMin >= 1 && d.focusSettings.workMin <= 180
               && Number.isInteger(d.focusSettings.shortMin) && d.focusSettings.shortMin >= 1 && d.focusSettings.shortMin <= 60
               && Number.isInteger(d.focusSettings.longMin) && d.focusSettings.longMin >= 1 && d.focusSettings.longMin <= 120)
-              ? JSON.stringify({ workMin: d.focusSettings.workMin, shortMin: d.focusSettings.shortMin, longMin: d.focusSettings.longMin })
+              ? JSON.stringify(d.focusSettings)
               : _rollback.focusSettings],
           [NOTIFICATIONS_KEY,
             (d.notifications && typeof d.notifications === "object" && !Array.isArray(d.notifications)
               && typeof d.notifications.enabled === "boolean")
-              ? JSON.stringify({ enabled: d.notifications.enabled })
+              ? JSON.stringify(d.notifications)
               : _rollback.notifications]
         ];
         var _importReadbackOk = true;
