@@ -5602,6 +5602,8 @@ var _focusTimer = {
 };
 
 var _focusDisplayInterval = null;
+var FOCUS_TIMER_CHECKPOINT_INTERVAL_MS = 5000;
+var _focusTimerCheckpointAt = 0;
 
 function _loadFocusTimer() {
   try {
@@ -5609,46 +5611,58 @@ function _loadFocusTimer() {
     if (!raw) return;
     var d = JSON.parse(raw);
     if (!d || typeof d !== 'object') return;
+    var wasRunning = d.running === true;
     _focusTimer.mode = (d.mode === 'stopwatch') ? 'stopwatch' : 'pomodoro';
     _focusTimer.phase = (['work','short-break','long-break'].indexOf(d.phase) !== -1) ? d.phase : 'work';
-    _focusTimer.running = !!d.running;
-    _focusTimer.baseElapsed = (typeof d.baseElapsed === 'number' && d.baseElapsed >= 0) ? d.baseElapsed : 0;
-    _focusTimer.startedAt = (typeof d.startedAt === 'number') ? d.startedAt : null;
+    _focusTimer.running = false;
+    _focusTimer.baseElapsed = (typeof d.baseElapsed === 'number' && Number.isFinite(d.baseElapsed) && d.baseElapsed >= 0) ? Math.floor(d.baseElapsed) : 0;
+    // A fresh JS runtime restores the last durable checkpoint, never away time.
+    _focusTimer.startedAt = null;
     _focusTimer.cyclePosition = (typeof d.cyclePosition === 'number' && d.cyclePosition >= 0 && d.cyclePosition <= 3) ? d.cyclePosition : 0;
     _focusTimer.taskId = (typeof d.taskId === 'number') ? d.taskId : null;
     _focusTimer.sessionStartAt = (typeof d.sessionStartAt === 'number') ? d.sessionStartAt : null;
     _focusTimer.awaitingConfirmation = d.awaitingConfirmation === true;
     _focusTimer.pendingPhaseEndedAt = (typeof d.pendingPhaseEndedAt === 'number' && Number.isFinite(d.pendingPhaseEndedAt)) ? d.pendingPhaseEndedAt : null;
+    var changed = wasRunning;
     if (_focusTimer.taskId !== null) {
       var exists = tasks.some(function(t) { return t.id === _focusTimer.taskId; });
       if (!exists) {
         _focusTimer.taskId = null;
-        _saveFocusTimer();
+        changed = true;
       }
+    }
+    if (changed && !_saveFocusTimer()) {
+      console.warn("Could not persist the paused focus timer after restart; it remains paused in memory.");
     }
   } catch (e) {}
 }
 
 function _saveFocusTimer() {
   try {
+    var now = Date.now();
+    var running = _focusTimer.running === true;
+    // Persist the elapsed value at the checkpoint, not only the segment's old base.
+    var checkpointElapsed = running ? _getElapsedSec() : _focusTimer.baseElapsed;
     localStorage.setItem(FOCUS_TIMER_KEY, JSON.stringify({
       mode: _focusTimer.mode,
       phase: _focusTimer.phase,
-      running: _focusTimer.running,
-      baseElapsed: _focusTimer.baseElapsed,
-      startedAt: _focusTimer.startedAt,
+      running: running,
+      baseElapsed: checkpointElapsed,
+      startedAt: running ? now : null,
       cyclePosition: _focusTimer.cyclePosition,
       taskId: _focusTimer.taskId,
       sessionStartAt: _focusTimer.sessionStartAt,
       awaitingConfirmation: !!_focusTimer.awaitingConfirmation,
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
-      savedAt: Date.now()
+      savedAt: now
     }));
+    _focusTimerCheckpointAt = running ? now : 0;
     return true;
   } catch (e) {
     return false;
   }
 }
+
 
 function _getElapsedSec() {
   if (!_focusTimer.running || !_focusTimer.startedAt) return _focusTimer.baseElapsed;
@@ -6564,6 +6578,10 @@ function renderFocusSessionsCard() {
 function _startDisplayTick() {
   if (_focusDisplayInterval) return;
   _focusDisplayInterval = setInterval(function() {
+    if (_focusTimer.running
+        && Date.now() - _focusTimerCheckpointAt >= FOCUS_TIMER_CHECKPOINT_INTERVAL_MS) {
+      if (!_saveFocusTimer()) console.warn("Focus timer checkpoint failed; restart will use the last saved elapsed time.");
+    }
     if (document.visibilityState === "hidden") return;
     if (_focusTimer.mode === "pomodoro") _catchUp(false);
     _renderFocusTimer();
@@ -7148,7 +7166,10 @@ function startTimerForTask(taskId) {
 
 function _setupVisibilityListener() {
   document.addEventListener('visibilitychange', function() {
-    if (document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible') {
+      if (_focusTimer.running) _saveFocusTimer();
+      return;
+    }
     if (_focusTimer.running && _focusTimer.mode === 'pomodoro') _catchUp(true);
     _renderFocusTimer();
     renderFocusSessionsCard();
@@ -7163,6 +7184,10 @@ function _setupVisibilityListener() {
     }
   });
 }
+
+window.addEventListener('pagehide', function() {
+  if (_focusTimer.running) _saveFocusTimer();
+});
 
 /* ============ Notebook (الخواطر والمشاريع) ============ */
 
