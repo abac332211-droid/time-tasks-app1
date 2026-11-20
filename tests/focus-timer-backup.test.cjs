@@ -964,7 +964,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
     extractTopLevelSource('_recoverInterruptedImport'),
     extractTopLevelSource('showImportPreview'),
     'showImportPreview(' + JSON.stringify(backup) + ');'
-  ].join('\\n');
+  ].join('\n');
   vm.runInNewContext(source, sandbox);
   const recover = vm.runInNewContext('_recoverInterruptedImport', sandbox);
   return { values, sessionValues, alerts, reloads: () => reloads, recover, faults };
@@ -1096,8 +1096,8 @@ test('invalid backup is rejected by the text import gate before the preview can 
     showImportPreview: () => { previews++; }
   };
   const importText = vm.runInNewContext(
-    extractTopLevelSource('validateBackup') + '\\n' +
-    extractTopLevelSource('importFromText') + '\\nimportFromText',
+    extractTopLevelSource('validateBackup') + '\n' +
+    extractTopLevelSource('importFromText') + '\nimportFromText',
     context
   );
 
@@ -1144,7 +1144,7 @@ test('legacy V1 import without focusTimer preserves the device timer and maps le
 
 
 const RESTORE_KEY_CASES = [
-  ['app-data', 'main', 'main'],
+  ['app-main', 'main', 'main'],
   ['timeTasksApp_focusSessions', 'focusSessions', 'focusSessions'],
   ['timeTasksApp_focusTimer', 'focusTimer', 'focusTimer'],
   ['timeTasksApp_mentalInbox', 'mentalInbox', 'mentalInbox'],
