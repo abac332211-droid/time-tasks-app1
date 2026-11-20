@@ -2,24 +2,21 @@ name: Build signed Android Release
 
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: Branch or tag to build after review
-        required: true
-        type: string
-        default: codex/v2.9.1-stability
 
 permissions:
   contents: read
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: android-release
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout reviewed source
+      - name: Checkout reviewed commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -32,6 +29,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
       - name: Run regression tests
         run: npm test
 
@@ -40,9 +40,6 @@ jobs:
           mkdir -p web
           cp index.html manifest.json sw.js web/
           cp *.png web/ 2>/dev/null || true
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
 
       - name: Configure Capacitor
         run: |
@@ -84,8 +81,13 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
         run: |
+          if [[ ! "$ANDROID_RELEASE_CERT_SHA256" =~ ^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$ && ! "$ANDROID_RELEASE_CERT_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+            echo "::error::Configure ANDROID_RELEASE_CERT_SHA256 with the trusted SHA-256 fingerprint of the already-distributed app certificate in the android-release environment variables."
+            exit 1
+          fi
           if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
             echo "::error::Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD in GitHub Actions secrets."
             exit 1
@@ -126,13 +128,24 @@ jobs:
           chmod +x gradlew
           ./gradlew clean assembleRelease --no-daemon
 
-      - name: Verify APK signature and calculate checksum
+      - name: Verify APK signature, production certificate, and checksum
+        env:
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           APK="android/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose "$APK"
+          EXPECTED_CERT="$(printf '%s' "$ANDROID_RELEASE_CERT_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          mapfile -t CERT_DIGESTS < <("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          if [[ ${#CERT_DIGESTS[@]} -ne 1 || "${CERT_DIGESTS[0]:-}" != "$EXPECTED_CERT" ]]; then
+            echo "::error::APK signing certificate does not match the trusted production certificate fingerprint."
+            printf 'Expected SHA-256: %s\n' "$EXPECTED_CERT"
+            printf 'Actual signer count: %s\n' "${#CERT_DIGESTS[@]}"
+            exit 1
+          fi
+          echo "Production signing certificate fingerprint matched."
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -n "$AAPT"
           BADGING="$("$AAPT" dump badging "$APK")"
