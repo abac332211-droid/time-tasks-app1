@@ -243,6 +243,7 @@ test('queued task reminder updates and cancellations run sequentially', async ()
     '_cancelTaskNotification',
     '_syncTaskNotification',
     '_syncAllTaskNotifications',
+    '_recordTaskReminderSyncResult',
     '_queueTaskReminderSync',
     '_queueTaskReminderCancellation'
   ];
