@@ -303,6 +303,12 @@
 - الاختبارات تتحقق من أن `performance.now()` تظل متاحة وتعيد القيمة نفسها، بينما تتقدم `Date.now()` لمدة 20–30 دقيقة.
 - حالة الاختبار هذه تحاكي مصدر الساعة في Node؛ لا تثبت سلوك جهاز Android فعلي. نتائج CI على الالتزام الجديد ستسجل بعد اكتمال التشغيل.
 
+### نتائج CI الفعلية على رأس الكود `7c7b572cbef295562075589c68d813c9b90d86ff`
+- [Push verification — run 44937924557](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44937924557): نجاح؛ `210/210` اختبارًا، 0 فشل، 0 تخطٍّ.
+- [PR verification — run 44937929338](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44937929338): نجاح.
+- [Android Debug — run 44937924564](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44937924564): نجاح؛ `210/210` اختبارًا، `BUILD SUCCESSFUL`، وفحص Manifest ناجح للأذونات `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- [APK Debug artifact — ID 14719944949](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/44937924564/artifacts/14719944949): `time-tasks-app-apk`، حجم الأرشيف 5,445,156 بايت. هذه حزمة CI لم تُثبت أو تختبر على هاتف فعلي بعد.
+
 ### اختبار Android فعلي — غير منفذ
 - لا يتوفر جهاز Android فعلي متصل ببيئة التنفيذ؛ لذلك لم تُختبر نسخة Debug على عتاد حقيقي، ولم تُسجل بيانات جهاز أو إصدار Android. لا تُملأ هذه البيانات بالتخمين.
 - الشركة/الطراز: غير متاح؛ إصدار Android/API: غير متاح؛ رقم بناء APK الميداني: لا يوجد.
