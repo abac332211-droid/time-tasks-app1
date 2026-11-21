@@ -1481,10 +1481,13 @@ test('migration archive write failure leaves the original V1 record unchanged an
 function resetAllHarness(faults = {}) {
   const keys = {
     main: 'main', preImport: 'pre-import', importInProgress: 'import-in-progress',
-    migrationInProgress: 'migration-in-progress', testFlag: 'test-flag',
-    migrationArchive: 'migration-archive', testBackup: 'test-backup',
+    migrationInProgress: 'migration-in-progress', resetInProgress: 'reset-in-progress',
+    rollingBackupA: 'rolling-backup-a', rollingBackupB: 'rolling-backup-b',
+    rollingRestoreInProgress: 'rolling-restore-in-progress',
+    testFlag: 'test-flag', migrationArchive: 'migration-archive', testBackup: 'test-backup',
     thoughts: 'thoughts', projects: 'projects', focusTimer: 'focus-timer',
-    focusSessions: 'focus-sessions', mentalInbox: 'mental-inbox'
+    focusSessions: 'focus-sessions', mentalInbox: 'mental-inbox',
+    focusSettings: 'focus-settings', notifications: 'notifications'
   };
   const values = new Map(Object.values(keys).map((key) => [key, 'old-value']));
   const removeCalls = [];
@@ -1496,6 +1499,10 @@ function resetAllHarness(faults = {}) {
     PRE_IMPORT_KEY: keys.preImport,
     IMPORT_IN_PROGRESS_KEY: keys.importInProgress,
     MIGRATION_IN_PROGRESS_KEY: keys.migrationInProgress,
+    RESET_IN_PROGRESS_KEY: keys.resetInProgress,
+    ROLLING_BACKUP_A_KEY: keys.rollingBackupA,
+    ROLLING_BACKUP_B_KEY: keys.rollingBackupB,
+    ROLLING_RESTORE_IN_PROGRESS_KEY: keys.rollingRestoreInProgress,
     MIGRATION_ARCHIVE_KEY: keys.migrationArchive,
     BACKUP_KEY: keys.migrationArchive,
     TEST_FLAG_KEY: keys.testFlag,
@@ -1520,8 +1527,14 @@ function resetAllHarness(faults = {}) {
     validateV2: () => true,
     todayStr: () => '2026-11-21',
     localStorage: {
-      getItem(key) { return values.has(key) ? values.get(key) : null; },
-      setItem(key, value) { values.set(key, String(value)); },
+      getItem(key) {
+        if (faults.throwOnGetKey === key) throw new Error('simulated read failure');
+        return values.has(key) ? values.get(key) : null;
+      },
+      setItem(key, value) {
+        if (faults.throwOnSetKey === key) throw new Error('simulated write failure');
+        values.set(key, String(value));
+      },
       removeItem(key) {
         removeCalls.push(key);
         if (faults.throwOnRemoveKey === key) throw new Error('simulated remove failure');
@@ -1540,7 +1553,12 @@ function resetAllHarness(faults = {}) {
     cancelProjectEdit: () => {},
     renderAll: () => {}
   };
-  vm.runInNewContext(extractFunction('resetAll'), sandbox);
+  vm.runInNewContext(
+    extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_recoverInterruptedReset') + '\n'
+      + extractFunction('resetAll'),
+    sandbox
+  );
   return { keys, values, removeCalls, alerts, toasts, confirmations, sandbox, run: () => sandbox.resetAll() };
 }
 
@@ -1556,4 +1574,253 @@ test('resetAll attempts every deletion and never reports full success when one k
   assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
   assert.ok(harness.alerts.some((args) => /لم يكتمل حذف كل البيانات/.test(String(args[0]))));
   assert.match(harness.confirmations[0].body, /النسخ الداخلية/);
+});
+
+
+function rollingRecoveryHarness(initial = {}, faults = {}) {
+  const keys = {
+    main: 'main',
+    focusSessions: 'focus-sessions',
+    focusTimer: 'focus-timer',
+    mentalInbox: 'mental-inbox',
+    thoughts: 'thoughts',
+    projects: 'projects',
+    focusSettings: 'focus-settings',
+    notifications: 'notifications',
+    backupA: 'rolling-backup-a',
+    backupB: 'rolling-backup-b',
+    restoreMarker: 'rolling-restore-in-progress'
+  };
+  const values = new Map(Object.entries(initial));
+  const writes = [];
+  const reads = [];
+  const sandbox = {
+    STORAGE_KEY: keys.main,
+    FOCUS_SESSIONS_KEY: keys.focusSessions,
+    FOCUS_TIMER_KEY: keys.focusTimer,
+    MENTAL_INBOX_KEY: keys.mentalInbox,
+    THOUGHTS_KEY: keys.thoughts,
+    PROJECTS_KEY: keys.projects,
+    FOCUS_SETTINGS_KEY: keys.focusSettings,
+    NOTIFICATIONS_KEY: keys.notifications,
+    ROLLING_BACKUP_A_KEY: keys.backupA,
+    ROLLING_BACKUP_B_KEY: keys.backupB,
+    ROLLING_RESTORE_IN_PROGRESS_KEY: keys.restoreMarker,
+    Date,
+    console,
+    storageRecoveryRequired: false,
+    validateV2(data) {
+      return !!data && data.schemaVersion === 2
+        && Array.isArray(data.tasks) && Array.isArray(data.dailyLogs);
+    },
+    _restoreStorageSnapshot(snapshot) {
+      if (faults.restoreFails) return false;
+      const mapping = [
+        ['main', keys.main], ['focusSessions', keys.focusSessions],
+        ['focusTimer', keys.focusTimer], ['mentalInbox', keys.mentalInbox],
+        ['thoughts', keys.thoughts], ['projects', keys.projects],
+        ['focusSettings', keys.focusSettings], ['notifications', keys.notifications]
+      ];
+      for (const [property, key] of mapping) {
+        if (snapshot[property] === null) values.delete(key);
+        else values.set(key, snapshot[property]);
+      }
+      return true;
+    },
+    _setMainStorageBaseline: () => {},
+    localStorage: {
+      getItem(key) {
+        reads.push(key);
+        if (faults.throwOnGetKey === key) throw new Error('simulated read failure');
+        return values.has(key) ? values.get(key) : null;
+      },
+      setItem(key, value) {
+        writes.push([key, String(value)]);
+        if (faults.throwOnSetKey === key) throw new Error('simulated write failure');
+        values.set(key, String(value));
+      },
+      removeItem(key) {
+        if (faults.throwOnRemoveKey === key) throw new Error('simulated remove failure');
+        values.delete(key);
+      }
+    }
+  };
+  vm.runInNewContext(
+    extractFunction('_parseRollingRecoveryBackup') + '\n'
+      + extractFunction('_getLatestRollingRecoveryBackup') + '\n'
+      + extractFunction('_storeRollingRecoveryBackup') + '\n'
+      + extractFunction('_recoverInterruptedRollingRestore'),
+    sandbox
+  );
+  return { keys, values, writes, reads, sandbox };
+}
+
+function rollingState(prefix) {
+  return {
+    main: JSON.stringify({ schemaVersion: 2, settings: {}, tasks: [], dailyLogs: [], marker: prefix }),
+    'focus-sessions': JSON.stringify([{ id: 1, marker: prefix }]),
+    'focus-timer': JSON.stringify({ mode: 'stopwatch', baseElapsed: 10, marker: prefix }),
+    'mental-inbox': JSON.stringify([{ id: 2, text: prefix, createdAt: '2026-11-21' }]),
+    thoughts: JSON.stringify([{ id: 3, text: prefix, createdAt: '2026-11-21' }]),
+    projects: JSON.stringify([{ id: 4, name: prefix }]),
+    'focus-settings': JSON.stringify({ workMin: 25, shortMin: 5, longMin: 15 }),
+    notifications: JSON.stringify({ enabled: true })
+  };
+}
+
+test('rolling recovery checkpoints contain every raw storage group and rotate two verified generations', () => {
+  const harness = rollingRecoveryHarness(rollingState('first'));
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  const firstRaw = harness.values.get(harness.keys.backupA);
+  assert.ok(firstRaw);
+  const first = JSON.parse(firstRaw);
+  assert.equal(first.sequence, 1);
+  assert.deepEqual(Object.keys(first.data).sort(), [
+    'main', 'focusSessions', 'focusTimer', 'mentalInbox',
+    'thoughts', 'projects', 'focusSettings', 'notifications'
+  ].sort());
+  assert.equal(first.data.main, rollingState('first').main);
+  assert.equal(first.data.projects, rollingState('first').projects);
+
+  for (const [key, value] of Object.entries(rollingState('second'))) {
+    harness.values.set(key, value);
+  }
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  const latest = harness.sandbox._getLatestRollingRecoveryBackup();
+  assert.equal(latest.slot, 'b');
+  assert.equal(latest.record.sequence, 2);
+  assert.equal(latest.record.data.main, rollingState('second').main);
+  assert.ok(harness.values.get(harness.keys.backupA), 'older valid checkpoint remains available');
+});
+
+test('rolling recovery refuses an unverified new checkpoint without overwriting the last good slot', () => {
+  const harness = rollingRecoveryHarness(rollingState('first'));
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  const knownGood = harness.values.get(harness.keys.backupA);
+  for (const [key, value] of Object.entries(rollingState('second'))) {
+    harness.values.set(key, value);
+  }
+  harness.sandbox.localStorage.setItem = (key, value) => {
+    if (key === harness.keys.backupB) throw new Error('quota exceeded');
+    harness.values.set(key, String(value));
+  };
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), false);
+  assert.equal(harness.values.get(harness.keys.backupA), knownGood);
+  assert.equal(harness.sandbox._getLatestRollingRecoveryBackup().record.sequence, 1);
+});
+
+test('rolling recovery reader ignores a corrupt newest slot and selects the older verified snapshot', () => {
+  const harness = rollingRecoveryHarness(rollingState('first'));
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  for (const [key, value] of Object.entries(rollingState('second'))) {
+    harness.values.set(key, value);
+  }
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  harness.values.set(harness.keys.backupB, '{broken');
+  const latest = harness.sandbox._getLatestRollingRecoveryBackup();
+  assert.equal(latest.slot, 'a');
+  assert.equal(latest.record.sequence, 1);
+  assert.equal(latest.record.data.main, rollingState('first').main);
+});
+
+test('interrupted rolling-backup restoration is replayed from its durable slot marker', () => {
+  const harness = rollingRecoveryHarness(rollingState('current'));
+  const record = {
+    formatVersion: 1,
+    sequence: 7,
+    createdAtMs: 1795260000000,
+    reason: 'main-save',
+    data: {
+      main: rollingState('saved').main,
+      focusSessions: rollingState('saved')['focus-sessions'],
+      focusTimer: rollingState('saved')['focus-timer'],
+      mentalInbox: rollingState('saved')['mental-inbox'],
+      thoughts: rollingState('saved').thoughts,
+      projects: rollingState('saved').projects,
+      focusSettings: rollingState('saved')['focus-settings'],
+      notifications: rollingState('saved').notifications
+    }
+  };
+  harness.values.set(harness.keys.backupA, JSON.stringify(record));
+  harness.values.set(harness.keys.restoreMarker, JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
+  assert.equal(harness.sandbox._recoverInterruptedRollingRestore(), true);
+  assert.equal(harness.values.get('main'), rollingState('saved').main);
+  assert.equal(harness.values.get('projects'), rollingState('saved').projects);
+  assert.equal(harness.values.has(harness.keys.restoreMarker), false);
+});
+
+test('failed interrupted rolling-backup restoration preserves its marker and verified source snapshot', () => {
+  const harness = rollingRecoveryHarness(rollingState('partial'), { restoreFails: true });
+  const record = {
+    formatVersion: 1,
+    sequence: 3,
+    createdAtMs: 1795260000000,
+    reason: 'main-save',
+    data: {
+      main: rollingState('saved').main,
+      focusSessions: rollingState('saved')['focus-sessions'],
+      focusTimer: rollingState('saved')['focus-timer'],
+      mentalInbox: rollingState('saved')['mental-inbox'],
+      thoughts: rollingState('saved').thoughts,
+      projects: rollingState('saved').projects,
+      focusSettings: rollingState('saved')['focus-settings'],
+      notifications: rollingState('saved').notifications
+    }
+  };
+  const rawRecord = JSON.stringify(record);
+  const rawMarker = JSON.stringify({ version: 1, slot: 'a', sequence: 3 });
+  harness.values.set(harness.keys.backupA, rawRecord);
+  harness.values.set(harness.keys.restoreMarker, rawMarker);
+  assert.equal(harness.sandbox._recoverInterruptedRollingRestore(), false);
+  assert.equal(harness.values.get(harness.keys.backupA), rawRecord);
+  assert.equal(harness.values.get(harness.keys.restoreMarker), rawMarker);
+});
+
+test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', () => {
+  const faults = { throwOnRemoveKey: 'projects' };
+  const harness = resetAllHarness(faults);
+  harness.run();
+  const markerRaw = harness.values.get(harness.keys.resetInProgress);
+  assert.ok(markerRaw, 'reset intent survives after the first reset attempt');
+  const marker = JSON.parse(markerRaw);
+  assert.equal(marker.version, 1);
+  assert.equal(JSON.parse(marker.main).schemaVersion, 2);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+
+  faults.throwOnRemoveKey = null;
+  const recover = vm.runInNewContext(
+    extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
+    harness.sandbox
+  );
+  assert.equal(recover(), true);
+  assert.equal(harness.values.get('projects'), null);
+  assert.equal(harness.values.get(harness.keys.focusTimer), null);
+  assert.equal(harness.values.has(harness.keys.resetInProgress), false);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+});
+
+test('resetAll does not change data when its durable marker cannot be written and verified', () => {
+  const harness = resetAllHarness({ throwOnSetKey: 'reset-in-progress' });
+  const originalMain = harness.values.get('main');
+  harness.run();
+  assert.equal(harness.values.get('main'), originalMain);
+  assert.equal(harness.removeCalls.length, 0);
+  assert.equal(harness.values.has(harness.keys.resetInProgress), false);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+});
+
+test('interrupted reset recovery rejects an invalid marker without deleting any stored key', () => {
+  const harness = resetAllHarness();
+  const original = new Map(harness.values);
+  harness.values.set(harness.keys.resetInProgress, '{broken');
+  const recover = vm.runInNewContext(
+    extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
+    harness.sandbox
+  );
+  assert.equal(recover(), false);
+  assert.equal(harness.values.get(harness.keys.resetInProgress), '{broken');
+  assert.equal(harness.values.get('projects'), original.get('projects'));
+  assert.equal(harness.values.get('focus-timer'), original.get('focus-timer'));
 });
