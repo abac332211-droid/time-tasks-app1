@@ -1489,7 +1489,9 @@ function resetAllHarness(faults = {}) {
     focusSessions: 'focus-sessions', mentalInbox: 'mental-inbox',
     focusSettings: 'focus-settings', notifications: 'notifications'
   };
-  const values = new Map(Object.values(keys).map((key) => [key, 'old-value']));
+  const values = new Map(Object.entries(keys)
+    .filter(([name]) => name !== 'resetInProgress' && name !== 'rollingRestoreInProgress')
+    .map(([, key]) => [key, 'old-value']));
   const removeCalls = [];
   const alerts = [];
   const toasts = [];
@@ -1794,8 +1796,8 @@ test('resetAll leaves a persistent marker on partial deletion and startup recove
     harness.sandbox
   );
   assert.equal(recover(), true);
-  assert.equal(harness.values.get('projects'), null);
-  assert.equal(harness.values.get(harness.keys.focusTimer), null);
+  assert.equal(harness.values.has('projects'), false);
+  assert.equal(harness.values.has(harness.keys.focusTimer), false);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
