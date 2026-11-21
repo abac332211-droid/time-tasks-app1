@@ -456,7 +456,7 @@ test('an available but stalled monotonic clock pauses Pomodoro without logging o
   h.sandbox._showAwaySessionConfirmation = () => { confirmations++; };
   h.sandbox.showAlertModal = (title, message) => alerts.push({ title, message });
 
-  vm.runInNewContext(extractFunction('_handleFocusTimerClockDiscontinuity') + '\\n' + extractFunction('_catchUp'), h.sandbox);
+  vm.runInNewContext(extractFunction('_handleFocusTimerClockDiscontinuity') + '\n' + extractFunction('_catchUp'), h.sandbox);
   h.sandbox._catchUp(true);
 
   assert.equal(h.timer.running, false, 'the timer must pause when the monotonic source is frozen');
