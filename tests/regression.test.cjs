@@ -1529,6 +1529,8 @@ function resetAllHarness(faults = {}) {
     validateV2: () => true,
     todayStr: () => '2026-11-21',
     localStorage: {
+      get length() { return values.size; },
+      key(index) { return Array.from(values.keys())[index] ?? null; },
       getItem(key) {
         if (faults.throwOnGetKey === key) throw new Error('simulated read failure');
         return values.has(key) ? values.get(key) : null;
@@ -2068,4 +2070,43 @@ test('rolling recovery refuses a mixed multi-collection snapshot when another ta
   assert.equal(harness.values.has(harness.keys.backupA), false);
   assert.equal(harness.values.has(harness.keys.backupB), false);
   assert.equal(projectReads, 2);
+});
+
+test('resetAll also removes timestamped corruption snapshots from every auxiliary collection', () => {
+  const harness = resetAllHarness();
+  const corruptKeys = [
+    'mental-inbox_corrupt_1700000000000',
+    'thoughts_corrupt_1700000000001',
+    'projects_corrupt_1700000000002'
+  ];
+  for (const key of corruptKeys) harness.values.set(key, 'preserved-corrupt-bytes');
+
+  harness.run();
+
+  for (const key of corruptKeys) {
+    assert.equal(harness.values.has(key), false, 'reset must remove hidden corrupt snapshot: ' + key);
+    assert.ok(harness.removeCalls.includes(key), 'cleanup must attempt corrupt snapshot: ' + key);
+  }
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+  assert.ok(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)));
+});
+
+test('failed corruption-snapshot deletion keeps reset marker and startup retry removes the remaining snapshot', () => {
+  const corruptKey = 'projects_corrupt_1700000000002';
+  const faults = { throwOnRemoveKey: corruptKey };
+  const harness = resetAllHarness(faults);
+  harness.values.set(corruptKey, 'preserved-corrupt-bytes');
+
+  harness.run();
+
+  assert.equal(harness.values.get(corruptKey), 'preserved-corrupt-bytes');
+  assert.ok(harness.values.has(harness.keys.resetInProgress),
+    'a failed hidden-snapshot deletion must keep the durable reset marker');
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+
+  faults.throwOnRemoveKey = null;
+  assert.equal(harness.sandbox._recoverInterruptedReset(), true);
+  assert.equal(harness.values.has(corruptKey), false);
+  assert.equal(harness.values.has(harness.keys.resetInProgress), false);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
