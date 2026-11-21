@@ -342,6 +342,52 @@ function recurrenceSandbox(tasks) {
   return sandbox;
 }
 
+test('cancelling one recurring occurrence preserves the series and its future schedule', () => {
+  const root = { id: 5, recurrence: 'daily', status: 'pending' };
+  const occurrence = {
+    id: 6, recurrence: 'daily', status: 'pending', actual: 12,
+    completedAt: null, _recurringGenerated: true, _sourceTaskId: 5
+  };
+  const sandbox = {
+    tasks: [root, occurrence],
+    editingId: 6,
+    showConfirmModal: (_title, _body, accept) => accept(),
+    saveData: () => true,
+    cancelEdit: () => { sandbox.editingId = null; },
+    renderAll: () => {},
+    showToast: () => {}
+  };
+  vm.runInNewContext(extractFunction('cancelRecurringOccurrence'), sandbox);
+
+  assert.equal(sandbox.cancelRecurringOccurrence(6), true);
+  assert.equal(occurrence.status, 'cancelled');
+  assert.equal(occurrence.actual, 12, 'elapsed work time is preserved');
+  assert.equal(occurrence.recurrence, 'daily', 'the cancelled occurrence keeps its series reference');
+  assert.equal(root.recurrence, 'daily', 'future occurrences remain enabled');
+});
+
+test('failed one-occurrence cancellation restores its prior status and completion timestamp', () => {
+  const occurrence = {
+    id: 6, recurrence: 'weekly', status: 'pending', actual: null,
+    completedAt: null, _recurringGenerated: true, _sourceTaskId: 5
+  };
+  const sandbox = {
+    tasks: [occurrence],
+    editingId: 6,
+    showConfirmModal: (_title, _body, accept) => accept(),
+    saveData: () => false,
+    cancelEdit: () => {},
+    renderAll: () => {},
+    showToast: () => {}
+  };
+  vm.runInNewContext(extractFunction('cancelRecurringOccurrence'), sandbox);
+
+  assert.equal(sandbox.cancelRecurringOccurrence(6), true, 'the confirmation dialog was opened');
+  assert.equal(occurrence.status, 'pending');
+  assert.equal(occurrence.completedAt, null);
+  assert.equal(occurrence.recurrence, 'weekly');
+});
+
 test('stopping a recurring series clears recurrence from the root and all generated occurrences', () => {
   const root = { id: 5, status: 'cancelled', recurrence: 'daily' };
   const occurrence = { id: 6, status: 'pending', recurrence: 'daily', _recurringGenerated: true, _sourceTaskId: 5 };
