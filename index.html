@@ -3149,7 +3149,6 @@ function convertMentalItemToTask(id) {
   var _resolvedAtBefore = m.resolvedAt;
   var _checkpointHoldActive = typeof _rollingRecoveryCheckpointHold !== "undefined";
   if (_checkpointHoldActive) _rollingRecoveryCheckpointHold++;
-  var _resolvedAtBefore = m.resolvedAt;
   // FIX N8 (G4) & FIX J3 (G-P2-1): دمج next بحصص منفصلة لمنع الاقتطاع
   var _taskNameBase = String(m.text || '').trim().slice(0, 180);
   if (m.next && String(m.next).trim()) {
@@ -8790,6 +8789,9 @@ function deleteProject(id) {
       try {
         if (oldMainRaw === null) localStorage.removeItem(STORAGE_KEY);
         else localStorage.setItem(STORAGE_KEY, oldMainRaw);
+        if (localStorage.getItem(STORAGE_KEY) !== oldMainRaw) {
+          throw new Error("main rollback readback mismatch");
+        }
         _setMainStorageBaseline(oldMainRaw);
         if (oldProjectRaw === null) localStorage.removeItem(PROJECTS_KEY);
         else localStorage.setItem(PROJECTS_KEY, oldProjectRaw);
