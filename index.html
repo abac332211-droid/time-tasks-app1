@@ -815,6 +815,8 @@ let createdByVersion = APP_VERSION;
 let _timerIntervalId = null;
 let _timerSecondsLeft = 0;
 let storageRecoveryRequired = false;
+// Suppress intermediate rolling checkpoints while a multi-key transaction is in flight.
+var _rollingRecoveryCheckpointHold = 0;
 let _pendingUncompleteConfirm = false;
 var _mainStorageBaselineRaw = null;
 var _mainStorageBaselineReady = false;
@@ -2242,6 +2244,8 @@ function _getLatestRollingRecoveryBackup() {
 
 function _storeRollingRecoveryBackup(reason, minIntervalMs) {
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
+  if (typeof _rollingRecoveryCheckpointHold !== "undefined"
+      && _rollingRecoveryCheckpointHold > 0) return true;
   try {
     var blockingKeys = [];
     if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
@@ -3143,6 +3147,9 @@ function convertMentalItemToTask(id) {
   var _mainRawBefore = localStorage.getItem(STORAGE_KEY);
   var _convertedTaskIdBefore = m.convertedTaskId;
   var _resolvedAtBefore = m.resolvedAt;
+  var _checkpointHoldActive = typeof _rollingRecoveryCheckpointHold !== "undefined";
+  if (_checkpointHoldActive) _rollingRecoveryCheckpointHold++;
+  var _resolvedAtBefore = m.resolvedAt;
   // FIX N8 (G4) & FIX J3 (G-P2-1): دمج next بحصص منفصلة لمنع الاقتطاع
   var _taskNameBase = String(m.text || '').trim().slice(0, 180);
   if (m.next && String(m.next).trim()) {
@@ -3162,6 +3169,7 @@ function convertMentalItemToTask(id) {
   };
   tasks.push(_newTask);
   if (!saveData()) {
+    if (_checkpointHoldActive) _rollingRecoveryCheckpointHold--;
     tasks = _snap;
     showToast("⚠️ تعذر الحفظ — لم تُحوّل");
     return;
@@ -3169,6 +3177,7 @@ function convertMentalItemToTask(id) {
   m.convertedTaskId = _newTask.id;
   m.resolvedAt = new Date().toISOString();
   if (!_saveMentalInbox(arr)) {
+    if (_checkpointHoldActive) _rollingRecoveryCheckpointHold--;
     tasks = _snap;
     if (_convertedTaskIdBefore === undefined) delete m.convertedTaskId;
     else m.convertedTaskId = _convertedTaskIdBefore;
@@ -3206,6 +3215,16 @@ function convertMentalItemToTask(id) {
         "فشل حفظ حالة الفكرة، وتعذر التحقق من استرجاع المهمة السابقة. أوقف التطبيق الكتابة لحماية البيانات؛ لا تتابع قبل إكمال الاستعادة."
       );
     }
+    return;
+  }
+  if (_checkpointHoldActive) _rollingRecoveryCheckpointHold--;
+  if (typeof _storeRollingRecoveryBackup === "function"
+      && !_storeRollingRecoveryBackup("mental-item-conversion", 0)) {
+    storageRecoveryRequired = true;
+    showAlertModal(
+      "⚠️ تعذر تأمين التحويل",
+      "تم حفظ المهمة وحالة الفكرة، لكن تعذر إنشاء نسخة استرداد متوافقة مع الحالة الجديدة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع النسخة الداخلية قبل المتابعة."
+    );
     return;
   }
   renderAll();
@@ -8749,6 +8768,9 @@ function deleteProject(id) {
     var oldProjectRaw = localStorage.getItem(PROJECTS_KEY);
     var nextProjects = arr.filter(function(x) { return x.id !== id; });
     var linkedSnapshots = [];
+    var _projectCheckpointHold = linkedCount > 0
+      && typeof _rollingRecoveryCheckpointHold !== "undefined";
+    if (_projectCheckpointHold) _rollingRecoveryCheckpointHold++;
     tasks.forEach(function(t) {
       if (t.projectId === id) {
         linkedSnapshots.push({ task: t, projectId: t.projectId });
@@ -8756,11 +8778,13 @@ function deleteProject(id) {
       }
     });
     if (linkedSnapshots.length && !saveData()) {
+      if (_projectCheckpointHold) _rollingRecoveryCheckpointHold--;
       linkedSnapshots.forEach(function(x) { x.task.projectId = x.projectId; });
       showToast("⚠️ تعذر حفظ فصل المهام — لم يُحذف المشروع");
       return;
     }
     if (!_saveProjects(nextProjects)) {
+      if (_projectCheckpointHold) _rollingRecoveryCheckpointHold--;
       linkedSnapshots.forEach(function(x) { x.task.projectId = x.projectId; });
       var _rbProjOk = false;
       try {
@@ -8793,6 +8817,16 @@ function deleteProject(id) {
           "تعذر حذف المشروع والتحقق من استرجاع الحالة السابقة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع المهام والمشاريع واستكمل الاستعادة قبل المتابعة."
         );
       }
+      return;
+    }
+    if (_projectCheckpointHold) _rollingRecoveryCheckpointHold--;
+    if (linkedSnapshots.length && typeof _storeRollingRecoveryBackup === "function"
+        && !_storeRollingRecoveryBackup("project-delete", 0)) {
+      storageRecoveryRequired = true;
+      showAlertModal(
+        "⚠️ تعذر تأمين حذف المشروع",
+        "حُفظ فصل المهام وحذف المشروع، لكن تعذر تحديث النسخة الداخلية إلى الحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع النسخة الداخلية قبل المتابعة."
+      );
       return;
     }
     if (_editingProjectId === id) cancelProjectEdit();
