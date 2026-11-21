@@ -426,6 +426,8 @@ function restoreContext(storage) {
     PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
     validateV2: () => true,
     storageRecoveryRequired: false,
+    location: { reload() {} },
+    _reloadAfterVerifiedOperation() { this.location.reload(); },
     _invalidateProjectsCache: () => { invalidations++; }
   };
   return {
