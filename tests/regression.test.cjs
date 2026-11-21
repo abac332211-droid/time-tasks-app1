@@ -1464,7 +1464,7 @@ test('an explicit pending migration marker allows archive recovery and is cleare
   assert.equal(report.recoveredFromBackup, true);
   assert.equal(JSON.parse(harness.values.get('main')).schemaVersion, 2);
   assert.equal(harness.values.get('migration-archive'), oldArchive);
-  assert.equal(harness.values.get('migration-in-progress'), null);
+  assert.equal(harness.values.get('migration-in-progress') ?? null, null);
 });
 
 test('migration archive write failure leaves the original V1 record unchanged and marked for retry', () => {
