@@ -425,6 +425,7 @@ function restoreContext(storage) {
     IMPORT_IN_PROGRESS_KEY: STORAGE_KEYS.IMPORT_IN_PROGRESS,
     PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
     validateV2: () => true,
+    storageRecoveryRequired: false,
     _invalidateProjectsCache: () => { invalidations++; }
   };
   return {
@@ -461,6 +462,7 @@ test('rollback snapshot restores and reads back the focus timer with every other
   assert.equal(storage.getItem(STORAGE_KEYS.FOCUS_SETTINGS), 'previous-settings');
   assert.equal(storage.getItem(STORAGE_KEYS.NOTIFICATIONS), 'previous-notifications');
   assert.equal(harness.invalidationCount(), 1);
+  assert.equal(harness.context.storageRecoveryRequired, false);
 });
 
 test('rollback reports failure when focus-timer storage write or read-back fails', () => {
@@ -502,6 +504,7 @@ test('failed snapshot restore compensates already-written keys to the pre-call s
   );
 
   assert.equal(restore(storageSnapshot('previous')), false);
+  assert.equal(harness.context.storageRecoveryRequired, true);
   for (const [key, value] of Object.entries(before)) {
     assert.equal(storage.getItem(key), value, 'pre-call value restored for ' + key);
   }
