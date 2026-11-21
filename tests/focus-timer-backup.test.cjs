@@ -427,7 +427,7 @@ function restoreContext(storage) {
     validateV2: () => true,
     storageRecoveryRequired: false,
     location: { reload() {} },
-    _reloadAfterVerifiedOperation() { this.location.reload(); },
+    _reloadAfterVerifiedOperation: () => context.location.reload(),
     _invalidateProjectsCache: () => { invalidations++; }
   };
   return {
@@ -889,6 +889,16 @@ test('paused stopwatch backup rehydrates from storage without restarting', () =>
   };
   let writes = 0;
   const context = {
+    _trackSecondaryStorageRead: (_key, raw) => raw,
+    _clearFocusTimerClock: () => {},
+    _anchorFocusTimerClock: () => {},
+    _phaseTargetSec: () => 1_500,
+    _focusTimerColdStartWasRunning: false,
+    _focusTimerSavedAtAtLoad: null,
+    _focusMonotonicStart: null,
+    _focusWallClockAnchor: null,
+    _focusFallbackLastWall: null,
+    _focusFallbackElapsedMs: 0,
     FOCUS_TIMER_KEY: 'focusTimer',
     localStorage: storage,
     tasks: [],
@@ -938,6 +948,16 @@ test('pending Pomodoro confirmation survives timer rehydration without auto-resu
     pendingPhaseEndedAt: null
   };
   const context = {
+    _trackSecondaryStorageRead: (_key, raw) => raw,
+    _clearFocusTimerClock: () => {},
+    _anchorFocusTimerClock: () => {},
+    _phaseTargetSec: () => 1_500,
+    _focusTimerColdStartWasRunning: false,
+    _focusTimerSavedAtAtLoad: null,
+    _focusMonotonicStart: null,
+    _focusWallClockAnchor: null,
+    _focusFallbackLastWall: null,
+    _focusFallbackElapsedMs: 0,
     FOCUS_TIMER_KEY: 'focusTimer',
     localStorage: storage,
     tasks: [{ id: 10 }],
@@ -978,6 +998,16 @@ test('timer rehydration removes a reference to a task absent from restored tasks
   };
   let savedState = null;
   const context = {
+    _trackSecondaryStorageRead: (_key, raw) => raw,
+    _clearFocusTimerClock: () => {},
+    _anchorFocusTimerClock: () => {},
+    _phaseTargetSec: () => 1_500,
+    _focusTimerColdStartWasRunning: false,
+    _focusTimerSavedAtAtLoad: null,
+    _focusMonotonicStart: null,
+    _focusWallClockAnchor: null,
+    _focusFallbackLastWall: null,
+    _focusFallbackElapsedMs: 0,
     FOCUS_TIMER_KEY: 'focusTimer',
     localStorage: storage,
     tasks: [],
