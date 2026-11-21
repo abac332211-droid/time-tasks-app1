@@ -11,6 +11,6 @@
     "@capacitor/cli": "^6.2.0"
   },
   "scripts": {
-    "test": "node --test tests/regression.test.cjs tests/focus-timer-backup.test.cjs tests/android-version-config.test.cjs tests/android-debug-variant.test.cjs tests/task-notifications.test.cjs"
+    "test": "node --test tests/regression.test.cjs tests/focus-timer-backup.test.cjs tests/focus-timer-clock.test.cjs tests/android-version-config.test.cjs tests/android-debug-variant.test.cjs tests/task-notifications.test.cjs"
   }
 }
