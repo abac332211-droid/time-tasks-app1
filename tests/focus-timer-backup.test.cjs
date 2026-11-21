@@ -977,14 +977,14 @@ test('timer rehydration removes a reference to a task absent from restored tasks
 });
 
 
-function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, existingMainData = { schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }) {
+function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, existingMainData = { schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }, existingProjectsRaw = 'previous-projects') {
   const storage = memoryStorage({
     [STORAGE_KEYS.MAIN]: JSON.stringify(existingMainData),
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'previous-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: existingTimerRaw,
     [STORAGE_KEYS.MENTAL_INBOX]: 'previous-inbox',
     [STORAGE_KEYS.THOUGHTS]: 'previous-thoughts',
-    [STORAGE_KEYS.PROJECTS]: 'previous-projects',
+    [STORAGE_KEYS.PROJECTS]: existingProjectsRaw,
     [STORAGE_KEYS.FOCUS_SETTINGS]: 'previous-focus-settings',
     [STORAGE_KEYS.NOTIFICATIONS]: 'previous-notifications'
   }, faults);
@@ -1786,4 +1786,46 @@ test('legacy import detaches a preserved device timer from a reused task ID with
   const restoredTimer = JSON.parse(harness.values.get(STORAGE_KEYS.FOCUS_TIMER));
   assert.equal(restoredTimer.taskId, null);
   assert.equal(restoredTimer.baseElapsed, 120, 'timer progress itself is preserved');
+});
+
+
+test('legacy import clears imported project links when preserving device projects without backup mapping', () => {
+  const previousMain = {
+    schemaVersion: 2,
+    settings: {},
+    tasks: [{ id: 1, name: 'مهمة سابقة', createdAt: 1000 }],
+    dailyLogs: []
+  };
+  const importedTask = {
+    id: 2, name: 'مهمة مستوردة', status: 'pending', type: 'معرفية',
+    expected: 25, actual: null, plannedDate: '2026-11-21', plannedTime: '',
+    completedAt: null, createdAt: 2000, projectId: 12
+  };
+  const backup = integrationBackup({ tasks: [importedTask], dailyLogs: [] });
+  const currentProjects = JSON.stringify([{ id: 12, name: 'مشروع هذا الجهاز' }]);
+  const harness = runImportPreviewIntegration(
+    backup, null, {}, previousMain, currentProjects
+  );
+
+  const importedMain = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
+  assert.equal(importedMain.tasks[0].projectId, null);
+  assert.equal(harness.values.get(STORAGE_KEYS.PROJECTS), currentProjects);
+  assert.match(harness.confirmations[0].body, /تُفصل مراجع المشاريع/);
+});
+
+test('import refuses to proceed when rollback snapshot or marker readback cannot be verified', () => {
+  const backup = integrationBackup({ tasks: [], dailyLogs: [] });
+  for (const failedKey of [STORAGE_KEYS.PRE_IMPORT, STORAGE_KEYS.IMPORT_IN_PROGRESS]) {
+    const faults = { throwOnGetKey: failedKey };
+    const harness = runImportPreviewIntegration(backup, 'previous-timer', faults);
+
+    assert.equal(harness.reloads(), 0, 'must not reload if a safety checkpoint is unreadable');
+    assert.ok(harness.alerts.length > 0, 'must report the failed safety checkpoint');
+    assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify({
+      schemaVersion: 2, tasks: [], dailyLogs: [], settings: {}
+    }));
+    assert.equal(harness.values.get(STORAGE_KEYS.IMPORT_IN_PROGRESS), undefined);
+    assert.equal(harness.values.get(STORAGE_KEYS.PRE_IMPORT), undefined);
+    assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_TIMER), 'previous-timer');
+  }
 });
