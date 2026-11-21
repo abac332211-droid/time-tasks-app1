@@ -373,7 +373,7 @@ test('failed recurring-series stop restores recurrence for every member', () => 
   };
   vm.runInNewContext(extractFunction('stopRecurringSeries'), sandbox);
 
-  assert.equal(sandbox.stopRecurringSeries(6), false);
+  assert.equal(sandbox.stopRecurringSeries(6), true, 'the confirmation dialog was opened');
   assert.equal(root.recurrence, 'weekly');
   assert.equal(occurrence.recurrence, 'weekly');
 });
