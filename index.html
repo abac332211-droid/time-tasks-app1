@@ -2210,7 +2210,8 @@ function _getLatestRollingRecoveryBackup() {
   var recordA = _parseRollingRecoveryBackup(rawA);
   var recordB = _parseRollingRecoveryBackup(rawB);
   if (!recordA && !recordB) return null;
-  if (recordA && (!recordB || recordA.sequence >= recordB.sequence)) {
+  if (recordA && (!recordB || recordA.sequence > recordB.sequence
+      || (recordA.sequence === recordB.sequence && recordA.createdAtMs >= recordB.createdAtMs))) {
     return { slot: "a", record: recordA };
   }
   return { slot: "b", record: recordB };
@@ -2263,8 +2264,13 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
     var targetKey;
     if (!validA) targetKey = ROLLING_BACKUP_A_KEY;
     else if (!validB) targetKey = ROLLING_BACKUP_B_KEY;
-    else targetKey = validA.sequence <= validB.sequence
-      ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
+    else if (validA.sequence !== validB.sequence) {
+      targetKey = validA.sequence < validB.sequence
+        ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
+    } else {
+      targetKey = validA.createdAtMs <= validB.createdAtMs
+        ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
+    }
 
     localStorage.setItem(targetKey, candidateRaw);
     var verifiedRaw = localStorage.getItem(targetKey);
