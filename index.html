@@ -6152,12 +6152,56 @@ function exportCSV() {
 
 function runMigrationTests() {
   const results = [];
-  const originalStorage = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    originalStorage.push([key, localStorage.getItem(key)]);
+  // Run migration cases against a temporary in-memory Storage implementation.
+  // Real localStorage is never cleared or written, so other tabs and real user data
+  // cannot receive migration-test storage events or reminder side effects.
+  const originalStorageDescriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+  if (!originalStorageDescriptor || originalStorageDescriptor.configurable !== true) {
+    return [{
+      name: "عزل مخزن اختبارات الترحيل",
+      passed: false,
+      details: "تعذر إنشاء مخزن محلي معزول؛ لم تُشغّل اختبارات الترحيل على بيانات المستخدم."
+    }];
   }
-  const originalTasks = tasks.slice();
+  const originalTasksRef = tasks;
+  const originalTasksValues = tasks.slice();
+  const originalAppSettingsRef = appSettings;
+  const originalAppSettingsValues = JSON.parse(JSON.stringify(appSettings || {}));
+  const originalCreatedByVersion = createdByVersion;
+  const originalRecoveryRequired = storageRecoveryRequired;
+  const originalRollingHold = _rollingRecoveryCheckpointHold;
+  const originalBaselineRaw = _mainStorageBaselineRaw;
+  const originalBaselineReady = _mainStorageBaselineReady;
+  const originalExternalChange = _mainStorageExternalChangeObserved;
+  const originalFocusTimerRef = typeof _focusTimer !== "undefined" ? _focusTimer : null;
+  const originalFocusTimerValues = originalFocusTimerRef ? Object.assign({}, originalFocusTimerRef) : null;
+  const originalSessionsCache = typeof _sessionsCache !== "undefined" ? _sessionsCache : undefined;
+  const originalProjectsCache = typeof _projectsCache !== "undefined" ? _projectsCache : undefined;
+  const testStorageMap = new Map();
+  const testStorage = {
+    get length() { return testStorageMap.size; },
+    key: function(index) { return Array.from(testStorageMap.keys())[index] || null; },
+    getItem: function(key) {
+      key = String(key);
+      return testStorageMap.has(key) ? testStorageMap.get(key) : null;
+    },
+    setItem: function(key, value) { testStorageMap.set(String(key), String(value)); },
+    removeItem: function(key) { testStorageMap.delete(String(key)); },
+    clear: function() { testStorageMap.clear(); }
+  };
+  try {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true, enumerable: originalStorageDescriptor.enumerable,
+      writable: true, value: testStorage
+    });
+  } catch (installError) {
+    return [{
+      name: "عزل مخزن اختبارات الترحيل",
+      passed: false,
+      details: "تعذر تفعيل مخزن الاختبار المعزول: " + installError.message
+    }];
+  }
+  try {
   function reset() {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(MIGRATION_ARCHIVE_KEY);
@@ -6491,36 +6535,40 @@ function runMigrationTests() {
     return d.tasks.length === 1 && d.tasks[0].checklist === null;
   });
 
-  // Restore the complete pre-test storage snapshot, including unrelated keys and absent keys.
-  let storageRestored = false;
-  try {
-    localStorage.clear();
-    for (let i = 0; i < originalStorage.length; i++) {
-      localStorage.setItem(originalStorage[i][0], originalStorage[i][1]);
-    }
-    const restored = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      restored.push([key, localStorage.getItem(key)]);
-    }
-    const sortPairs = function(a, b) { return a[0].localeCompare(b[0]); };
-    originalStorage.sort(sortPairs);
-    restored.sort(sortPairs);
-    storageRestored = JSON.stringify(restored) === JSON.stringify(originalStorage);
-  } catch (restoreError) {
-    console.error("Could not restore complete localStorage snapshot after migration tests:", restoreError);
-  }
-  tasks = originalTasks;
   results.push({
-    name: "استعادة localStorage كاملة بعد الاختبارات",
-    passed: storageRestored,
-    details: storageRestored ? "" : "تعذرت استعادة أو مطابقة جميع مفاتيح وقيم التخزين السابقة."
+    name: "عزل اختبارات الترحيل عن localStorage الحقيقي",
+    passed: localStorage === testStorage,
+    details: localStorage === testStorage ? "" : "لم يعد الاختبار يستخدم مخزنًا معزولًا."
   });
 
   let passed = 0, failed = 0;
   results.forEach(function(r) { if (r.passed) passed++; else failed++; });
   console.log("Migration Tests: " + passed + "/" + results.length + " (" + failed + " failed)");
   return results;
+  } finally {
+    // Restore the original Storage property and every mutable app-level state
+    // touched or potentially observed by migration code, even after exceptions.
+    try { Object.defineProperty(window, "localStorage", originalStorageDescriptor); }
+    catch (restoreDescriptorError) { console.error("Could not restore the native localStorage descriptor:", restoreDescriptorError); }
+    tasks = originalTasksRef;
+    originalTasksRef.splice.apply(originalTasksRef, [0, originalTasksRef.length].concat(originalTasksValues));
+    appSettings = originalAppSettingsRef;
+    Object.keys(appSettings).forEach(function(key) { delete appSettings[key]; });
+    Object.assign(appSettings, originalAppSettingsValues);
+    createdByVersion = originalCreatedByVersion;
+    storageRecoveryRequired = originalRecoveryRequired;
+    _rollingRecoveryCheckpointHold = originalRollingHold;
+    _mainStorageBaselineRaw = originalBaselineRaw;
+    _mainStorageBaselineReady = originalBaselineReady;
+    _mainStorageExternalChangeObserved = originalExternalChange;
+    if (originalFocusTimerRef) {
+      _focusTimer = originalFocusTimerRef;
+      Object.keys(_focusTimer).forEach(function(key) { delete _focusTimer[key]; });
+      Object.assign(_focusTimer, originalFocusTimerValues);
+    }
+    if (typeof _sessionsCache !== "undefined") _sessionsCache = originalSessionsCache;
+    if (typeof _projectsCache !== "undefined") _projectsCache = originalProjectsCache;
+  }
 }
 
 function runTestsAndShow() {
