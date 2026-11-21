@@ -688,7 +688,7 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
   <div class="card">
     <h3>🛠️ استرداد البيانات</h3>
     <p class="small">إذا فشل ترحيل البيانات، استخدم هذا الزر بعد استيراد نسخة احتياطية صحيحة لرفع الحظر.</p>
-    <button class="btn-warning" style="width:100%;" onclick="retryStorageRecovery()">🛠️ إعادة محاولة الترحيل</button>
+    <button class="btn-warning" style="width:100%;" onclick="retryStorageRecovery()">🛠️ إعادة محاولة الاسترداد</button>
   </div>
 
   <div class="card">
@@ -789,6 +789,10 @@ const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup";
 
 const IMPORT_IN_PROGRESS_KEY = "timeTasksApp_importInProgress";
 const MIGRATION_IN_PROGRESS_KEY = "timeTasksApp_migrationInProgress";
+const RESET_IN_PROGRESS_KEY = "timeTasksApp_resetInProgress";
+const ROLLING_BACKUP_A_KEY = "timeTasksApp_recoveryBackupA";
+const ROLLING_BACKUP_B_KEY = "timeTasksApp_recoveryBackupB";
+const ROLLING_RESTORE_IN_PROGRESS_KEY = "timeTasksApp_rollingRestoreInProgress";
 const TEST_FLAG_KEY = "timeTasksApp_testInjected";
 const TEST_BACKUP_KEY = "timeTasksApp_testBackup";
 const CURRENT_SCHEMA_VERSION = 2;
@@ -1916,6 +1920,18 @@ function _setupSystemThemeListener() {
 }
 
 function loadData() {
+  if (!_recoverInterruptedReset()) {
+    storageRecoveryRequired = true;
+    showAlertModal("إعادة ضبط غير مكتملة",
+      "بدأ حذف البيانات في جلسة سابقة ولم يكتمل تنظيف التخزين. احتفظ بالتطبيق مفتوحًا وأعد محاولة الاسترداد قبل متابعة العمل.");
+    return;
+  }
+  if (!_recoverInterruptedRollingRestore()) {
+    storageRecoveryRequired = true;
+    showAlertModal("استعادة نسخة داخلية غير مكتملة",
+      "توقفت استعادة نسخة داخلية قبل اكتمالها. احتفظ بعلامة الاسترداد والنسخة المصدر، وأعد محاولة الاسترداد قبل متابعة العمل.");
+    return;
+  }
   if (!_recoverInterruptedImport()) {
     storageRecoveryRequired = true;
     showAlertModal("تعذر استرداد استعادة منقطعة",
@@ -2132,6 +2148,270 @@ function _pruneLastRecurringDates() {
   });
   appSettings.lastRecurringDates = cleaned;
 }
+function _parseRollingRecoveryBackup(raw) {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    var record = JSON.parse(raw);
+    if (!record || typeof record !== "object" || Array.isArray(record)
+        || record.formatVersion !== 1
+        || !Number.isSafeInteger(record.sequence) || record.sequence < 1
+        || !Number.isFinite(record.createdAtMs) || record.createdAtMs < 0
+        || typeof record.reason !== "string"
+        || !record.data || typeof record.data !== "object" || Array.isArray(record.data)) {
+      return null;
+    }
+    var required = ["main", "focusSessions", "focusTimer", "mentalInbox",
+      "thoughts", "projects", "focusSettings", "notifications"];
+    for (var i = 0; i < required.length; i++) {
+      var key = required[i];
+      if (!Object.prototype.hasOwnProperty.call(record.data, key)
+          || (record.data[key] !== null && typeof record.data[key] !== "string")) {
+        return null;
+      }
+    }
+    if (typeof record.data.main !== "string") return null;
+    var mainData = JSON.parse(record.data.main);
+    if (!validateV2(mainData)) return null;
+
+    var jsonGroups = [
+      ["focusSessions", "array"],
+      ["focusTimer", "object"],
+      ["mentalInbox", "array"],
+      ["thoughts", "array"],
+      ["projects", "array"],
+      ["focusSettings", "object"],
+      ["notifications", "object"]
+    ];
+    for (var j = 0; j < jsonGroups.length; j++) {
+      var entry = jsonGroups[j];
+      var groupRaw = record.data[entry[0]];
+      if (groupRaw === null) continue;
+      var parsedGroup = JSON.parse(groupRaw);
+      if (entry[1] === "array") {
+        if (!Array.isArray(parsedGroup)) return null;
+      } else if (!parsedGroup || typeof parsedGroup !== "object" || Array.isArray(parsedGroup)) {
+        return null;
+      }
+    }
+    return record;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _getLatestRollingRecoveryBackup() {
+  var rawA, rawB;
+  try {
+    rawA = localStorage.getItem(ROLLING_BACKUP_A_KEY);
+    rawB = localStorage.getItem(ROLLING_BACKUP_B_KEY);
+  } catch (e) {
+    return false;
+  }
+  var recordA = _parseRollingRecoveryBackup(rawA);
+  var recordB = _parseRollingRecoveryBackup(rawB);
+  if (!recordA && !recordB) return null;
+  if (recordA && (!recordB || recordA.sequence >= recordB.sequence)) {
+    return { slot: "a", record: recordA };
+  }
+  return { slot: "b", record: recordB };
+}
+
+function _storeRollingRecoveryBackup(reason, minIntervalMs) {
+  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
+  try {
+    var blockingKeys = [
+      IMPORT_IN_PROGRESS_KEY,
+      MIGRATION_IN_PROGRESS_KEY,
+      RESET_IN_PROGRESS_KEY,
+      ROLLING_RESTORE_IN_PROGRESS_KEY
+    ];
+    for (var i = 0; i < blockingKeys.length; i++) {
+      if (localStorage.getItem(blockingKeys[i]) !== null) return false;
+    }
+
+    var latest = _getLatestRollingRecoveryBackup();
+    if (latest === false) return false;
+    var now = Date.now();
+    if (Number.isFinite(minIntervalMs) && minIntervalMs > 0 && latest
+        && now - latest.record.createdAtMs < minIntervalMs) {
+      return true;
+    }
+
+    var data = {
+      main: localStorage.getItem(STORAGE_KEY),
+      focusSessions: localStorage.getItem(FOCUS_SESSIONS_KEY),
+      focusTimer: localStorage.getItem(FOCUS_TIMER_KEY),
+      mentalInbox: localStorage.getItem(MENTAL_INBOX_KEY),
+      thoughts: localStorage.getItem(THOUGHTS_KEY),
+      projects: localStorage.getItem(PROJECTS_KEY),
+      focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
+      notifications: localStorage.getItem(NOTIFICATIONS_KEY)
+    };
+    var candidate = {
+      formatVersion: 1,
+      sequence: latest ? latest.record.sequence + 1 : 1,
+      createdAtMs: now,
+      reason: String(reason || "save").slice(0, 48),
+      data: data
+    };
+    var candidateRaw = JSON.stringify(candidate);
+    if (!_parseRollingRecoveryBackup(candidateRaw)) return false;
+
+    var rawA = localStorage.getItem(ROLLING_BACKUP_A_KEY);
+    var rawB = localStorage.getItem(ROLLING_BACKUP_B_KEY);
+    var validA = _parseRollingRecoveryBackup(rawA);
+    var validB = _parseRollingRecoveryBackup(rawB);
+    var targetKey;
+    if (!validA) targetKey = ROLLING_BACKUP_A_KEY;
+    else if (!validB) targetKey = ROLLING_BACKUP_B_KEY;
+    else targetKey = validA.sequence <= validB.sequence
+      ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
+
+    localStorage.setItem(targetKey, candidateRaw);
+    var verifiedRaw = localStorage.getItem(targetKey);
+    var verified = _parseRollingRecoveryBackup(verifiedRaw);
+    if (verifiedRaw !== candidateRaw || !verified
+        || verified.sequence !== candidate.sequence) {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("Rolling recovery checkpoint was not updated:", e);
+    return false;
+  }
+}
+
+function _recoverInterruptedRollingRestore() {
+  var markerRaw;
+  try {
+    markerRaw = localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY);
+  } catch (e) {
+    return false;
+  }
+  if (markerRaw === null) return true;
+
+  try {
+    var marker = JSON.parse(markerRaw);
+    if (!marker || typeof marker !== "object" || Array.isArray(marker)
+        || marker.version !== 1 || (marker.slot !== "a" && marker.slot !== "b")
+        || !Number.isSafeInteger(marker.sequence) || marker.sequence < 1) {
+      return false;
+    }
+    var sourceKey = marker.slot === "a" ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
+    var sourceRaw = localStorage.getItem(sourceKey);
+    var record = _parseRollingRecoveryBackup(sourceRaw);
+    if (!record || record.sequence !== marker.sequence) return false;
+    if (!_restoreStorageSnapshot(record.data)) return false;
+
+    localStorage.removeItem(ROLLING_RESTORE_IN_PROGRESS_KEY);
+    if (localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY) !== null) {
+      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = false;
+    return true;
+  } catch (e) {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    return false;
+  }
+}
+
+function _restoreLatestRollingRecoveryBackup() {
+  var latest = _getLatestRollingRecoveryBackup();
+  if (!latest || latest === false) return false;
+  var markerRaw = JSON.stringify({
+    version: 1,
+    slot: latest.slot,
+    sequence: latest.record.sequence
+  });
+  try {
+    localStorage.setItem(ROLLING_RESTORE_IN_PROGRESS_KEY, markerRaw);
+    if (localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY) !== markerRaw) {
+      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+      return false;
+    }
+  } catch (e) {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    return false;
+  }
+  return _recoverInterruptedRollingRestore();
+}
+
+function _resetStorageRemovalKeys() {
+  return [
+    IMPORT_IN_PROGRESS_KEY,
+    PRE_IMPORT_KEY,
+    MIGRATION_IN_PROGRESS_KEY,
+    MIGRATION_ARCHIVE_KEY,
+    TEST_FLAG_KEY,
+    TEST_BACKUP_KEY,
+    THOUGHTS_KEY,
+    PROJECTS_KEY,
+    FOCUS_TIMER_KEY,
+    FOCUS_SESSIONS_KEY,
+    MENTAL_INBOX_KEY,
+    ROLLING_BACKUP_A_KEY,
+    ROLLING_BACKUP_B_KEY,
+    ROLLING_RESTORE_IN_PROGRESS_KEY
+  ];
+}
+
+function _recoverInterruptedReset() {
+  var markerRaw;
+  try {
+    markerRaw = localStorage.getItem(RESET_IN_PROGRESS_KEY);
+  } catch (e) {
+    return false;
+  }
+  if (markerRaw === null) return true;
+
+  try {
+    var marker = JSON.parse(markerRaw);
+    if (!marker || typeof marker !== "object" || Array.isArray(marker)
+        || marker.version !== 1 || typeof marker.main !== "string") {
+      return false;
+    }
+    var emptyMain = JSON.parse(marker.main);
+    if (!validateV2(emptyMain) || !Array.isArray(emptyMain.tasks)
+        || emptyMain.tasks.length !== 0 || !Array.isArray(emptyMain.dailyLogs)
+        || emptyMain.dailyLogs.length !== 0) {
+      return false;
+    }
+
+    localStorage.setItem(STORAGE_KEY, marker.main);
+    if (localStorage.getItem(STORAGE_KEY) !== marker.main) return false;
+    if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(marker.main);
+
+    var keys = _resetStorageRemovalKeys();
+    var failed = false;
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      try {
+        localStorage.removeItem(key);
+        if (localStorage.getItem(key) !== null) failed = true;
+      } catch (removeError) {
+        failed = true;
+        console.error("Interrupted reset cleanup failed for:", key, removeError);
+      }
+    }
+    if (failed) {
+      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+      return false;
+    }
+
+    localStorage.removeItem(RESET_IN_PROGRESS_KEY);
+    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) {
+      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = false;
+    return true;
+  } catch (e) {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    return false;
+  }
+}
+
 function saveData() {
   if (storageRecoveryRequired) {
     console.error("saveData: refusing write — data recovery required");
@@ -2139,13 +2419,19 @@ function saveData() {
     return false;
   }
   if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined"
-      || typeof MIGRATION_IN_PROGRESS_KEY !== "undefined") {
+      || typeof MIGRATION_IN_PROGRESS_KEY !== "undefined"
+      || typeof RESET_IN_PROGRESS_KEY !== "undefined"
+      || typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined") {
     try {
       const importPending = typeof IMPORT_IN_PROGRESS_KEY !== "undefined"
         && !!localStorage.getItem(IMPORT_IN_PROGRESS_KEY);
       const migrationPending = typeof MIGRATION_IN_PROGRESS_KEY !== "undefined"
         && !!localStorage.getItem(MIGRATION_IN_PROGRESS_KEY);
-      if (importPending || migrationPending) {
+      const resetPending = typeof RESET_IN_PROGRESS_KEY !== "undefined"
+        && !!localStorage.getItem(RESET_IN_PROGRESS_KEY);
+      const rollingRestorePending = typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined"
+        && !!localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY);
+      if (importPending || migrationPending || resetPending || rollingRestorePending) {
         storageRecoveryRequired = true;
         showAlertModal("الاستعادة أو الترحيل لم يكتمل",
           "توجد عملية استعادة أو ترحيل لم تُغلق بعد. أوقفنا الحفظ حتى يستعيد التطبيق الحالة السابقة أو يكمل الترحيل ويتحقق منه عند إعادة الفتح.");
@@ -2230,6 +2516,9 @@ function saveData() {
     localStorage.setItem(STORAGE_KEY, serializedV2);
     _setMainStorageBaseline(serializedV2);
     _queueAllTaskReminderSync();
+    if (!_storeRollingRecoveryBackup("main-save", 0)) {
+      console.warn("Main data saved, but the rolling recovery checkpoint could not be refreshed.");
+    }
     return true;
   } catch (e) {
     showAlertModal("تنبيه الحفظ", "تعذر حفظ البيانات. مساحة التخزين المحلية ممتلئة.");
@@ -2256,9 +2545,69 @@ function retryStorageRecovery() {
     showToast('✅ لا يوجد حظر حاليًّا');
     return;
   }
+
+  var resetPending = false;
+  var rollingRestorePending = false;
+  try {
+    resetPending = localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null;
+    rollingRestorePending = localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY) !== null;
+  } catch (markerReadError) {
+    showAlertModal("تعذر قراءة حالة الاسترداد", "لم نتمكن من قراءة علامات الاسترداد. لم نغيّر البيانات.");
+    return;
+  }
+
+  if (resetPending) {
+    if (_recoverInterruptedReset()) {
+      showToast("✅ اكتمل تنظيف إعادة الضبط — أعد التحميل");
+      setTimeout(function() { location.reload(); }, 600);
+    } else {
+      storageRecoveryRequired = true;
+      showAlertModal("لا يزال حذف البيانات غير مكتمل",
+        "احتفظ التطبيق بعلامة الاسترداد وسيعيد المحاولة عند فتحه مجددًا. افحص مساحة التخزين ثم أعد المحاولة.");
+    }
+    return;
+  }
+
+  if (rollingRestorePending) {
+    if (_recoverInterruptedRollingRestore()) {
+      showToast("✅ اكتملت استعادة النسخة الداخلية — أعد التحميل");
+      setTimeout(function() { location.reload(); }, 600);
+    } else {
+      storageRecoveryRequired = true;
+      showAlertModal("لم تكتمل الاستعادة",
+        "تعذر إكمال استعادة النسخة الداخلية. بقيت علامة الاسترداد والنسخة المصدر محفوظتين لإعادة المحاولة.");
+    }
+    return;
+  }
+
+  var latest = _getLatestRollingRecoveryBackup();
+  if (latest === false) {
+    showAlertModal("تعذر فحص النسخ الداخلية", "فشلت قراءة مفاتيح النسخ الداخلية. لم نبدأ الاستعادة أو الترحيل.");
+    return;
+  }
+  if (latest) {
+    var backupDate = new Date(latest.record.createdAtMs).toLocaleString();
+    showConfirmModal(
+      "استعادة نسخة داخلية",
+      "توجد لقطة استرداد محفوظة بتاريخ " + backupDate
+        + " (التسلسل " + latest.record.sequence + "). ستستبدل بيانات التطبيق الحالية بالمجموعات الموجودة في هذه اللقطة. لا تتابع إلا إذا رغبت في الرجوع إلى هذه الحالة.",
+      function() {
+        if (_restoreLatestRollingRecoveryBackup()) {
+          showToast("✅ تمت استعادة النسخة الداخلية — أعد التحميل");
+          setTimeout(function() { location.reload(); }, 600);
+        } else {
+          storageRecoveryRequired = true;
+          showAlertModal("تعذرت استعادة النسخة الداخلية",
+            "لم يثبت التطبيق نجاح الاستعادة كاملة. احتفظ بعلامة الاسترداد والنسخة الداخلية ثم أعد المحاولة.");
+        }
+      }
+    );
+    return;
+  }
+
   showConfirmModal(
     '🛠️ إعادة محاولة الترحيل',
-    'سيُعاد تشغيل عملية الترحيل. إن كانت بياناتك سليمة أو استوردت نسخة صحيحة، سيُرفع الحظر.',
+    'لم توجد لقطة استرداد داخلية صالحة. سيُعاد تشغيل عملية الترحيل؛ إن كانت البيانات سليمة أو استوردت نسخة صحيحة، سيُرفع الحظر.',
     function() {
       const report = migrateV1ToV2();
       if (!report.success) {
@@ -2288,52 +2637,32 @@ function resetAll() {
         try {
           if (!validateV2(fresh)) throw new Error("سجل البيانات الفارغ غير صالح.");
           freshRaw = JSON.stringify(fresh);
-          localStorage.setItem(STORAGE_KEY, freshRaw);
-          if (localStorage.getItem(STORAGE_KEY) !== freshRaw) {
-            throw new Error("فشل التحقق من سجل البيانات الفارغ.");
-          }
-          _setMainStorageBaseline(freshRaw);
         } catch (e) {
-          showAlertModal("تعذر بدء الحذف", "لم يبدأ حذف المجموعات الأخرى لأن حفظ سجل المهام الفارغ أو التحقق منه فشل: " + e.message);
+          showAlertModal("تعذر بدء الحذف", "لم يبدأ الحذف لأن سجل المهام الفارغ غير صالح: " + e.message);
           return;
         }
+
+        // Persist a durable reset intent before replacing the main record or
+        // deleting any collection. Startup can safely replay this operation.
+        const resetMarkerRaw = JSON.stringify({ version: 1, main: freshRaw });
+        try {
+          localStorage.setItem(RESET_IN_PROGRESS_KEY, resetMarkerRaw);
+          if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== resetMarkerRaw) {
+            throw new Error("فشل التحقق من علامة إعادة الضبط.");
+          }
+        } catch (markerError) {
+          storageRecoveryRequired = true;
+          showAlertModal("تعذر تأمين عملية الحذف",
+            "لم تُغيّر البيانات لأن التطبيق لم يستطع حفظ علامة استرداد دائمة قبل البدء. أصلح مساحة التخزين ثم أعد المحاولة.");
+          return;
+        }
+
+        const resetSucceeded = _recoverInterruptedReset();
 
         appSettings = fresh.settings;
         createdByVersion = fresh.createdByVersion;
         tasks = [];
-
-        // Each key is attempted and verified independently; a single failure
-        // must not skip the remaining cleanup or produce a false success toast.
-        const removalKeys = [
-          IMPORT_IN_PROGRESS_KEY,
-          PRE_IMPORT_KEY,
-          MIGRATION_IN_PROGRESS_KEY,
-          MIGRATION_ARCHIVE_KEY,
-          TEST_FLAG_KEY,
-          TEST_BACKUP_KEY,
-          THOUGHTS_KEY,
-          PROJECTS_KEY,
-          FOCUS_TIMER_KEY,
-          FOCUS_SESSIONS_KEY,
-          MENTAL_INBOX_KEY
-        ];
-        const failedRemovalKeys = [];
-        for (let i = 0; i < removalKeys.length; i++) {
-          const key = removalKeys[i];
-          try {
-            localStorage.removeItem(key);
-            if (localStorage.getItem(key) !== null) {
-              failedRemovalKeys.push(key);
-            }
-          } catch (removeError) {
-            failedRemovalKeys.push(key);
-            console.error("resetAll: could not remove storage key:", key, removeError);
-          }
-        }
-        try { _invalidateProjectsCache(); } catch (cacheError) {
-          console.error("resetAll: project cache invalidation failed:", cacheError);
-        }
-
+        try { _invalidateProjectsCache(); } catch (cacheError) {}
         _sessionsCache = null;
         _stopDisplayTick();
         _focusTimer.mode = "pomodoro";
@@ -2353,13 +2682,11 @@ function resetAll() {
         cancelProjectEdit();
         renderAll();
 
-        if (failedRemovalKeys.length > 0) {
+        if (!resetSucceeded) {
           storageRecoveryRequired = true;
           showAlertModal(
             "لم يكتمل حذف كل البيانات",
-            "تم حفظ سجل المهام الفارغ، لكن تعذر حذف بعض مفاتيح التخزين الداخلية: "
-              + failedRemovalKeys.join("، ")
-              + ". لم يعلن التطبيق نجاح الحذف. أعد محاولة الحذف بعد معالجة مشكلة التخزين."
+            "تم تثبيت سجل المهام الفارغ، لكن تعذر حذف بعض مفاتيح التخزين الداخلية. بقيت علامة الاسترداد الدائمة؛ سيعيد التطبيق محاولة التنظيف عند فتحه مجددًا أو عند إعادة المحاولة."
           );
           return;
         }
@@ -2370,8 +2697,6 @@ function resetAll() {
     }
   );
 }
-
-
 
 function getTodayLog() {
   try {
@@ -2521,6 +2846,7 @@ function _loadMentalInbox() {
 function _saveMentalInbox(arr) {
   try {
     localStorage.setItem(MENTAL_INBOX_KEY, JSON.stringify(arr));
+    _storeRollingRecoveryBackup("mental-inbox-save", 0);
     return true;
   } catch (e) {
     return false;
@@ -6193,6 +6519,7 @@ function _loadFocusSettings() {
 function _saveFocusSettings(w, s, l) {
   try {
     localStorage.setItem(FOCUS_SETTINGS_KEY, JSON.stringify({ workMin: w, shortMin: s, longMin: l }));
+    _storeRollingRecoveryBackup("focus-settings-save", 0);
     return true;
   } catch (e) { return false; }
 }
@@ -6301,6 +6628,7 @@ function _saveFocusTimer() {
       savedAt: now
     }));
     _focusTimerCheckpointAt = running ? now : 0;
+    _storeRollingRecoveryBackup("focus-timer-checkpoint", 60 * 1000);
     return true;
   } catch (e) {
     return false;
@@ -6467,6 +6795,7 @@ function _getNotificationsPref() {
 function _setNotificationsPref(enabled) {
   try {
     localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify({ enabled: !!enabled }));
+    _storeRollingRecoveryBackup("notifications-save", 0);
     return true;
   } catch (e) { return false; }
 }
@@ -7051,6 +7380,7 @@ function _saveSessions(arr) {
     if (arr.length > FOCUS_MAX_SESSIONS) arr = arr.slice(-FOCUS_MAX_SESSIONS);
     localStorage.setItem(FOCUS_SESSIONS_KEY, JSON.stringify(arr));
     _sessionsCache = arr.slice();
+    _storeRollingRecoveryBackup("focus-session-save", 0);
     return true;
   } catch (e) {
     return false;
@@ -8002,7 +8332,11 @@ function _loadThoughts() {
 }
 
 function _saveThoughts(arr) {
-  try { localStorage.setItem(THOUGHTS_KEY, JSON.stringify(arr)); return true; } catch (e) { return false; }
+  try {
+    localStorage.setItem(THOUGHTS_KEY, JSON.stringify(arr));
+    _storeRollingRecoveryBackup("thoughts-save", 0);
+    return true;
+  } catch (e) { return false; }
 }
 
 function _nextThoughtId() {
@@ -8204,6 +8538,7 @@ function _saveProjects(arr) {
   try {
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(arr));
     _invalidateProjectsCache();
+    _storeRollingRecoveryBackup("projects-save", 0);
     return true;
   } catch (e) {
     _invalidateProjectsCache();
@@ -8526,6 +8861,7 @@ if (_focusTimer.running) _startDisplayTick();
 
 _queueAllTaskReminderSync();
 _updateNotifToggleUI();
+if (!storageRecoveryRequired) _storeRollingRecoveryBackup("startup", 60 * 1000);
 
 // FIX F1: عرض التوست المؤجل بعد reload المستحث بالاستيراد أو التراجع
 try {
