@@ -699,7 +699,7 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
 
   <div class="card">
     <h3>🧪 اختبار الترقية</h3>
-    <p class="small">تشغيل 42 اختبارًا لبنية البيانات (v1 → v2)، بما فيها التحقق من استعادة حالة التخزين كاملة.</p>
+    <p class="small">تشغيل 41 اختبارًا لبنية البيانات (v1 → v2)، بما فيها التحقق من استعادة حالة التخزين كاملة.</p>
     <button class="btn-ghost" style="width:100%;" onclick="runTestsAndShow()">تشغيل الاختبارات</button>
   </div>
 
@@ -817,6 +817,9 @@ let _timerSecondsLeft = 0;
 let storageRecoveryRequired = false;
 // Suppress intermediate rolling checkpoints while a multi-key transaction is in flight.
 var _rollingRecoveryCheckpointHold = 0;
+var _rollingRecoveryBackupLastFailure = null;
+var _rollingRecoveryBackupLastSuccessAt = null;
+var _rollingRecoveryBackupStale = false;
 let _pendingUncompleteConfirm = false;
 var _mainStorageBaselineRaw = null;
 var _mainStorageBaselineReady = false;
@@ -2275,7 +2278,15 @@ function _getLatestRollingRecoveryBackup() {
 }
 
 function _storeRollingRecoveryBackup(reason, minIntervalMs) {
-  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
+  _rollingRecoveryBackupLastFailure = null;
+  var failureStage = "recovery_marker_read_failed";
+  function fail(kind, error) {
+    _rollingRecoveryBackupLastFailure = kind;
+    _rollingRecoveryBackupStale = true;
+    if (error) console.warn("Rolling recovery checkpoint failed (" + kind + "):", error);
+    return false;
+  }
+  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return fail("recovery_required");
   if (typeof _rollingRecoveryCheckpointHold !== "undefined"
       && _rollingRecoveryCheckpointHold > 0) return true;
   try {
@@ -2285,14 +2296,16 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
     if (typeof RESET_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(RESET_IN_PROGRESS_KEY);
     if (typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(ROLLING_RESTORE_IN_PROGRESS_KEY);
     for (var i = 0; i < blockingKeys.length; i++) {
-      if (localStorage.getItem(blockingKeys[i]) !== null) return false;
+      if (localStorage.getItem(blockingKeys[i]) !== null) return fail("operation_in_progress");
     }
 
+    failureStage = "backup_slot_read_failed";
     var latest = _getLatestRollingRecoveryBackup();
-    if (latest === false) return false;
+    if (latest === false) return fail("backup_read_failed");
     var now = Date.now();
     if (Number.isFinite(minIntervalMs) && minIntervalMs > 0 && latest
         && now - latest.record.createdAtMs < minIntervalMs) {
+      _rollingRecoveryBackupStale = false;
       return true;
     }
 
@@ -2314,16 +2327,17 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       return snapshot;
     }
 
-    // LocalStorage has no multi-key transaction. Read the full state twice and
-    // refuse to checkpoint a mixed snapshot if another tab changes any group
-    // while this snapshot is being assembled.
+    failureStage = "snapshot_read_failed";
+    // LocalStorage has no multi-key transaction. Refuse a mixed snapshot if
+    // another tab changes any group while this snapshot is being assembled.
     var data = readSnapshot();
     var confirmationSnapshot = readSnapshot();
     for (var verifyIndex = 0; verifyIndex < snapshotKeys.length; verifyIndex++) {
       var property = snapshotKeys[verifyIndex][0];
-      if (data[property] !== confirmationSnapshot[property]) return false;
+      if (data[property] !== confirmationSnapshot[property]) return fail("snapshot_conflict");
     }
 
+    failureStage = "snapshot_invalid";
     var candidate = {
       formatVersion: 1,
       sequence: latest ? latest.record.sequence + 1 : 1,
@@ -2332,8 +2346,9 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       data: data
     };
     var candidateRaw = JSON.stringify(candidate);
-    if (!_parseRollingRecoveryBackup(candidateRaw)) return false;
+    if (!_parseRollingRecoveryBackup(candidateRaw)) return fail("snapshot_invalid");
 
+    failureStage = "backup_slot_read_failed";
     var rawA = localStorage.getItem(ROLLING_BACKUP_A_KEY);
     var rawB = localStorage.getItem(ROLLING_BACKUP_B_KEY);
     var validA = _parseRollingRecoveryBackup(rawA);
@@ -2345,25 +2360,44 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       targetKey = validA.sequence < validB.sequence
         ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
     } else {
-      // On an exact tie, keep slot A as the reader's deterministic winner.
       targetKey = validA.createdAtMs < validB.createdAtMs
         ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
     }
 
-    localStorage.setItem(targetKey, candidateRaw);
-    var verifiedRaw = localStorage.getItem(targetKey);
+    // The checkpoint is supplemental: a quota/slot-write failure must not be
+    // confused with a failed primary transaction. The other rolling slot is kept.
+    failureStage = "backup_write_failed";
+    try {
+      localStorage.setItem(targetKey, candidateRaw);
+    } catch (writeError) {
+      return fail("backup_write_failed", writeError);
+    }
+
+    failureStage = "backup_verification_failed";
+    var verifiedRaw;
+    try {
+      verifiedRaw = localStorage.getItem(targetKey);
+    } catch (readbackError) {
+      return fail("backup_verification_failed", readbackError);
+    }
     var verified = _parseRollingRecoveryBackup(verifiedRaw);
     if (verifiedRaw !== candidateRaw || !verified
         || verified.sequence !== candidate.sequence) {
-      return false;
+      return fail("backup_verification_failed");
     }
+    _rollingRecoveryBackupLastFailure = null;
+    _rollingRecoveryBackupLastSuccessAt = now;
+    _rollingRecoveryBackupStale = false;
     return true;
   } catch (e) {
-    console.warn("Rolling recovery checkpoint was not updated:", e);
-    return false;
+    return fail(failureStage, e);
   }
 }
 
+function _isOptionalRollingRecoveryBackupFailure() {
+  return _rollingRecoveryBackupLastFailure === "backup_write_failed"
+    || _rollingRecoveryBackupLastFailure === "backup_verification_failed";
+}
 function _recoverInterruptedRollingRestore() {
   var markerRaw;
   try {
@@ -2619,12 +2653,50 @@ function saveData() {
     }
 
     var serializedV2 = JSON.stringify(v2);
-    localStorage.setItem(STORAGE_KEY, serializedV2);
-    _setMainStorageBaseline(serializedV2);
+    try {
+      localStorage.setItem(STORAGE_KEY, serializedV2);
+    } catch (writeError) {
+      // Quota/permission failures before a verified replacement do not advance
+      // the baseline. Check whether the platform nevertheless changed the key.
+      try {
+        var afterFailedWrite = localStorage.getItem(STORAGE_KEY);
+        if (afterFailedWrite !== raw) {
+          storageRecoveryRequired = true;
+          _mainStorageBaselineReady = false;
+        }
+      } catch (readError) {
+        storageRecoveryRequired = true;
+        _mainStorageBaselineReady = false;
+      }
+      showAlertModal("تنبيه الحفظ", "تعذر تأكيد كتابة البيانات الأساسية. لم نعلن نجاح الحفظ؛ افحص التخزين واحتفظ بنسخة احتياطية.");
+      return false;
+    }
+
+    var verifiedMainRaw;
+    try {
+      verifiedMainRaw = localStorage.getItem(STORAGE_KEY);
+      if (verifiedMainRaw !== serializedV2
+          || !validateV2(JSON.parse(verifiedMainRaw))) {
+        throw new Error("main storage read-back did not match the validated transaction");
+      }
+    } catch (verificationError) {
+      storageRecoveryRequired = true;
+      _mainStorageBaselineReady = false;
+      console.error("saveData: main storage write could not be verified", verificationError);
+      showAlertModal("تعذر التحقق من الحفظ", "قد تكون الكتابة قد وصلت إلى التخزين لكن تعذرت مطابقتها وقراءتها. أوقف التطبيق الكتابة حمايةً من حالة غير محسومة.");
+      return false;
+    }
+
+    _setMainStorageBaseline(verifiedMainRaw);
     _queueAllTaskReminderSync();
     if (typeof _storeRollingRecoveryBackup === "function"
         && !_storeRollingRecoveryBackup("main-save", 0)) {
-      console.warn("Main data saved, but the rolling recovery checkpoint could not be refreshed.");
+      if (_isOptionalRollingRecoveryBackupFailure()) {
+        showToast("⚠️ حُفظت البيانات الأساسية وتحققنا منها، لكن النسخة الاحتياطية الدوّارة لم تُحدّث. سيُعاد تحديثها لاحقًا.");
+      } else {
+        storageRecoveryRequired = true;
+        showAlertModal("تحذير اتساق التخزين", "تم التحقق من حفظ البيانات الأساسية، لكن تعذر إنشاء لقطة استرداد متسقة أو قراءة بياناتها. أوقفنا الكتابة اللاحقة حتى تُراجع الحالة.");
+      }
     }
     return true;
   } catch (e) {
@@ -4292,9 +4364,10 @@ function computeWeeklyReport() {
   for (var _dwd = 0; _dwd < dailyLogs.length; _dwd++) {
     var _dl = dailyLogs[_dwd];
     if (!_dl) continue;
-    if (["control", "execution", "wellbeing", "energy"].some(function(k) {
+    if (["control", "execution", "wellbeing"].some(function(k) {
           return Number.isFinite(_dl[k]) && _dl[k] >= 0 && _dl[k] <= 10;
-        }) || (Number.isFinite(_dl.distractions) && _dl.distractions >= 0)) {
+        }) || (typeof _dl.energy === "string" && VALID_ENERGY.includes(_dl.energy))
+        || (Number.isFinite(_dl.distractions) && _dl.distractions >= 0)) {
       _daysWithData++;
     }
   }
