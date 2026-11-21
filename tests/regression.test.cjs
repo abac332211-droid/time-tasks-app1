@@ -76,8 +76,13 @@ function timerSandbox(saveSessions, saveTimer) {
       sessionStartAt: Date.now() - (4 * 3600 + 10) * 1000,
       baseElapsed: 0, cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null
     },
+    _focusElapsedRemainderMs: 0,
     tasks: [],
     _getElapsedSec: () => 4 * 3600 + 10,
+    _getFocusTimerElapsedParts: () => ({
+      seconds: sandbox._getElapsedSec(),
+      remainderMs: sandbox._focusElapsedRemainderMs || 0
+    }),
     _phaseTargetSec: () => 5 * 60,
     _anchorFocusTimerClock: () => {},
     _loadSessions: () => saved.slice(),
@@ -1517,7 +1522,9 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
     document,
     tasks: [task, { id: 2, name: 'المهمة التالية' }],
     _focusTimer: timer,
+    _focusElapsedRemainderMs: 0,
     _getElapsedSec: () => 120,
+    _getFocusTimerElapsedParts: () => ({ seconds: 120, remainderMs: sandbox._focusElapsedRemainderMs || 0 }),
     _stopDisplayTick: () => {},
     _saveFocusTimer: () => checkpointResult,
     _renderFocusTimer: () => {},
@@ -1602,8 +1609,13 @@ test('failed timer-transition checkpoint pauses safely and suppresses the succes
   const alerts = [];
   const sandbox = {
     _focusTimer: state,
+    _focusElapsedRemainderMs: 0,
     tasks: [],
     _getElapsedSec: () => state.phase === 'short-break' ? 420 : 0,
+    _getFocusTimerElapsedParts: () => ({
+      seconds: state.phase === 'short-break' ? 420 : 0,
+      remainderMs: sandbox._focusElapsedRemainderMs || 0
+    }),
     _phaseTargetSec: () => 300,
     _logSession: () => { savedSessions++; return true; },
     _saveFocusTimer: () => { timerSaves++; return timerSaves > 1; },
