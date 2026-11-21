@@ -537,7 +537,7 @@ test('restored notebook records normalize imported IDs before inline event handl
       }])
     }
   };
-  vm.runInNewContext(extractFunction('_loadThoughts'), thoughtsSandbox);
+  vm.runInNewContext(extractFunction('_copyStorageRecord') + '\n' + extractFunction('_loadThoughts'), thoughtsSandbox);
   const thoughts = thoughtsSandbox._loadThoughts();
   assert.equal(thoughts.length, 1);
   assert.equal(typeof thoughts[0].id, 'number');
@@ -555,7 +555,7 @@ test('restored notebook records normalize imported IDs before inline event handl
       }])
     }
   };
-  vm.runInNewContext(extractFunction('_loadMentalInbox'), inboxSandbox);
+  vm.runInNewContext(extractFunction('_copyStorageRecord') + '\n' + extractFunction('_loadMentalInbox'), inboxSandbox);
   const inbox = inboxSandbox._loadMentalInbox();
   assert.equal(inbox.length, 1);
   assert.equal(typeof inbox[0].id, 'number');
@@ -1252,6 +1252,7 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   let saveCalls = 0, resetCalls = 0, switchCalls = 0, renderCalls = 0;
   const sandbox = {
     _rollingRecoveryCheckpointHold: 0,
+    _modalKeyHandler: null,
     storageRecoveryRequired: false,
     document,
     tasks: [task, { id: 2, name: 'المهمة التالية' }],
