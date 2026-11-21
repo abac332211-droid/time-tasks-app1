@@ -2234,7 +2234,7 @@ test('mental-item conversion rollback refreshes rolling checkpoint to the restor
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (failRollback) throw new Error('simulated compensation failure');
+          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
           values.set(key, previous);
         }
         return true;
@@ -2315,7 +2315,7 @@ test('mental-item conversion blocks further writes when its main-data compensati
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (failRollback) throw new Error('simulated compensation failure');
+          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
           values.set(key, previous);
         }
         return true;
@@ -2332,7 +2332,7 @@ test('mental-item conversion blocks further writes when its main-data compensati
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
       setItem(key, value) {
-        if (failRollback) throw new Error('simulated compensation failure');
+        if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
         values.set(key, String(value));
       },
       removeItem(key) { values.delete(key); }
@@ -2393,7 +2393,7 @@ test('project deletion rollback refreshes rolling checkpoint only after both sto
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (failRollback) throw new Error('simulated compensation failure');
+          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
           values.set(key, previous);
         }
         return true;
@@ -2485,7 +2485,7 @@ test('project deletion enters recovery-required state if compensating writes fai
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (failRollback) throw new Error('simulated compensation failure');
+          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
           values.set(key, previous);
         }
         return true;
