@@ -304,12 +304,19 @@ test('cold start restores the durable millisecond remainder and resumes without 
 
 
 test('background Pomodoro confirmation endpoint subtracts the saved millisecond remainder', () => {
-  const state = timer({
+  const state = {
+    mode: 'pomodoro',
+    phase: 'work',
     baseElapsed: 1_499,
     startedAt: 1_000,
     sessionStartAt: 0,
-    running: true
-  });
+    running: true,
+    cyclePosition: 0,
+    taskId: null,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false
+  };
   let shown = 0;
   const sandbox = {
     _focusTimer: state,
@@ -333,12 +340,19 @@ test('background Pomodoro confirmation endpoint subtracts the saved millisecond 
 });
 
 test('normal Pomodoro completion timestamp uses the millisecond remainder at its boundary', () => {
-  const state = timer({
+  const state = {
+    mode: 'pomodoro',
+    phase: 'work',
     baseElapsed: 1_499,
     startedAt: 1_000,
     sessionStartAt: 0,
-    running: true
-  });
+    running: true,
+    cyclePosition: 0,
+    taskId: null,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false
+  };
   let elapsedReads = 0;
   let loggedEnd = null;
   const sandbox = {
