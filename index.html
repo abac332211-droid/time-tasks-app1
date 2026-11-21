@@ -2219,12 +2219,11 @@ function _getLatestRollingRecoveryBackup() {
 function _storeRollingRecoveryBackup(reason, minIntervalMs) {
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
   try {
-    var blockingKeys = [
-      IMPORT_IN_PROGRESS_KEY,
-      MIGRATION_IN_PROGRESS_KEY,
-      RESET_IN_PROGRESS_KEY,
-      ROLLING_RESTORE_IN_PROGRESS_KEY
-    ];
+    var blockingKeys = [];
+    if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
+    if (typeof MIGRATION_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(MIGRATION_IN_PROGRESS_KEY);
+    if (typeof RESET_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(RESET_IN_PROGRESS_KEY);
+    if (typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(ROLLING_RESTORE_IN_PROGRESS_KEY);
     for (var i = 0; i < blockingKeys.length; i++) {
       if (localStorage.getItem(blockingKeys[i]) !== null) return false;
     }
