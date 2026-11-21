@@ -7092,7 +7092,8 @@ var _focusTimer = {
   taskId: null,
   sessionStartAt: null,
   awaitingConfirmation: false,
-  pendingPhaseEndedAt: null
+  pendingPhaseEndedAt: null,
+  clockAdjusted: false
 };
 
 var _focusDisplayInterval = null;
@@ -7100,6 +7101,36 @@ var FOCUS_TIMER_CHECKPOINT_INTERVAL_MS = 5000;
 var _focusTimerCheckpointAt = 0;
 var _focusTimerColdStartWasRunning = false;
 var _focusTimerSavedAtAtLoad = null;
+var _focusMonotonicStart = null;
+var _focusWallClockAnchor = null;
+var _focusFallbackLastWall = null;
+var _focusFallbackElapsedMs = 0;
+
+function _readFocusMonotonicNow() {
+  try {
+    if (typeof performance !== "undefined" && performance
+        && typeof performance.now === "function") {
+      var value = performance.now();
+      return Number.isFinite(value) ? value : null;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function _anchorFocusTimerClock(wallStart) {
+  var wall = Number.isFinite(wallStart) ? wallStart : Date.now();
+  _focusMonotonicStart = _readFocusMonotonicNow();
+  _focusWallClockAnchor = wall;
+  _focusFallbackLastWall = Date.now();
+  _focusFallbackElapsedMs = 0;
+}
+
+function _clearFocusTimerClock() {
+  _focusMonotonicStart = null;
+  _focusWallClockAnchor = null;
+  _focusFallbackLastWall = null;
+  _focusFallbackElapsedMs = 0;
+}
 
 function _loadFocusTimer() {
   try {
@@ -7110,6 +7141,8 @@ function _loadFocusTimer() {
     var wasRunning = d.running === true;
     _focusTimerColdStartWasRunning = wasRunning;
     _focusTimerSavedAtAtLoad = (typeof d.savedAt === 'number' && Number.isFinite(d.savedAt)) ? d.savedAt : null;
+    _focusTimer.clockAdjusted = d.clockAdjusted === true
+      || (_focusTimerSavedAtAtLoad !== null && Date.now() < _focusTimerSavedAtAtLoad - 60000);
     _focusTimer.mode = (d.mode === 'stopwatch') ? 'stopwatch' : 'pomodoro';
     _focusTimer.phase = (['work','short-break','long-break'].indexOf(d.phase) !== -1) ? d.phase : 'work';
     _focusTimer.running = false;
@@ -7118,10 +7151,33 @@ function _loadFocusTimer() {
     _focusTimer.startedAt = null;
     _focusTimer.cyclePosition = (typeof d.cyclePosition === 'number' && d.cyclePosition >= 0 && d.cyclePosition <= 3) ? d.cyclePosition : 0;
     _focusTimer.taskId = (typeof d.taskId === 'number') ? d.taskId : null;
-    _focusTimer.sessionStartAt = (typeof d.sessionStartAt === 'number') ? d.sessionStartAt : null;
+    _focusTimer.sessionStartAt = (typeof d.sessionStartAt === 'number' && Number.isFinite(d.sessionStartAt))
+      ? d.sessionStartAt : null;
     _focusTimer.awaitingConfirmation = d.awaitingConfirmation === true;
     _focusTimer.pendingPhaseEndedAt = (typeof d.pendingPhaseEndedAt === 'number' && Number.isFinite(d.pendingPhaseEndedAt)) ? d.pendingPhaseEndedAt : null;
-    var changed = wasRunning;
+    var changed = wasRunning || _focusTimer.clockAdjusted;
+    var nowAtRestore = Date.now();
+    if (_focusTimer.sessionStartAt !== null && _focusTimer.sessionStartAt > nowAtRestore) {
+      _focusTimer.sessionStartAt = nowAtRestore - _focusTimer.baseElapsed * 1000;
+      _focusTimer.clockAdjusted = true;
+      changed = true;
+    }
+    if (_focusTimer.baseElapsed > 0 && _focusTimer.sessionStartAt === null) {
+      _focusTimer.sessionStartAt = nowAtRestore - _focusTimer.baseElapsed * 1000;
+      _focusTimer.clockAdjusted = true;
+      changed = true;
+    }
+    if (_focusTimer.awaitingConfirmation && _focusTimer.sessionStartAt !== null) {
+      var restoredTarget = _phaseTargetSec();
+      var coherentEnd = _focusTimer.sessionStartAt + (Number.isFinite(restoredTarget) ? restoredTarget : _focusTimer.baseElapsed) * 1000;
+      if (_focusTimer.pendingPhaseEndedAt === null
+          || _focusTimer.pendingPhaseEndedAt < _focusTimer.sessionStartAt) {
+        _focusTimer.pendingPhaseEndedAt = coherentEnd;
+        _focusTimer.clockAdjusted = true;
+        changed = true;
+      }
+    }
+    _clearFocusTimerClock();
     if (_focusTimer.taskId !== null) {
       var exists = tasks.some(function(t) { return t.id === _focusTimer.taskId; });
       if (!exists) {
@@ -7148,13 +7204,12 @@ function _finalizeFocusTimerColdStartRestore() {
       var overflowSec = Math.max(0, _focusTimer.baseElapsed - target);
       _focusTimer.baseElapsed = target;
       if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
-        _focusTimer.sessionStartAt = (_focusTimerSavedAtAtLoad || Date.now()) - target * 1000;
+        _focusTimer.sessionStartAt = Date.now() - target * 1000;
+        _focusTimer.clockAdjusted = true;
       }
-      var checkpointAt = _focusTimerSavedAtAtLoad || Date.now();
-      _focusTimer.pendingPhaseEndedAt = checkpointAt - overflowSec * 1000;
-      if (_focusTimer.pendingPhaseEndedAt < _focusTimer.sessionStartAt) {
-        _focusTimer.pendingPhaseEndedAt = _focusTimer.sessionStartAt;
-      }
+      // Derive the phase end from its logical start and target duration. Do not
+      // subtract wall-clock overflow: the system clock may have changed while closed.
+      _focusTimer.pendingPhaseEndedAt = _focusTimer.sessionStartAt + target * 1000;
       _focusTimer.awaitingConfirmation = true;
     }
   }
@@ -7170,8 +7225,12 @@ function _saveFocusTimer() {
   try {
     var now = Date.now();
     var running = _focusTimer.running === true;
-    // Persist the elapsed value at the checkpoint, not only the segment's old base.
     var checkpointElapsed = running ? _getElapsedSec() : _focusTimer.baseElapsed;
+    if (!Number.isFinite(checkpointElapsed) || checkpointElapsed < 0) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    checkpointElapsed = Math.floor(checkpointElapsed);
     var focusTimerRaw = JSON.stringify({
       mode: _focusTimer.mode,
       phase: _focusTimer.phase,
@@ -7183,9 +7242,14 @@ function _saveFocusTimer() {
       sessionStartAt: _focusTimer.sessionStartAt,
       awaitingConfirmation: !!_focusTimer.awaitingConfirmation,
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
+      clockAdjusted: _focusTimer.clockAdjusted === true,
       savedAt: now
     });
     if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, focusTimerRaw)) return false;
+    _focusTimer.baseElapsed = checkpointElapsed;
+    _focusTimer.startedAt = running ? now : null;
+    if (running) _anchorFocusTimerClock(now);
+    else _clearFocusTimerClock();
     _focusTimerCheckpointAt = running ? now : 0;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-timer-checkpoint", 60 * 1000);
     return true;
@@ -7194,10 +7258,41 @@ function _saveFocusTimer() {
   }
 }
 
-
 function _getElapsedSec() {
-  if (!_focusTimer.running || !_focusTimer.startedAt) return _focusTimer.baseElapsed;
-  return _focusTimer.baseElapsed + Math.floor((Date.now() - _focusTimer.startedAt) / 1000);
+  var base = Number.isFinite(_focusTimer.baseElapsed) && _focusTimer.baseElapsed >= 0
+    ? Math.floor(_focusTimer.baseElapsed) : 0;
+  if (!_focusTimer.running) return base;
+
+  var monoNow = _readFocusMonotonicNow();
+  if (monoNow !== null) {
+    if (_focusMonotonicStart === null) {
+      _anchorFocusTimerClock(_focusTimer.startedAt);
+      monoNow = _readFocusMonotonicNow();
+    }
+    if (_focusMonotonicStart !== null && monoNow !== null && monoNow >= _focusMonotonicStart) {
+      var elapsedMs = monoNow - _focusMonotonicStart;
+      if (_focusWallClockAnchor !== null) {
+        var wallNow = Date.now();
+        var expectedWall = _focusWallClockAnchor + elapsedMs;
+        if (Math.abs(wallNow - expectedWall) > 120000) _focusTimer.clockAdjusted = true;
+      }
+      return base + Math.floor(elapsedMs / 1000);
+    }
+    _focusTimer.clockAdjusted = true;
+  }
+
+  // Older WebViews without performance.now() use an accumulated delta. Reset
+  // the wall baseline after a backwards jump so the timer does not freeze until
+  // the device clock catches up to its previous value.
+  var fallbackNow = Date.now();
+  if (_focusFallbackLastWall === null) _focusFallbackLastWall = fallbackNow;
+  if (fallbackNow >= _focusFallbackLastWall) {
+    _focusFallbackElapsedMs += fallbackNow - _focusFallbackLastWall;
+  } else {
+    _focusTimer.clockAdjusted = true;
+  }
+  _focusFallbackLastWall = fallbackNow;
+  return base + Math.floor(_focusFallbackElapsedMs / 1000);
 }
 
 function _phaseTargetSec() {
@@ -7259,6 +7354,7 @@ function _catchUp(backgroundReturn) {
     } else _focusTimer.phase = "work";
     _focusTimer.baseElapsed = elapsed - target;
     _focusTimer.startedAt = Date.now();
+    _anchorFocusTimerClock(_focusTimer.startedAt);
     _focusTimer.sessionStartAt = phaseEndAt;
     transitions++;
   }
@@ -7950,7 +8046,8 @@ function _saveSessions(arr) {
 
 function _sessionAlreadyLogged(phase, durationSec) {
   if (durationSec < 1) return false;
-  var start = _focusTimer.sessionStartAt || (Date.now() - durationSec * 1000);
+  var start = Number.isFinite(_focusTimer.sessionStartAt)
+    ? _focusTimer.sessionStartAt : (Date.now() - durationSec * 1000);
   var startedAt = new Date(start).toISOString();
   var taskId = _focusTimer.taskId;
   var mode = _focusTimer.mode;
@@ -7965,7 +8062,13 @@ function _sessionAlreadyLogged(phase, durationSec) {
 function _logSession(phase, durationSec, completed, endedAtMs) {
   if (durationSec < 1) return true;
   var arr = _loadSessions();
-  var sessionStart = _focusTimer.sessionStartAt || (Date.now() - durationSec * 1000);
+  var sessionStart = Number.isFinite(_focusTimer.sessionStartAt)
+    ? _focusTimer.sessionStartAt : (Date.now() - durationSec * 1000);
+  if (!Number.isFinite(sessionStart) || sessionStart < 0
+      || !Number.isFinite(durationSec) || durationSec < 0) {
+    showToast("⚠️ بيانات زمن الجلسة غير صالحة؛ لم تُسجّل");
+    return false;
+  }
   var sessionStartedAt = new Date(sessionStart).toISOString();
   if (arr.some(function(session) {
     return session && session.startedAt === sessionStartedAt && session.taskId === _focusTimer.taskId &&
@@ -7978,10 +8081,21 @@ function _logSession(phase, durationSec, completed, endedAtMs) {
     if (task) taskName = task.name;
   }
   var computedEnd = sessionStart + durationSec * 1000;
-  var sessionEnd = typeof endedAtMs === "number" && Number.isFinite(endedAtMs) ? endedAtMs : computedEnd;
+  var suppliedEnd = typeof endedAtMs === "number" && Number.isFinite(endedAtMs) ? endedAtMs : computedEnd;
+  var sessionEnd = suppliedEnd;
+  var clockAdjusted = _focusTimer.clockAdjusted === true;
+  // A wall-clock change may make the supplied endpoint precede the logical start
+  // or disagree with the measured monotonic duration. Keep the record internally
+  // consistent and explicitly mark that its wall timestamp was corrected.
+  if (!Number.isFinite(sessionEnd) || sessionEnd < sessionStart
+      || Math.abs((sessionEnd - sessionStart) - durationSec * 1000) > 1500) {
+    sessionEnd = computedEnd;
+    clockAdjusted = true;
+  }
   arr.push({ id: maxId + 1, mode: _focusTimer.mode, phase: phase, taskId: _focusTimer.taskId,
     taskName: taskName, startedAt: sessionStartedAt, endedAt: new Date(sessionEnd).toISOString(),
-    durationSec: durationSec, completed: !!completed });
+    durationSec: durationSec, completed: !!completed,
+    clockAdjusted: clockAdjusted || undefined });
   if (!_saveSessions(arr)) { showToast("⚠️ تعذر حفظ جلسة التركيز"); return false; }
   return true;
 }
@@ -8277,11 +8391,16 @@ function toggleTimer() {
       );
     }
   } else {
+    if (_focusTimerExternalConflict) {
+      showAlertModal("تعارض حالة المؤقت", "تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل تشغيله لتجنب استبدال الحالة الأحدث.");
+      return;
+    }
     if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
       _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
     }
     _focusTimer.startedAt = Date.now();
     _focusTimer.running = true;
+    _anchorFocusTimerClock(_focusTimer.startedAt);
     if (!_saveFocusTimer()) {
       Object.assign(_focusTimer, previousState);
       _stopDisplayTick();
