@@ -2586,7 +2586,7 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
     validateDailyLog: () => true
   };
   vm.runInNewContext(
-    extractFunction('_validateLastRecurringDates') + '\\n' + extractFunction('validateV2'),
+    extractFunction('_validateLastRecurringDates') + '\n' + extractFunction('validateV2'),
     sandbox
   );
   const makeData = (lastRecurringDates) => ({
