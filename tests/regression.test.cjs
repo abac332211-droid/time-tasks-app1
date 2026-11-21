@@ -1863,6 +1863,18 @@ test('rolling recovery uses the timestamp to select the newest equal-sequence sl
   assert.equal(harness.sandbox._getLatestRollingRecoveryBackup().slot, 'a');
   assert.equal(harness.sandbox._getLatestRollingRecoveryBackup().record.sequence, 10);
   assert.equal(harness.values.get('rolling-backup-b'), JSON.stringify(makeRecord(latestState, 200)));
+
+  const equalA = JSON.stringify(makeRecord(firstState, 300));
+  const equalB = JSON.stringify(makeRecord(latestState, 300));
+  const equalHarness = rollingRecoveryHarness({
+    'rolling-backup-a': equalA,
+    'rolling-backup-b': equalB,
+    ...rollingState('current')
+  });
+  assert.equal(equalHarness.sandbox._getLatestRollingRecoveryBackup().slot, 'a');
+  assert.equal(equalHarness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  assert.equal(equalHarness.values.get('rolling-backup-a'), equalA,
+    'the selected latest slot remains intact when sequence and timestamp are tied');
 });
 
 test('resetAll keeps its durable marker and original records when writing the empty main record fails', () => {
