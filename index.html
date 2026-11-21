@@ -3468,6 +3468,7 @@ function convertMentalItemToTask(id) {
   var oldResolvedAt = m.resolvedAt;
   var releaseHold = _acquireRollingRecoveryCheckpointHold(true);
   var mainCommitRaw = null;
+  var mainSaveCommitted = false;
   var converted = false;
   try {
     var name = String(m.text || "").trim().slice(0, 180);
@@ -3484,6 +3485,10 @@ function convertMentalItemToTask(id) {
       showToast("⚠️ تعذر حفظ المهمة — لم تُحوّل الفكرة");
       return;
     }
+    // saveData has committed and verified the primary record. If the additional
+    // read needed for conditional compensation fails, the second collection has
+    // not been updated yet, so the transaction is incomplete and writes must stop.
+    mainSaveCommitted = true;
     mainCommitRaw = localStorage.getItem(STORAGE_KEY);
     if (typeof mainCommitRaw !== "string" || mainCommitRaw === oldMainRaw) {
       storageRecoveryRequired = true;
@@ -3542,6 +3547,10 @@ function convertMentalItemToTask(id) {
     } else if (!converted) {
       tasks = taskSnapshot;
       appSettings.lastTaskId = oldLastTaskId;
+      if (mainSaveCommitted) {
+        storageRecoveryRequired = true;
+        console.error("Mental item conversion stopped after the main record committed but before its compensation baseline was captured.");
+      }
     }
     showAlertModal("تعذر إكمال التحويل", storageRecoveryRequired
       ? "حدث خطأ أثناء المعاملة ولم نتمكن من التحقق من التراجع بالكامل. بقي حاجز الحماية مفعّلًا."
