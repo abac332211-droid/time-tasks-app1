@@ -301,3 +301,99 @@ test('cold start restores the durable millisecond remainder and resumes without 
   h.clock.wall += 350;
   assert.equal(h.sandbox._getElapsedSec(), 8);
 });
+
+
+test('background Pomodoro confirmation endpoint subtracts the saved millisecond remainder', () => {
+  const state = timer({
+    baseElapsed: 1_499,
+    startedAt: 1_000,
+    sessionStartAt: 0,
+    running: true
+  });
+  let shown = 0;
+  const sandbox = {
+    _focusTimer: state,
+    _focusElapsedRemainderMs: 500,
+    Date: { now: () => 8_000 },
+    _getFocusTimerElapsedParts: () => ({ seconds: 1_500, remainderMs: 600 }),
+    _phaseTargetSec: () => 1_500,
+    _stopDisplayTick: () => {},
+    _saveFocusTimer: () => true,
+    _renderFocusTimer: () => {},
+    _showAwaySessionConfirmation: () => { shown++; },
+    showAlertModal: () => { throw new Error('save succeeds; no alert expected'); }
+  };
+  vm.runInNewContext(extractFunction('_catchUp'), sandbox);
+  sandbox._catchUp(true);
+
+  assert.equal(state.awaitingConfirmation, true);
+  assert.equal(state.pendingPhaseEndedAt, 1_500);
+  assert.equal(sandbox._focusElapsedRemainderMs, 0);
+  assert.equal(shown, 1);
+});
+
+test('normal Pomodoro completion timestamp uses the millisecond remainder at its boundary', () => {
+  const state = timer({
+    baseElapsed: 1_499,
+    startedAt: 1_000,
+    sessionStartAt: 0,
+    running: true
+  });
+  let elapsedReads = 0;
+  let loggedEnd = null;
+  const sandbox = {
+    _focusTimer: state,
+    _focusElapsedRemainderMs: 500,
+    Date: { now: () => 1_500 },
+    _getFocusTimerElapsedParts: () => {
+      elapsedReads++;
+      return elapsedReads === 1
+        ? { seconds: 1_500, remainderMs: 600 }
+        : { seconds: 0, remainderMs: 600 };
+    },
+    _phaseTargetSec: () => state.phase === 'work' ? 1_500 : 300,
+    _logSession: (_phase, _duration, _completed, endedAt) => { loggedEnd = endedAt; return true; },
+    _anchorFocusTimerClock: () => {},
+    _saveFocusTimer: () => true,
+    _stopDisplayTick: () => {},
+    _renderFocusTimer: () => {},
+    renderFocusSessionsCard: () => {},
+    _notifyPhaseTransition: () => {}
+  };
+  vm.runInNewContext(extractFunction('_catchUp'), sandbox);
+  sandbox._catchUp(false);
+
+  assert.equal(loggedEnd, 1_500);
+  assert.equal(state.phase, 'short-break');
+  assert.equal(state.baseElapsed, 0);
+  assert.equal(sandbox._focusElapsedRemainderMs, 600);
+});
+
+test('pause captures sub-second elapsed time and failed pause restores the prior remainder', () => {
+  const state = {
+    running: true,
+    awaitingConfirmation: false,
+    baseElapsed: 12,
+    startedAt: 1_000,
+    sessionStartAt: 500
+  };
+  const sandbox = {
+    _focusTimerExternalConflict: false,
+    _focusElapsedRemainderMs: 200,
+    _focusTimer: state,
+    _unlockAudioContext: () => {},
+    _getFocusTimerElapsedParts: () => ({ seconds: 13, remainderMs: 700 }),
+    _stopDisplayTick: () => {},
+    _startDisplayTick: () => {},
+    _saveFocusTimer: () => false,
+    _renderFocusTimer: () => {},
+    showAlertModal: () => {}
+  };
+  vm.runInNewContext(extractFunction('toggleTimer'), sandbox);
+  sandbox.toggleTimer();
+
+  assert.equal(state.running, true);
+  assert.equal(state.baseElapsed, 12);
+  assert.equal(state.startedAt, 1_000);
+  assert.equal(sandbox._focusElapsedRemainderMs, 200);
+});
