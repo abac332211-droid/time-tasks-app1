@@ -2033,4 +2033,20 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
   vm.runInNewContext(extractFunction('_storageWriteAllowed'), readFailure);
   assert.equal(readFailure._storageWriteAllowed(), false);
   assert.equal(readFailure.storageRecoveryRequired, true);
+
+  const staleBaseline = {
+    STORAGE_KEY: 'main',
+    IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+    RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+    storageRecoveryRequired: false,
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: 'old-main',
+    localStorage: { getItem(key) { return key === 'main' ? 'new-main' : null; } }
+  };
+  vm.runInNewContext(extractFunction('_storageWriteAllowed'), staleBaseline);
+  assert.equal(staleBaseline._storageWriteAllowed(), false,
+    'side-collection writes must stop when another tab changed the main record');
 });
