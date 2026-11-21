@@ -3493,6 +3493,7 @@ function convertMentalItemToTask(id) {
 
     m.convertedTaskId = newTask.id;
     m.resolvedAt = new Date().toISOString();
+    var intendedMentalRaw = JSON.stringify(arr);
     if (!_saveMentalInbox(arr)) {
       tasks = taskSnapshot;
       appSettings.lastTaskId = oldLastTaskId;
@@ -3501,11 +3502,11 @@ function convertMentalItemToTask(id) {
       if (oldResolvedAt === undefined) delete m.resolvedAt;
       else m.resolvedAt = oldResolvedAt;
 
-      var mainRollbackOk = _restoreStorageValueIfUnchanged(STORAGE_KEY, mainCommitRaw, oldMainRaw);
       var mentalNow = localStorage.getItem(MENTAL_INBOX_KEY);
-      var mentalSafe = mentalNow === oldMentalRaw
-        || mentalNow === JSON.stringify(arr);
-      if (!mainRollbackOk || !mentalSafe) {
+      var mentalRollbackOk = mentalNow === oldMentalRaw
+        || _restoreStorageValueIfUnchanged(MENTAL_INBOX_KEY, intendedMentalRaw, oldMentalRaw);
+      var mainRollbackOk = _restoreStorageValueIfUnchanged(STORAGE_KEY, mainCommitRaw, oldMainRaw);
+      if (!mainRollbackOk || !mentalRollbackOk) {
         storageRecoveryRequired = true;
         showAlertModal("فشل التراجع عن التحويل الجزئي",
           "تعذر تأكيد استعادة المهمة وحالة الفكرة معًا. لم نستبدل أي قيمة خارجية متغيرة؛ أوقفنا الكتابة لحماية البيانات.");
@@ -9575,88 +9576,104 @@ function cancelProjectEdit() {
 }
 
 function deleteProject(id) {
-  var arr = _loadProjects();
-  var p = arr.find(function(x) { return x.id === id; });
-  if (!p) return;
-  var linkedCount = tasks.filter(function(t) { return t.projectId === id; }).length;
-  var msg = "سيتم حذف المشروع " + (linkedCount > 0 ? "وفصل " + linkedCount + " مهمة عنه. " : "") + "متابعة؟";
-  showConfirmModal("🗑️ حذف المشروع", msg, function() {
-    var oldMainRaw = localStorage.getItem(STORAGE_KEY);
-    var oldProjectRaw = localStorage.getItem(PROJECTS_KEY);
-    var nextProjects = arr.filter(function(x) { return x.id !== id; });
-    var linkedSnapshots = [];
-    var _projectCheckpointHold = linkedCount > 0
-      && typeof _rollingRecoveryCheckpointHold !== "undefined";
-    if (_projectCheckpointHold) _rollingRecoveryCheckpointHold++;
-    tasks.forEach(function(t) {
-      if (t.projectId === id) {
-        linkedSnapshots.push({ task: t, projectId: t.projectId });
-        t.projectId = null;
-      }
-    });
-    if (linkedSnapshots.length && !saveData()) {
-      if (_projectCheckpointHold) _rollingRecoveryCheckpointHold--;
-      linkedSnapshots.forEach(function(x) { x.task.projectId = x.projectId; });
-      showToast("⚠️ تعذر حفظ فصل المهام — لم يُحذف المشروع");
+  var projectsBefore = _loadProjects();
+  var project = projectsBefore.find(function(item) { return item.id === id; });
+  if (!project) return;
+  var linkedTasks = tasks.filter(function(task) { return task.projectId === id; });
+  var message = "سيتم حذف المشروع " +
+    (linkedTasks.length ? "وفصل " + linkedTasks.length + " مهمة عنه. " : "") + "متابعة؟";
+  showConfirmModal("🗑️ حذف المشروع", message, function() {
+    var oldMainRaw, oldProjectRaw;
+    try {
+      oldMainRaw = localStorage.getItem(STORAGE_KEY);
+      oldProjectRaw = localStorage.getItem(PROJECTS_KEY);
+    } catch (readError) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر قراءة بيانات المشروع", "لم نبدأ الحذف لأن قراءة الحالة الحالية لم تكتمل.");
       return;
     }
-    if (!_saveProjects(nextProjects)) {
-      if (_projectCheckpointHold) _rollingRecoveryCheckpointHold--;
-      linkedSnapshots.forEach(function(x) { x.task.projectId = x.projectId; });
-      var _rbProjOk = false;
-      try {
-        if (oldMainRaw === null) localStorage.removeItem(STORAGE_KEY);
-        else localStorage.setItem(STORAGE_KEY, oldMainRaw);
-        if (localStorage.getItem(STORAGE_KEY) !== oldMainRaw) {
-          throw new Error("main rollback readback mismatch");
-        }
-        _setMainStorageBaseline(oldMainRaw);
-        if (oldProjectRaw === null) localStorage.removeItem(PROJECTS_KEY);
-        else localStorage.setItem(PROJECTS_KEY, oldProjectRaw);
-        if (localStorage.getItem(PROJECTS_KEY) !== oldProjectRaw) {
-          throw new Error("project rollback readback mismatch");
-        }
-        _invalidateProjectsCache();
-        _rbProjOk = true;
-      } catch (e) {}
-      if (_rbProjOk) {
-        if (typeof _storeRollingRecoveryBackup === "function"
-            && !_storeRollingRecoveryBackup("transaction-rollback", 0)) {
-          storageRecoveryRequired = true;
-          showAlertModal(
-            "⚠️ تعذر تحديث نسخة الاسترداد",
-            "أُعيدت المهمة والمشروع إلى حالتهما السابقة، لكن تعذر تحديث النسخة الداخلية بعد التراجع. أوقف التطبيق الكتابة لحماية البيانات حتى تُراجع النسخة الداخلية."
-          );
+    if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
+      showAlertModal("تعارض التخزين", "تغيرت البيانات منذ فتح نافذة الحذف. أعد تحميل التطبيق ثم أعد المحاولة.");
+      return;
+    }
+
+    var nextProjects = projectsBefore.filter(function(item) { return item.id !== id; });
+    var nextProjectRaw = JSON.stringify(nextProjects);
+    var taskSnapshots = linkedTasks.map(function(task) {
+      return { task: task, projectId: task.projectId };
+    });
+    var releaseHold = _acquireRollingRecoveryCheckpointHold(taskSnapshots.length > 0);
+    var mainCommitRaw = null;
+    try {
+      taskSnapshots.forEach(function(snapshot) { snapshot.task.projectId = null; });
+      if (taskSnapshots.length) {
+        if (!saveData()) {
+          taskSnapshots.forEach(function(snapshot) { snapshot.task.projectId = snapshot.projectId; });
+          showToast("⚠️ تعذر حفظ فصل المهام — لم يُحذف المشروع");
           return;
         }
-        showToast("⚠️ تعذر حذف المشروع — أُعيدت الحالة السابقة");
-      } else {
-        storageRecoveryRequired = true;
-        showAlertModal(
-          "⚠️ فشل حذف المشروع واسترجاع الحالة",
-          "تعذر حذف المشروع والتحقق من استرجاع الحالة السابقة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع المهام والمشاريع واستكمل الاستعادة قبل المتابعة."
-        );
+        mainCommitRaw = localStorage.getItem(STORAGE_KEY);
+        if (typeof mainCommitRaw !== "string" || mainCommitRaw === oldMainRaw) {
+          storageRecoveryRequired = true;
+          showAlertModal("تعذر التحقق من فصل المهام", "لم نستطع قراءة بيانات المهام بعد حفظها؛ أوقفنا الحذف لحماية الارتباطات.");
+          return;
+        }
       }
-      return;
+
+      if (!_saveProjects(nextProjects)) {
+        taskSnapshots.forEach(function(snapshot) { snapshot.task.projectId = snapshot.projectId; });
+        var projectNow = localStorage.getItem(PROJECTS_KEY);
+        var projectRollbackOk = projectNow === oldProjectRaw
+          || _restoreStorageValueIfUnchanged(PROJECTS_KEY, nextProjectRaw, oldProjectRaw);
+        var mainRollbackOk = !taskSnapshots.length
+          || _restoreStorageValueIfUnchanged(STORAGE_KEY, mainCommitRaw, oldMainRaw);
+        if (!projectRollbackOk || !mainRollbackOk) {
+          storageRecoveryRequired = true;
+          showAlertModal("فشل حذف المشروع والتراجع",
+            "تغيرت إحدى القيم أو تعذر التحقق من تراجعها. لم نستبدل بيانات نافذة أخرى، وأوقفنا الكتابة لحماية الحالة المختلطة.");
+          return;
+        }
+        releaseHold();
+        if (taskSnapshots.length) _completeRollingRecoveryCheckpoint("transaction-rollback");
+        showToast("⚠️ تعذر حذف المشروع — أُعيدت الحالة السابقة");
+        return;
+      }
+
+      releaseHold();
+      if (taskSnapshots.length && !_completeRollingRecoveryCheckpoint("project-delete", "حُذف المشروع",
+        "حُفظ حذف المشروع وفصل المهام، لكن تعذر التحقق من لقطة الاسترداد. أوقفنا الكتابة اللاحقة.")) return;
+      if (_editingProjectId === id) cancelProjectEdit();
+      renderProjects();
+      renderTasks();
+      _renderProjectSelect();
+      showToast("🗑️ حُذف المشروع");
+    } catch (e) {
+      console.error("Project delete transaction failed:", e);
+      taskSnapshots.forEach(function(snapshot) { snapshot.task.projectId = snapshot.projectId; });
+      var projectNowAfterError = null;
+      var projectRollbackOk = false;
+      try {
+        projectNowAfterError = localStorage.getItem(PROJECTS_KEY);
+        projectRollbackOk = projectNowAfterError === oldProjectRaw
+          || _restoreStorageValueIfUnchanged(PROJECTS_KEY, nextProjectRaw, oldProjectRaw);
+      } catch (_projectRollbackError) {}
+      var mainRollbackOk = !taskSnapshots.length;
+      if (taskSnapshots.length && mainCommitRaw !== null) {
+        mainRollbackOk = _restoreStorageValueIfUnchanged(STORAGE_KEY, mainCommitRaw, oldMainRaw);
+      }
+      if (!projectRollbackOk || !mainRollbackOk) {
+        storageRecoveryRequired = true;
+        showAlertModal("تعذر استرداد عملية الحذف", "حدث استثناء ولم نتمكن من التحقق من التراجع الكامل؛ أوقفنا الكتابة لحماية البيانات.");
+      } else {
+        releaseHold();
+        if (taskSnapshots.length) _completeRollingRecoveryCheckpoint("transaction-rollback");
+        showAlertModal("لم يكتمل حذف المشروع", "أُعيدت الحالة السابقة بعد الخطأ؛ لم يُحذف المشروع.");
+      }
+    } finally {
+      releaseHold();
     }
-    if (_projectCheckpointHold) _rollingRecoveryCheckpointHold--;
-    if (linkedSnapshots.length && typeof _storeRollingRecoveryBackup === "function"
-        && !_storeRollingRecoveryBackup("project-delete", 0)) {
-      storageRecoveryRequired = true;
-      showAlertModal(
-        "⚠️ تعذر تأمين حذف المشروع",
-        "حُفظ فصل المهام وحذف المشروع، لكن تعذر تحديث النسخة الداخلية إلى الحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع النسخة الداخلية قبل المتابعة."
-      );
-      return;
-    }
-    if (_editingProjectId === id) cancelProjectEdit();
-    renderProjects();
-    renderTasks();
-    _renderProjectSelect();
-    showToast("🗑️ حُذف المشروع");
   });
 }
-
 function setProjectStatus(id, status) {
   if (VALID_PROJECT_STATUS.indexOf(status) === -1) return;
   var arr = _loadProjects();
