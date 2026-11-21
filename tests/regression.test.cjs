@@ -2351,3 +2351,103 @@ test('rolling recovery checkpoint hold skips every intermediate snapshot and res
   assert.equal(latest.record.data.projects, rollingState('committed').projects);
   assert.equal(latest.record.reason, 'transaction-commit');
 });
+
+
+test('loadData blocks migration and normal loading when interrupted import recovery fails', () => {
+  let migrationCalls = 0;
+  const alerts = [];
+  const sandbox = {
+    tasks: [{ id: 77, name: 'must not be replaced' }],
+    storageRecoveryRequired: false,
+    _recoverInterruptedReset: () => true,
+    _recoverInterruptedRollingRestore: () => true,
+    _recoverInterruptedImport: () => false,
+    migrateV1ToV2() {
+      migrationCalls++;
+      return { success: true, fromVersion: 2, totalOriginal: 0 };
+    },
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('loadData'), sandbox);
+  sandbox.loadData();
+
+  assert.equal(migrationCalls, 0, 'migration must not proceed after a failed recovery');
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.equal(sandbox.tasks[0].id, 77, 'in-memory task state must not be replaced by fallback data');
+  assert.equal(alerts.length, 1);
+});
+
+test('interrupted import keeps both control keys when recovery-marker deletion fails', () => {
+  const markerKey = 'import-in-progress';
+  const backupKey = 'pre-import';
+  const previous = {
+    main: JSON.stringify({ schemaVersion: 2, settings: {}, tasks: [], dailyLogs: [] }),
+    focusSessions: null,
+    focusTimer: null,
+    mentalInbox: null,
+    thoughts: null,
+    projects: null,
+    focusSettings: null,
+    notifications: null
+  };
+  const values = new Map([
+    [markerKey, '1'],
+    [backupKey, JSON.stringify(previous)]
+  ]);
+  const sandbox = {
+    IMPORT_IN_PROGRESS_KEY: markerKey,
+    PRE_IMPORT_KEY: backupKey,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      removeItem(key) {
+        if (key === markerKey) throw new Error('simulated marker cleanup failure');
+        values.delete(key);
+      }
+    },
+    validateV2: (data) => data && data.schemaVersion === 2,
+    _restoreStorageSnapshot: () => true
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedImport'), sandbox);
+  assert.equal(sandbox._recoverInterruptedImport(), false);
+  assert.equal(values.get(markerKey), '1');
+  assert.equal(values.get(backupKey), JSON.stringify(previous));
+});
+
+test('interrupted import treats only PRE_IMPORT cleanup failure as retained cleanup debt', () => {
+  const markerKey = 'import-in-progress';
+  const backupKey = 'pre-import';
+  const previous = {
+    main: JSON.stringify({ schemaVersion: 2, settings: {}, tasks: [], dailyLogs: [] }),
+    focusSessions: null,
+    focusTimer: null,
+    mentalInbox: null,
+    thoughts: null,
+    projects: null,
+    focusSettings: null,
+    notifications: null
+  };
+  const values = new Map([
+    [markerKey, '1'],
+    [backupKey, JSON.stringify(previous)]
+  ]);
+  const sandbox = {
+    IMPORT_IN_PROGRESS_KEY: markerKey,
+    PRE_IMPORT_KEY: backupKey,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      removeItem(key) {
+        if (key === backupKey) throw new Error('simulated inert snapshot cleanup failure');
+        values.delete(key);
+      }
+    },
+    validateV2: (data) => data && data.schemaVersion === 2,
+    _restoreStorageSnapshot: () => true
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedImport'), sandbox);
+  assert.equal(sandbox._recoverInterruptedImport(), true,
+    'restored data remains successful when only deletion of its inert snapshot fails');
+  assert.equal(values.has(markerKey), false, 'recovery marker must be cleared');
+  assert.equal(values.get(backupKey), JSON.stringify(previous),
+    'the inert snapshot is retained for manual cleanup rather than replayed');
+});
