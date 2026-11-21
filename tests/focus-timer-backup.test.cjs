@@ -1501,6 +1501,7 @@ test('extra settings survive import, app settings load, and the next ordinary sa
     showAlertModal: () => {},
     console: { error: () => {} }
   };
+  context._copyStorageRecord = loadTopLevelFunction('_copyStorageRecord');
   const loadSettings = vm.runInNewContext(
     '(' + extractTopLevelSource('_loadAppSettings') + ')',
     context
