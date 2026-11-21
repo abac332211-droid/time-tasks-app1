@@ -828,9 +828,11 @@ var _mainStorageConflictListenerInstalled = false;
 var _secondaryStorageBaselines = Object.create(null);
 var _secondaryStorageConflicts = Object.create(null);
 var _focusTimerExternalConflict = false;
+// String literals are intentional: several key constants are declared later in the file.
 var _secondaryStorageKeys = [
-  PROJECTS_KEY, THOUGHTS_KEY, MENTAL_INBOX_KEY,
-  FOCUS_SESSIONS_KEY, FOCUS_TIMER_KEY, FOCUS_SETTINGS_KEY, NOTIFICATIONS_KEY
+  "timeTasksApp_projects_v1", "timeTasksApp_thoughts_v1", "timeTasksApp_mentalInbox",
+  "timeTasksApp_focusSessions", "timeTasksApp_focusTimer",
+  "timeTasksApp_focusSettings", "timeTasksApp_notifications"
 ];
 
 function _trackSecondaryStorageRead(key, raw) {
