@@ -825,6 +825,109 @@ var _mainStorageBaselineRaw = null;
 var _mainStorageBaselineReady = false;
 var _mainStorageExternalChangeObserved = false;
 var _mainStorageConflictListenerInstalled = false;
+var _secondaryStorageBaselines = Object.create(null);
+var _secondaryStorageConflicts = Object.create(null);
+var _focusTimerExternalConflict = false;
+var _secondaryStorageKeys = [
+  PROJECTS_KEY, THOUGHTS_KEY, MENTAL_INBOX_KEY,
+  FOCUS_SESSIONS_KEY, FOCUS_TIMER_KEY, FOCUS_SETTINGS_KEY, NOTIFICATIONS_KEY
+];
+
+function _trackSecondaryStorageRead(key, raw) {
+  if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, key)) {
+    _secondaryStorageBaselines[key] = raw;
+  }
+  return raw;
+}
+
+function _secondaryStorageWriteAllowed(key) {
+  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
+  if (_secondaryStorageConflicts[key]) return false;
+  try {
+    var current = localStorage.getItem(key);
+    if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, key)) {
+      _secondaryStorageBaselines[key] = current;
+    }
+    if (current !== _secondaryStorageBaselines[key]) {
+      _secondaryStorageConflicts[key] = true;
+      console.warn("Secondary storage write blocked after an optimistic concurrency conflict:", key);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    storageRecoveryRequired = true;
+    console.error("Could not read secondary storage before write:", key, e);
+    return false;
+  }
+}
+
+function _writeSecondaryStorageVerified(key, serializedValue) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
+  if (!_secondaryStorageWriteAllowed(key)) return false;
+  try {
+    localStorage.setItem(key, serializedValue);
+  } catch (writeError) {
+    // A failed setItem does not advance the baseline. The caller must retain
+    // its in-memory snapshot and must not claim that the secondary write saved.
+    return false;
+  }
+  try {
+    var verified = localStorage.getItem(key);
+    if (verified !== serializedValue) {
+      _secondaryStorageConflicts[key] = true;
+      storageRecoveryRequired = true;
+      console.error("Secondary storage read-back mismatch:", key);
+      return false;
+    }
+    _secondaryStorageBaselines[key] = verified;
+    delete _secondaryStorageConflicts[key];
+    return true;
+  } catch (readbackError) {
+    _secondaryStorageConflicts[key] = true;
+    storageRecoveryRequired = true;
+    console.error("Secondary storage write could not be read back:", key, readbackError);
+    return false;
+  }
+}
+
+function _refreshSecondaryStorageView(key) {
+  try {
+    if (key === PROJECTS_KEY) {
+      _invalidateProjectsCache();
+      if (typeof renderProjects === "function") renderProjects();
+      if (typeof _renderProjectSelect === "function") _renderProjectSelect();
+    } else if (key === THOUGHTS_KEY) {
+      if (typeof renderThoughts === "function") renderThoughts();
+    } else if (key === MENTAL_INBOX_KEY) {
+      if (typeof renderMentalInbox === "function") renderMentalInbox();
+    } else if (key === FOCUS_SESSIONS_KEY) {
+      _sessionsCache = null;
+      if (typeof renderFocusSessionsCard === "function") renderFocusSessionsCard();
+    } else if (key === FOCUS_TIMER_KEY) {
+      _focusTimerExternalConflict = true;
+      if (typeof _focusTimer !== "undefined" && _focusTimer.running) {
+        _focusTimer.baseElapsed = _getElapsedSec();
+        _focusTimer.running = false;
+        _focusTimer.startedAt = null;
+        if (typeof _stopDisplayTick === "function") _stopDisplayTick();
+        if (typeof _renderFocusTimer === "function") _renderFocusTimer();
+      }
+      if (!_focusTimerConflictNoticeShown) {
+        _focusTimerConflictNoticeShown = true;
+        showAlertModal("تغيّرت حالة المؤقت في نافذة أخرى",
+          "أوقفنا الكتابة من هذه النافذة حتى لا تستبدل حالة المؤقت الأحدث. أعد تحميل التطبيق لمتابعة الحالة المشتركة.");
+      }
+    } else if (key === FOCUS_SETTINGS_KEY) {
+      if (typeof _loadFocusSettings === "function") _loadFocusSettings();
+      if (typeof _renderTimerSettings === "function") _renderTimerSettings();
+    } else if (key === NOTIFICATIONS_KEY) {
+      if (typeof _updateNotifToggleUI === "function") _updateNotifToggleUI();
+    }
+  } catch (e) {
+    console.warn("Could not refresh a secondary storage view:", key, e);
+  }
+}
+var _focusTimerConflictNoticeShown = false;
 
 function _setMainStorageBaseline(raw) {
   _mainStorageBaselineRaw = raw;
@@ -870,7 +973,12 @@ function _setupMainStorageConflictListener() {
   window.addEventListener("storage", function(event) {
     if (!event || event.key === null || event.key === STORAGE_KEY) {
       _mainStorageExternalChangeObserved = true;
+      return;
     }
+    var changedKey = event.key;
+    if (_secondaryStorageKeys.indexOf(changedKey) === -1) return;
+    _secondaryStorageConflicts[changedKey] = true;
+    _refreshSecondaryStorageView(changedKey);
   });
   _mainStorageConflictListenerInstalled = true;
 }
@@ -2985,7 +3093,7 @@ var MENTAL_INBOX_KEY = "timeTasksApp_mentalInbox";
 
 function _loadMentalInbox() {
   try {
-    var raw = localStorage.getItem(MENTAL_INBOX_KEY);
+    var raw = _trackSecondaryStorageRead(MENTAL_INBOX_KEY, localStorage.getItem(MENTAL_INBOX_KEY));
     if (!raw) return [];
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) {
@@ -3028,7 +3136,7 @@ function _loadMentalInbox() {
 function _saveMentalInbox(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    localStorage.setItem(MENTAL_INBOX_KEY, JSON.stringify(arr));
+    if (!_writeSecondaryStorageVerified(MENTAL_INBOX_KEY, JSON.stringify(arr))) return false;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("mental-inbox-save", 0);
     return true;
   } catch (e) {
@@ -6779,7 +6887,7 @@ var POMODORO_LONG_BREAK_SEC = DEFAULT_LONG_MIN * 60;
 
 function _loadFocusSettings() {
   try {
-    var raw = localStorage.getItem(FOCUS_SETTINGS_KEY);
+    var raw = _trackSecondaryStorageRead(FOCUS_SETTINGS_KEY, localStorage.getItem(FOCUS_SETTINGS_KEY));
     if (!raw) return;
     var s = JSON.parse(raw);
     if (!s || typeof s !== "object") return;
@@ -6795,7 +6903,7 @@ function _loadFocusSettings() {
 function _saveFocusSettings(w, s, l) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    localStorage.setItem(FOCUS_SETTINGS_KEY, JSON.stringify({ workMin: w, shortMin: s, longMin: l }));
+    if (!_writeSecondaryStorageVerified(FOCUS_SETTINGS_KEY, JSON.stringify({ workMin: w, shortMin: s, longMin: l }))) return false;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-settings-save", 0);
     return true;
   } catch (e) { return false; }
@@ -6823,7 +6931,7 @@ var _focusTimerSavedAtAtLoad = null;
 
 function _loadFocusTimer() {
   try {
-    var raw = localStorage.getItem(FOCUS_TIMER_KEY);
+    var raw = _trackSecondaryStorageRead(FOCUS_TIMER_KEY, localStorage.getItem(FOCUS_TIMER_KEY));
     if (!raw) return;
     var d = JSON.parse(raw);
     if (!d || typeof d !== 'object') return;
@@ -6892,7 +7000,7 @@ function _saveFocusTimer() {
     var running = _focusTimer.running === true;
     // Persist the elapsed value at the checkpoint, not only the segment's old base.
     var checkpointElapsed = running ? _getElapsedSec() : _focusTimer.baseElapsed;
-    localStorage.setItem(FOCUS_TIMER_KEY, JSON.stringify({
+    var focusTimerRaw = JSON.stringify({
       mode: _focusTimer.mode,
       phase: _focusTimer.phase,
       running: running,
@@ -6904,7 +7012,8 @@ function _saveFocusTimer() {
       awaitingConfirmation: !!_focusTimer.awaitingConfirmation,
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
       savedAt: now
-    }));
+    });
+    if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, focusTimerRaw)) return false;
     _focusTimerCheckpointAt = running ? now : 0;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-timer-checkpoint", 60 * 1000);
     return true;
@@ -7062,7 +7171,7 @@ var NOTIFICATIONS_KEY = "timeTasksApp_notifications";
 
 function _getNotificationsPref() {
   try {
-    var raw = localStorage.getItem(NOTIFICATIONS_KEY);
+    var raw = _trackSecondaryStorageRead(NOTIFICATIONS_KEY, localStorage.getItem(NOTIFICATIONS_KEY));
     if (!raw) return { enabled: true };
     var p = JSON.parse(raw);
     if (!p || typeof p !== "object") return { enabled: true };
@@ -7073,7 +7182,7 @@ function _getNotificationsPref() {
 function _setNotificationsPref(enabled) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify({ enabled: !!enabled }));
+    if (!_writeSecondaryStorageVerified(NOTIFICATIONS_KEY, JSON.stringify({ enabled: !!enabled }))) return false;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("notifications-save", 0);
     return true;
   } catch (e) { return false; }
@@ -7638,7 +7747,7 @@ var _sessionsCache = null;
 function _loadSessions() {
   if (_sessionsCache !== null) return _sessionsCache.slice();
   try {
-    var raw = localStorage.getItem(FOCUS_SESSIONS_KEY);
+    var raw = _trackSecondaryStorageRead(FOCUS_SESSIONS_KEY, localStorage.getItem(FOCUS_SESSIONS_KEY));
     if (!raw) { _sessionsCache = []; return []; }
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) { _sessionsCache = []; return []; }
@@ -7658,7 +7767,7 @@ function _saveSessions(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (arr.length > FOCUS_MAX_SESSIONS) arr = arr.slice(-FOCUS_MAX_SESSIONS);
-    localStorage.setItem(FOCUS_SESSIONS_KEY, JSON.stringify(arr));
+    if (!_writeSecondaryStorageVerified(FOCUS_SESSIONS_KEY, JSON.stringify(arr))) return false;
     _sessionsCache = arr.slice();
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-session-save", 0);
     return true;
@@ -8664,7 +8773,7 @@ var VALID_PROJECT_STATUS = ["active", "completed", "paused"];
 
 function _loadThoughts() {
   try {
-    var raw = localStorage.getItem(THOUGHTS_KEY);
+    var raw = _trackSecondaryStorageRead(THOUGHTS_KEY, localStorage.getItem(THOUGHTS_KEY));
     if (!raw) return [];
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) {
@@ -8708,7 +8817,7 @@ function _loadThoughts() {
 function _saveThoughts(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    localStorage.setItem(THOUGHTS_KEY, JSON.stringify(arr));
+    if (!_writeSecondaryStorageVerified(THOUGHTS_KEY, JSON.stringify(arr))) return false;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("thoughts-save", 0);
     return true;
   } catch (e) { return false; }
@@ -8865,7 +8974,7 @@ function _invalidateProjectsCache() { _projectsCache = null; }
 function _loadProjects() {
   if (_projectsCache !== null) return _projectsCache.slice();
   try {
-    var raw = localStorage.getItem(PROJECTS_KEY);
+    var raw = _trackSecondaryStorageRead(PROJECTS_KEY, localStorage.getItem(PROJECTS_KEY));
     if (!raw) { _projectsCache = []; return []; }
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) {
@@ -8912,7 +9021,7 @@ function _loadProjects() {
 function _saveProjects(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(arr));
+    if (!_writeSecondaryStorageVerified(PROJECTS_KEY, JSON.stringify(arr))) return false;
     _invalidateProjectsCache();
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("projects-save", 0);
     return true;
