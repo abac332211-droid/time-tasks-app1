@@ -1233,7 +1233,7 @@ test('legacy V1 import without focusTimer preserves the device timer and maps le
 
   const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
   assert.equal(restored.settings.themeMode, 'dark');
-  assert.equal(restored.tasks[0].projectId, 42);
+  assert.equal(restored.tasks[0].projectId, null, 'unverifiable legacy project links are detached safely');
   assert.equal(harness.values.get(STORAGE_KEYS.PROJECTS), 'previous-projects');
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), 'keep-existing-timer');
   assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
