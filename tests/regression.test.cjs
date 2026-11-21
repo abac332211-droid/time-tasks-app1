@@ -288,7 +288,7 @@ test('legacy theme preference is preserved and new data supports system color sc
     },
     _syncThemeMeta: () => {}
   };
-  vm.runInNewContext(extractFunction('_applyThemePreference') + '\n' + extractFunction('_loadAppSettings') + '\n' + extractFunction('_setupSystemThemeListener'), sandbox);
+  vm.runInNewContext(extractFunction('_copyStorageRecord') + '\n' + extractFunction('_applyThemePreference') + '\n' + extractFunction('_loadAppSettings') + '\n' + extractFunction('_setupSystemThemeListener'), sandbox);
   sandbox._loadAppSettings({ darkMode: false });
   assert.equal(sandbox.appSettings.themeMode, 'light');
   assert.equal(darkClass, false);
@@ -2478,4 +2478,157 @@ test('successful focus-session transaction checkpoints only after task and sessi
   assert.deepEqual(harness.checkpoints, ['focus-session-transition-commit']);
   assert.equal(harness.sandbox._rollingRecoveryCheckpointHold, 0);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
+});
+
+
+
+test('migration self-test checks createdByVersion without triggering live saveData conflict UI', () => {
+  const body = extractFunction('runMigrationTests');
+  const start = body.indexOf('test("ترحيل V2 يحافظ على createdByVersion"');
+  const end = body.indexOf('test("dailyLog بقيمة control', start);
+  assert.ok(start >= 0 && end > start, 'the createdByVersion migration case exists');
+  const migrationCase = body.slice(start, end);
+  assert.doesNotMatch(migrationCase, /saveData\s*\(/,
+    'migration tests must not call the live persistence path against temporary test storage');
+  assert.match(migrationCase, /if \(!r\.success\)/,
+    'the test must fail when migration itself fails');
+});
+
+test('storage record copy ignores own __proto__ without mutating the copy prototype', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_copyStorageRecord'), sandbox);
+  const source = JSON.parse('{"id":7,"text":"safe","__proto__":{"polluted":true}}');
+  const copied = sandbox._copyStorageRecord(source);
+  assert.equal(copied.id, 7);
+  assert.equal(copied.text, 'safe');
+  assert.equal(copied.polluted, undefined);
+  assert.equal(copied.hasOwnProperty('text'), true);
+  assert.equal(Object.prototype.polluted, undefined);
+  for (const loader of ['_loadAppSettings', '_loadMentalInbox', '_loadThoughts', '_loadProjects']) {
+    assert.match(extractFunction(loader), /_copyStorageRecord\(/, loader + ' uses the safe record copier');
+  }
+});
+
+test('V2 validation rejects malformed lastRecurringDates before normal storage use', () => {
+  const sandbox = {
+    CURRENT_SCHEMA_VERSION: 2,
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
+    isValidCalendarDate(value) {
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const [year, month, day] = value.split('-').map(Number);
+      const date = new Date(year, month - 1, day);
+      return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+    },
+    isValidLocalTime: () => true,
+    isValidLocalDateTime: () => true,
+    validateDailyLog: () => true
+  };
+  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  const makeData = (lastRecurringDates) => ({
+    schemaVersion: 2,
+    settings: { lastRecurringDates },
+    tasks: [],
+    dailyLogs: []
+  });
+  assert.equal(sandbox.validateV2(makeData({ 'series:1': '2026-11-21' })), true);
+  assert.equal(sandbox.validateV2(makeData(null)), true, 'legacy null remains accepted');
+  assert.equal(sandbox.validateV2(makeData('not-an-object')), false);
+  assert.equal(sandbox.validateV2(makeData([])), false);
+  assert.equal(sandbox.validateV2(makeData({ 'series:1': '2026-02-31' })), false);
+});
+
+test('all reviewed modal openers remove the previous shared keydown handler before registering', () => {
+  for (const name of ['openSOSModal', 'openShutdownModal', '_showStopwatchSaveDialog', 'finishTimer', '_showSessionTransitionDialog']) {
+    const body = extractFunction(name);
+    assert.match(body,
+      /if \(_modalKeyHandler\) \{\s*document\.removeEventListener\(['"]keydown['"],\s*_modalKeyHandler\);\s*\}\s*_modalKeyHandler\s*=\s*function/,
+      name + ' removes the previously registered handler');
+  }
+});
+
+test('failed timer pause save restores the exact prior running state', () => {
+  const originalStartedAt = Date.now() - 12_000;
+  const alerts = [];
+  let starts = 0, stops = 0;
+  const sandbox = {
+    _focusTimer: {
+      running: true, awaitingConfirmation: false, baseElapsed: 90,
+      startedAt: originalStartedAt, sessionStartAt: originalStartedAt - 500
+    },
+    _unlockAudioContext: () => {},
+    _getElapsedSec: () => 102,
+    _stopDisplayTick: () => { stops++; },
+    _startDisplayTick: () => { starts++; },
+    _saveFocusTimer: () => false,
+    _renderFocusTimer: () => {},
+    showAlertModal: (...args) => alerts.push(args)
+  };
+  vm.runInNewContext(extractFunction('toggleTimer'), sandbox);
+  sandbox.toggleTimer();
+  assert.equal(sandbox._focusTimer.running, true);
+  assert.equal(sandbox._focusTimer.baseElapsed, 90);
+  assert.equal(sandbox._focusTimer.startedAt, originalStartedAt);
+  assert.equal(sandbox._focusTimer.sessionStartAt, originalStartedAt - 500);
+  assert.equal(stops, 1);
+  assert.equal(starts, 1);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0][0], /إيقاف المؤقت/);
+});
+
+test('failed timer start save restores the exact prior stopped state', () => {
+  const alerts = [];
+  let starts = 0, stops = 0;
+  const sandbox = {
+    _focusTimer: {
+      running: false, awaitingConfirmation: false, baseElapsed: 240,
+      startedAt: null, sessionStartAt: null
+    },
+    _unlockAudioContext: () => {},
+    _getElapsedSec: () => 240,
+    _stopDisplayTick: () => { stops++; },
+    _startDisplayTick: () => { starts++; },
+    _saveFocusTimer: () => false,
+    _renderFocusTimer: () => {},
+    showAlertModal: (...args) => alerts.push(args)
+  };
+  vm.runInNewContext(extractFunction('toggleTimer'), sandbox);
+  sandbox.toggleTimer();
+  assert.equal(sandbox._focusTimer.running, false);
+  assert.equal(sandbox._focusTimer.baseElapsed, 240);
+  assert.equal(sandbox._focusTimer.startedAt, null);
+  assert.equal(sandbox._focusTimer.sessionStartAt, null);
+  assert.equal(stops, 1);
+  assert.equal(starts, 0);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0][0], /تشغيل المؤقت/);
+});
+
+test('recurring task refresh is page-lifetime, visible-only, minute-based, and idempotently installed', () => {
+  let tick = null, delay = null, intervalCreates = 0, generated = 0, rendered = 0, toasted = 0;
+  const sandbox = {
+    _recurringTaskRefreshInterval: null,
+    storageRecoveryRequired: false,
+    document: { visibilityState: 'hidden' },
+    setInterval(fn, ms) { tick = fn; delay = ms; intervalCreates++; return 77; },
+    _generateAndPersistRecurringTasks() { generated++; return 2; },
+    renderAll() { rendered++; },
+    showToast(message) { if (message.includes('2')) toasted++; },
+    console
+  };
+  vm.runInNewContext(extractFunction('_setupRecurringTaskRefresh'), sandbox);
+  sandbox._setupRecurringTaskRefresh();
+  sandbox._setupRecurringTaskRefresh();
+  assert.equal(intervalCreates, 1);
+  assert.equal(delay, 60_000);
+  tick();
+  assert.equal(generated, 0, 'hidden tabs do not run the periodic task generator');
+  sandbox.document.visibilityState = 'visible';
+  tick();
+  assert.equal(generated, 1);
+  assert.equal(rendered, 1);
+  assert.equal(toasted, 1);
+  sandbox.storageRecoveryRequired = true;
+  tick();
+  assert.equal(generated, 1, 'recovery-required mode blocks recurring writes');
 });
