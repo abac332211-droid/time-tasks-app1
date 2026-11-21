@@ -166,6 +166,7 @@ test('failed persistence of a pending background phase does not create a fake se
 test('resume keeps the original sessionStartAt instead of drifting it forward', () => {
   const sandbox = {
     _focusTimer: { running: false, baseElapsed: 420, startedAt: null, sessionStartAt: 123456789, awaitingConfirmation: false },
+    _focusElapsedRemainderMs: 0,
     _focusTimerExternalConflict: false,
     _anchorFocusTimerClock: () => {},
     _getElapsedSec: () => 420, _unlockAudioContext: () => {}, _startDisplayTick: () => {},
@@ -2950,6 +2951,7 @@ test('failed timer pause save restores the exact prior running state', () => {
   let starts = 0, stops = 0;
   const sandbox = {
     _focusTimerExternalConflict: false,
+    _focusElapsedRemainderMs: 0,
     _anchorFocusTimerClock: () => {},
     _focusTimer: {
       running: true, awaitingConfirmation: false, baseElapsed: 90,
@@ -2957,6 +2959,7 @@ test('failed timer pause save restores the exact prior running state', () => {
     },
     _unlockAudioContext: () => {},
     _getElapsedSec: () => 102,
+    _getFocusTimerElapsedParts: () => ({ seconds: 102, remainderMs: 0 }),
     _stopDisplayTick: () => { stops++; },
     _startDisplayTick: () => { starts++; },
     _saveFocusTimer: () => false,
@@ -2980,6 +2983,7 @@ test('failed timer start save restores the exact prior stopped state', () => {
   let starts = 0, stops = 0;
   const sandbox = {
     _focusTimerExternalConflict: false,
+    _focusElapsedRemainderMs: 0,
     _anchorFocusTimerClock: () => {},
     _focusTimer: {
       running: false, awaitingConfirmation: false, baseElapsed: 240,
