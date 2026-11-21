@@ -1940,8 +1940,8 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
     }
   };
   vm.runInNewContext(
-    extractFunction('_storageWriteAllowed') + '\\n'
-      + extractFunction('persistDailyLog') + '\\npersistDailyLog',
+    extractFunction('_storageWriteAllowed') + '\n'
+      + extractFunction('persistDailyLog') + '\npersistDailyLog',
     sandbox
   );
 
@@ -1990,8 +1990,8 @@ test('daily-log save refuses writes during migration, import, reset, and rolling
       _storeRollingRecoveryBackup() { checkpointCount++; return true; }
     };
     vm.runInNewContext(
-      extractFunction('_storageWriteAllowed') + '\\n'
-        + extractFunction('persistDailyLog') + '\\npersistDailyLog',
+      extractFunction('_storageWriteAllowed') + '\n'
+        + extractFunction('persistDailyLog') + '\npersistDailyLog',
       sandbox
     );
     sandbox.persistDailyLog({
