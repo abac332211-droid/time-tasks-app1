@@ -1393,6 +1393,63 @@ const IMPORT_WRITE_KEYS = [
   STORAGE_KEYS.NOTIFICATIONS
 ];
 
+test('extra settings survive import, app settings load, and the next ordinary save', () => {
+  const backup = integrationBackup({
+    settings: {
+      operationalDayStart: 4,
+      firstUseDate: '2026-11-20',
+      darkMode: false,
+      themeMode: 'system',
+      customSetting: { keep: true },
+      futurePreference: ['one', 'two']
+    },
+    tasks: [], dailyLogs: []
+  });
+  const imported = runImportPreviewIntegration(backup, 'previous-timer');
+  const restoredMain = JSON.parse(imported.values.get(STORAGE_KEYS.MAIN));
+  const storage = {
+    getItem(key) { return imported.values.has(key) ? imported.values.get(key) : null; },
+    setItem(key, value) { imported.values.set(key, String(value)); }
+  };
+  const context = {
+    STORAGE_KEY: STORAGE_KEYS.MAIN,
+    CURRENT_SCHEMA_VERSION: 2,
+    APP_VERSION: '2.9.0',
+    localStorage: storage,
+    appSettings: {},
+    tasks: restoredMain.tasks,
+    storageRecoveryRequired: false,
+    todayStr: () => '2026-11-21',
+    _applyThemePreference: () => {},
+    _pruneLastRecurringDates: () => {},
+    validateV2: () => true,
+    _queueAllTaskReminderSync: () => {},
+    showAlertModal: () => {},
+    console: { error: () => {} }
+  };
+  const loadSettings = vm.runInNewContext(
+    '(' + extractTopLevelSource('_loadAppSettings') + ')',
+    context
+  );
+  loadSettings(restoredMain.settings);
+  context.appSettings.themeMode = 'dark';
+  context.appSettings.darkMode = true;
+  context.appSettings.lastTaskId = 12;
+
+  const saveData = vm.runInNewContext(
+    '(' + extractTopLevelSource('saveData') + ')',
+    context
+  );
+  assert.equal(saveData(), true);
+
+  const saved = JSON.parse(imported.values.get(STORAGE_KEYS.MAIN));
+  assert.deepEqual(saved.settings.customSetting, { keep: true });
+  assert.deepEqual(saved.settings.futurePreference, ['one', 'two']);
+  assert.equal(saved.settings.themeMode, 'dark');
+  assert.equal(saved.settings.darkMode, true);
+  assert.equal(saved.settings.lastTaskId, 12);
+});
+
 test('import write failure rolls back every collection before reporting failure', () => {
   const timerSnapshot = {
     mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 100,
