@@ -175,6 +175,59 @@ test('resume keeps the original sessionStartAt instead of drifting it forward', 
   assert.equal(typeof sandbox._focusTimer.startedAt, 'number');
 });
 
+test('saveData refuses to overwrite a malformed main record', () => {
+  const original = '{broken-json';
+  let stored = original;
+  let writes = 0;
+  const alerts = [];
+  const sandbox = {
+    storageRecoveryRequired: false,
+    STORAGE_KEY: 'main',
+    CURRENT_SCHEMA_VERSION: 2,
+    _mainStorageBaselineReady: false,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: null,
+    localStorage: {
+      getItem: () => stored,
+      setItem: (_key, value) => { writes++; stored = String(value); }
+    },
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('saveData'), sandbox);
+
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(stored, original);
+  assert.equal(writes, 0);
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.equal(alerts.length, 1);
+});
+
+test('saveData refuses a stale tab when the main record changed after its baseline', () => {
+  const stored = '{"schemaVersion":2,"tasks":[{"id":2}],"dailyLogs":[]}';
+  let writes = 0;
+  const alerts = [];
+  const sandbox = {
+    storageRecoveryRequired: false,
+    STORAGE_KEY: 'main',
+    _mainStorageBaselineReady: true,
+    _mainStorageBaselineRaw: '{"schemaVersion":2,"tasks":[{"id":1}],"dailyLogs":[]}',
+    _mainStorageExternalChangeObserved: false,
+    localStorage: {
+      getItem: () => stored,
+      setItem: () => { writes++; }
+    },
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('saveData'), sandbox);
+
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(writes, 0);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0][0], /تعارض بين النوافذ/);
+});
+
 test('legacy partial task status is healed to pending before strict stored validation', () => {
   const sandbox = {};
   vm.runInNewContext(extractFunction('_healTaskArray'), sandbox);
@@ -264,6 +317,40 @@ function recurrenceSandbox(tasks) {
   );
   return sandbox;
 }
+
+test('stopping a recurring series clears recurrence from the root and all generated occurrences', () => {
+  const root = { id: 5, status: 'cancelled', recurrence: 'daily' };
+  const occurrence = { id: 6, status: 'pending', recurrence: 'daily', _recurringGenerated: true, _sourceTaskId: 5 };
+  const sandbox = {
+    tasks: [root, occurrence],
+    editingId: null,
+    saveData: () => true,
+    renderAll: () => {},
+    showToast: () => {}
+  };
+  vm.runInNewContext(extractFunction('stopRecurringSeries'), sandbox);
+
+  assert.equal(sandbox.stopRecurringSeries(6), true);
+  assert.equal(root.recurrence, null);
+  assert.equal(occurrence.recurrence, null);
+});
+
+test('failed recurring-series stop restores recurrence for every member', () => {
+  const root = { id: 5, recurrence: 'weekly' };
+  const occurrence = { id: 6, recurrence: 'weekly', _recurringGenerated: true, _sourceTaskId: 5 };
+  const sandbox = {
+    tasks: [root, occurrence],
+    editingId: null,
+    saveData: () => false,
+    renderAll: () => {},
+    showToast: () => {}
+  };
+  vm.runInNewContext(extractFunction('stopRecurringSeries'), sandbox);
+
+  assert.equal(sandbox.stopRecurringSeries(6), false);
+  assert.equal(root.recurrence, 'weekly');
+  assert.equal(occurrence.recurrence, 'weekly');
+});
 
 test('orphan recurring copies do not become new series roots', () => {
   const orphan = {
@@ -682,7 +769,7 @@ test('successful recurring-task persistence is idempotent on repeated startup', 
   assert.equal(harness.sandbox._generateAndPersistRecurringTasks(), 0);
   assert.equal(harness.sandbox.tasks.length, 2);
   assert.equal(harness.saveCalls(), 1);
-  assert.deepEqual(harness.reminderSyncs(), [6]);
+  assert.deepEqual(harness.reminderSyncs(), [], 'saveData owns the single full reminder reconciliation');
   assert.equal(harness.sandbox.appSettings.lastRecurringDates['series:5'], '2026-11-04');
 });
 
@@ -924,15 +1011,16 @@ test('task completion and undo synchronize reminders after successful persistenc
   ]);
 });
 
-test('successful task deletion queues reminder cancellation after persistence', () => {
+test('task deletion does not cancel a derived reminder ID directly', () => {
   const task = { id: 21, name: 'مهمة للحذف', status: 'pending' };
   const cancelled = [];
+  let persistenceCalls = 0;
   const sandbox = {
     tasks: [task],
     editingId: null,
     _focusTimer: { taskId: null },
     showConfirmModal: (_title, _body, callback) => callback(),
-    saveData: () => true,
+    saveData: () => { persistenceCalls++; return true; },
     renderAll: () => {},
     showToast: () => {},
     _queueTaskReminderCancellation: (id) => { cancelled.push(id); }
@@ -941,7 +1029,8 @@ test('successful task deletion queues reminder cancellation after persistence', 
 
   sandbox.deleteTask(21);
   assert.equal(sandbox.tasks.length, 0);
-  assert.deepEqual(cancelled, [21]);
+  assert.equal(persistenceCalls, 1);
+  assert.deepEqual(cancelled, [], 'full reconciliation owned by saveData avoids cancelling another colliding task reminder');
 });
 
 
@@ -1061,6 +1150,93 @@ test('task search ignores malformed optional tags and checklist data safely', ()
   assert.equal(matcher(null, 'بحث', {}), false);
 });
 
+
+function transitionDialogHarness({ saveResults = [true, true], logResult = false, checkpointResult = true } = {}) {
+  const elements = Object.create(null);
+  function element() {
+    return {
+      children: [],
+      classList: { add() {}, remove() {}, contains() { return false; } },
+      appendChild(child) { this.children.push(child); },
+      style: {},
+      innerHTML: '',
+      textContent: '',
+      focus() {}
+    };
+  }
+  const document = {
+    getElementById(id) { if (!elements[id]) elements[id] = element(); return elements[id]; },
+    createElement() { return element(); },
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector() { return null; },
+    contains() { return true; }
+  };
+  const task = { id: 1, name: 'المهمة الحالية', actual: null };
+  const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: true, baseElapsed: 0, startedAt: 1, sessionStartAt: 1 };
+  const alerts = [];
+  const toasts = [];
+  let saveCalls = 0, resetCalls = 0, switchCalls = 0, renderCalls = 0;
+  const sandbox = {
+    document,
+    tasks: [task, { id: 2, name: 'المهمة التالية' }],
+    _focusTimer: timer,
+    _getElapsedSec: () => 120,
+    _stopDisplayTick: () => {},
+    _saveFocusTimer: () => checkpointResult,
+    _renderFocusTimer: () => {},
+    _formatDuration: (sec) => String(sec),
+    escapeHTML: (value) => String(value),
+    showAlertModal: (...args) => alerts.push(args),
+    showToast: (value) => toasts.push(value),
+    _setupModalFocusTrap: () => () => {},
+    _sessionAlreadyLogged: () => false,
+    saveData: () => saveResults[Math.min(saveCalls++, saveResults.length - 1)],
+    _logSession: () => logResult,
+    _resetAfterSession: () => { resetCalls++; return true; },
+    closeModal: () => {},
+    renderAll: () => { renderCalls++; },
+    renderFocusSessionsCard: () => {},
+    _startDisplayTick: () => {},
+    addEventListener() {},
+    console
+  };
+  vm.runInNewContext(extractFunction('_showSessionTransitionDialog'), sandbox);
+  sandbox._showSessionTransitionDialog(2, () => { switchCalls++; });
+  const footer = elements.modalFooter;
+  return {
+    sandbox, task, timer, alerts, toasts, footer,
+    counts: () => ({ saveCalls, resetCalls, switchCalls, renderCalls })
+  };
+}
+
+test('failed session logging rolls task.actual back even when its old value is null and keeps the session for retry', () => {
+  const harness = transitionDialogHarness({ saveResults: [true, true], logResult: false });
+  assert.equal(harness.footer.children.length, 3);
+  harness.footer.children[2].onclick();
+
+  assert.equal(harness.task.actual, null);
+  assert.equal(harness.timer.running, false);
+  assert.equal(harness.timer.baseElapsed, 120);
+  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
+  assert.match(harness.alerts[0][0], /تعذر تسجيل الجلسة/);
+});
+
+test('failed session logging reports inconsistency if rollback persistence also fails', () => {
+  const harness = transitionDialogHarness({ saveResults: [true, false], logResult: false });
+  harness.footer.children[2].onclick();
+
+  assert.equal(harness.task.actual, null, 'the in-memory value is still restored');
+  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
+  assert.match(harness.alerts[0][0], /فشل تسجيل الجلسة والتراجع/);
+});
+
+test('transition dialog is not opened when the initial paused-timer checkpoint fails', () => {
+  const harness = transitionDialogHarness({ checkpointResult: false });
+  assert.equal(harness.footer.children.length, 0);
+  assert.equal(harness.alerts.length, 1);
+  assert.deepEqual(harness.counts(), { saveCalls: 0, resetCalls: 0, switchCalls: 0, renderCalls: 0 });
+});
 
 test('failed timer-transition checkpoint pauses safely and suppresses the success notification', () => {
   const state = {
