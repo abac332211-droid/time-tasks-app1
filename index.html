@@ -7835,6 +7835,8 @@ var _focusTimerCheckpointAt = 0;
 var _focusTimerColdStartWasRunning = false;
 var _focusTimerSavedAtAtLoad = null;
 var _focusMonotonicStart = null;
+var _focusMonotonicLastSample = null;
+var _focusMonotonicClockFailed = false;
 var _focusWallClockAnchor = null;
 var _focusFallbackLastWall = null;
 var _focusFallbackElapsedMs = 0;
@@ -7856,9 +7858,12 @@ function _anchorFocusTimerClock(wallStart, remainderMs, monotonicSample, wallSam
   if (Number.isFinite(remainderMs) && remainderMs >= 0 && remainderMs < 1000) {
     _focusElapsedRemainderMs = Math.floor(remainderMs);
   }
-  _focusMonotonicStart = arguments.length >= 3
+  var monotonicValue = arguments.length >= 3
     ? (Number.isFinite(monotonicSample) ? monotonicSample : null)
     : _readFocusMonotonicNow();
+  _focusMonotonicStart = monotonicValue;
+  _focusMonotonicLastSample = monotonicValue;
+  _focusMonotonicClockFailed = monotonicValue === null;
   _focusWallClockAnchor = Number.isFinite(wallSample) ? wallSample : wall;
   _focusFallbackLastWall = Number.isFinite(wallSample) ? wallSample : Date.now();
   _focusFallbackElapsedMs = 0;
@@ -7866,6 +7871,8 @@ function _anchorFocusTimerClock(wallStart, remainderMs, monotonicSample, wallSam
 
 function _clearFocusTimerClock() {
   _focusMonotonicStart = null;
+  _focusMonotonicLastSample = null;
+  _focusMonotonicClockFailed = false;
   _focusWallClockAnchor = null;
   _focusFallbackLastWall = null;
   _focusFallbackElapsedMs = 0;
@@ -8025,19 +8032,22 @@ function _getFocusTimerElapsedParts() {
     return { seconds: base, remainderMs: remainder, monotonicNow: null, wallNow: null };
   }
 
-  var monoNow = _readFocusMonotonicNow();
+  var monoNow = _focusMonotonicClockFailed ? null : _readFocusMonotonicNow();
   if (monoNow !== null) {
     if (_focusMonotonicStart === null) {
       _anchorFocusTimerClock(_focusTimer.startedAt, remainder);
       monoNow = _readFocusMonotonicNow();
     }
-    if (_focusMonotonicStart !== null && monoNow !== null && monoNow >= _focusMonotonicStart) {
+    if (_focusMonotonicStart !== null && monoNow !== null
+        && monoNow >= _focusMonotonicStart
+        && (_focusMonotonicLastSample === null || monoNow >= _focusMonotonicLastSample)) {
       var elapsedMs = monoNow - _focusMonotonicStart;
       var wallNow = Date.now();
       if (_focusWallClockAnchor !== null) {
         var expectedWall = _focusWallClockAnchor + elapsedMs;
         if (Math.abs(wallNow - expectedWall) > 120000) _focusTimer.clockAdjusted = true;
       }
+      _focusMonotonicLastSample = monoNow;
       var totalElapsedMs = remainder + elapsedMs;
       return {
         seconds: base + Math.floor(totalElapsedMs / 1000),
@@ -8047,6 +8057,9 @@ function _getFocusTimerElapsedParts() {
       };
     }
     _focusTimer.clockAdjusted = true;
+    _focusMonotonicClockFailed = true;
+  } else {
+    _focusMonotonicClockFailed = true;
   }
 
   // Without a trustworthy monotonic source, only accept plausible forward
