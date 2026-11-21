@@ -203,6 +203,30 @@ test('saveData refuses to overwrite a malformed main record', () => {
   assert.equal(alerts.length, 1);
 });
 
+test('saveData refuses writes while an import recovery marker remains', () => {
+  const original = '{"schemaVersion":2,"tasks":[],"dailyLogs":[]}';
+  let writes = 0;
+  let recoveryRequired = false;
+  const alerts = [];
+  const sandbox = {
+    storageRecoveryRequired: false,
+    STORAGE_KEY: 'main',
+    IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    localStorage: {
+      getItem: (key) => key === 'import-in-progress' ? '1' : original,
+      setItem: () => { writes++; }
+    },
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('saveData'), sandbox);
+
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(writes, 0);
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.equal(alerts.length, 1);
+});
+
 test('saveData refuses a stale tab when the main record changed after its baseline', () => {
   const stored = '{"schemaVersion":2,"tasks":[{"id":2}],"dailyLogs":[]}';
   let writes = 0;
@@ -324,6 +348,7 @@ test('stopping a recurring series clears recurrence from the root and all genera
   const sandbox = {
     tasks: [root, occurrence],
     editingId: null,
+    showConfirmModal: (_title, _body, accept) => accept(),
     saveData: () => true,
     renderAll: () => {},
     showToast: () => {}
@@ -341,6 +366,7 @@ test('failed recurring-series stop restores recurrence for every member', () => 
   const sandbox = {
     tasks: [root, occurrence],
     editingId: null,
+    showConfirmModal: (_title, _body, accept) => accept(),
     saveData: () => false,
     renderAll: () => {},
     showToast: () => {}
