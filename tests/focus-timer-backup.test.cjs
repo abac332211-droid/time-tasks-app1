@@ -567,7 +567,8 @@ function loadTimerContext(snapshot, taskRows = [{ id: 10 }]) {
     taskId: null,
     sessionStartAt: null,
     awaitingConfirmation: false,
-    pendingPhaseEndedAt: null
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false
   };
   let savedAfterLoad = null;
   const context = {
@@ -583,6 +584,16 @@ function loadTimerContext(snapshot, taskRows = [{ id: 10 }]) {
     },
     _focusTimer: state,
     tasks: taskRows,
+    _trackSecondaryStorageRead: (_key, raw) => raw,
+    _clearFocusTimerClock: () => {},
+    _anchorFocusTimerClock: () => {},
+    _phaseTargetSec: () => 1_500,
+    _focusTimerColdStartWasRunning: false,
+    _focusTimerSavedAtAtLoad: null,
+    _focusMonotonicStart: null,
+    _focusWallClockAnchor: null,
+    _focusFallbackLastWall: null,
+    _focusFallbackElapsedMs: 0,
     _saveFocusTimer() {
       values.set('timer-key', JSON.stringify(state));
       savedAfterLoad = values.get('timer-key');
@@ -668,7 +679,18 @@ test('running timer checkpoints persist elapsed time and reset the checkpoint ti
     _focusTimer: state,
     Date: { now: () => 7_000 },
     _getElapsedSec: () => 305,
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified(key, value) {
+      assert.equal(key, 'timer-key');
+      stored = value;
+      saveTimestamp = 7_000;
+      return true;
+    },
+    _anchorFocusTimerClock: () => {},
+    _clearFocusTimerClock: () => {},
+    _storeRollingRecoveryBackup: () => true,
     localStorage: {
+      getItem: () => stored,
       setItem(key, value) {
         assert.equal(key, 'timer-key');
         stored = value;
@@ -687,7 +709,7 @@ test('running timer checkpoints persist elapsed time and reset the checkpoint ti
   assert.equal(persisted.startedAt, saveTimestamp);
   assert.equal(persisted.running, true);
   assert.equal(context._focusTimerCheckpointAt, saveTimestamp);
-  assert.equal(state.baseElapsed, 120);
+  assert.equal(state.baseElapsed, 305);
 });
 
 test('cold restart preserves a Pomodoro phase that expired after its last checkpoint for user confirmation', () => {
@@ -720,12 +742,12 @@ test('cold restart preserves a Pomodoro phase that expired after its last checkp
   assert.equal(harness.state.startedAt, null);
   assert.equal(harness.state.baseElapsed, 1_500);
   assert.equal(harness.state.awaitingConfirmation, true);
-  assert.equal(harness.state.pendingPhaseEndedAt, 58_000);
+  assert.equal(harness.state.pendingPhaseEndedAt, 1_501_000);
   assert.equal(harness.state.sessionStartAt, 1_000);
   const persisted = JSON.parse(harness.savedValue());
   assert.equal(persisted.running, false);
   assert.equal(persisted.awaitingConfirmation, true);
-  assert.equal(persisted.pendingPhaseEndedAt, 58_000);
+  assert.equal(persisted.pendingPhaseEndedAt, 1_501_000);
 });
 
 test('cold restart finalization keeps an unexpired Pomodoro paused without creating a pending phase', () => {
@@ -1012,6 +1034,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
       setItem(key, value) { sessionValues.set(key, String(value)); }
     },
     location: { reload() { reloads++; } },
+    _reloadAfterVerifiedOperation() { this.location.reload(); },
     todayStr: () => '2026-11-20',
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     validateV2: () => true,
