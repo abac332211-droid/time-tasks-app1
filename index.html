@@ -3141,6 +3141,8 @@ function convertMentalItemToTask(id) {
   if (!m || m.resolvedAt || m.convertedTaskId) return;
   var _snap = tasks.slice();
   var _mainRawBefore = localStorage.getItem(STORAGE_KEY);
+  var _convertedTaskIdBefore = m.convertedTaskId;
+  var _resolvedAtBefore = m.resolvedAt;
   // FIX N8 (G4) & FIX J3 (G-P2-1): دمج next بحصص منفصلة لمنع الاقتطاع
   var _taskNameBase = String(m.text || '').trim().slice(0, 180);
   if (m.next && String(m.next).trim()) {
@@ -3168,20 +3170,40 @@ function convertMentalItemToTask(id) {
   m.resolvedAt = new Date().toISOString();
   if (!_saveMentalInbox(arr)) {
     tasks = _snap;
+    if (_convertedTaskIdBefore === undefined) delete m.convertedTaskId;
+    else m.convertedTaskId = _convertedTaskIdBefore;
+    if (_resolvedAtBefore === undefined) delete m.resolvedAt;
+    else m.resolvedAt = _resolvedAtBefore;
+
     var _rbConvertOk = false;
     try {
       if (_mainRawBefore === null) localStorage.removeItem(STORAGE_KEY);
       else localStorage.setItem(STORAGE_KEY, _mainRawBefore);
+      if (localStorage.getItem(STORAGE_KEY) !== _mainRawBefore) {
+        throw new Error("main rollback readback mismatch");
+      }
       _setMainStorageBaseline(_mainRawBefore);
       _rbConvertOk = true;
-    } catch (e) {}
+    } catch (e) {
+      console.error("Mental-item conversion rollback failed:", e);
+    }
+
     if (_rbConvertOk) {
-      showToast("⚠️ تعذر حفظ حالة الفكرة — لم تُحوّل");
+      if (typeof _storeRollingRecoveryBackup === "function"
+          && !_storeRollingRecoveryBackup("transaction-rollback", 0)) {
+        storageRecoveryRequired = true;
+        showAlertModal(
+          "⚠️ تعذر تحديث نسخة الاسترداد",
+          "أُعيدت البيانات السابقة، لكن تعذر تحديث النسخة الداخلية لتعكس التراجع. أوقف التطبيق الكتابة لحماية الحالة حتى تُراجع النسخة الداخلية."
+        );
+        return;
+      }
+      showToast("⚠️ تعذر حفظ حالة الفكرة — أُعيدت الحالة السابقة ولم تُحوّل");
     } else {
+      storageRecoveryRequired = true;
       showAlertModal(
         "⚠️ فشل التحويل الجزئي",
-        "فشل حفظ حالة الفكرة، وتعذر استرجاع المهمة السابقة.<br><br>" +
-        "قد تجد مهمة مضافة بلا فكرة مرتبطة. افتح قائمة المهام وتحقق يدويًا قبل المتابعة."
+        "فشل حفظ حالة الفكرة، وتعذر التحقق من استرجاع المهمة السابقة. أوقف التطبيق الكتابة لحماية البيانات؛ لا تتابع قبل إكمال الاستعادة."
       );
     }
     return;
@@ -8747,17 +8769,28 @@ function deleteProject(id) {
         _setMainStorageBaseline(oldMainRaw);
         if (oldProjectRaw === null) localStorage.removeItem(PROJECTS_KEY);
         else localStorage.setItem(PROJECTS_KEY, oldProjectRaw);
+        if (localStorage.getItem(PROJECTS_KEY) !== oldProjectRaw) {
+          throw new Error("project rollback readback mismatch");
+        }
         _invalidateProjectsCache();
         _rbProjOk = true;
       } catch (e) {}
       if (_rbProjOk) {
+        if (typeof _storeRollingRecoveryBackup === "function"
+            && !_storeRollingRecoveryBackup("transaction-rollback", 0)) {
+          storageRecoveryRequired = true;
+          showAlertModal(
+            "⚠️ تعذر تحديث نسخة الاسترداد",
+            "أُعيدت المهمة والمشروع إلى حالتهما السابقة، لكن تعذر تحديث النسخة الداخلية بعد التراجع. أوقف التطبيق الكتابة لحماية البيانات حتى تُراجع النسخة الداخلية."
+          );
+          return;
+        }
         showToast("⚠️ تعذر حذف المشروع — أُعيدت الحالة السابقة");
       } else {
+        storageRecoveryRequired = true;
         showAlertModal(
           "⚠️ فشل حذف المشروع واسترجاع الحالة",
-          "تعذر حذف المشروع وتعذر استرجاع الحالة السابقة.<br><br>" +
-          "قد تكون بعض المهام قد فُصلت عن مشروعها بينما المشروع لا يزال موجودًا. " +
-          "افحص قائمة المهام والمشاريع يدويًا قبل أي عملية أخرى."
+          "تعذر حذف المشروع والتحقق من استرجاع الحالة السابقة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع المهام والمشاريع واستكمل الاستعادة قبل المتابعة."
         );
       }
       return;
