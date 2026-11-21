@@ -1,0 +1,188 @@
+name: Build signed Android Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-signed-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Signing secrets must never be exposed to code from an arbitrary branch or PR.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    environment:
+      name: android-release
+    steps:
+      - name: Checkout trusted main commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Confirm trusted source
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run regression tests
+        run: npm test
+
+      - name: Prepare web files
+        run: |
+          mkdir -p web
+          cp index.html manifest.json sw.js web/
+          cp *.png web/ 2>/dev/null || true
+
+      - name: Install dependencies from lockfile
+        run: npm ci --no-audit --no-fund
+
+      - name: Configure Capacitor
+        run: |
+          rm -f capacitor.config.json capacitor.config.ts
+          cat > capacitor.config.json << 'EOF'
+          {
+            "appId": "com.abac332211.timetasks",
+            "appName": "TimeTasks",
+            "webDir": "web"
+          }
+          EOF
+          npx cap add android
+
+      - name: Fix Android project
+        run: |
+          sed -i 's|<string name="app_name">.*</string>|<string name="app_name">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
+          sed -i 's|<string name="title_activity_main">.*</string>|<string name="title_activity_main">إدارة الوقت</string>|' android/app/src/main/res/values/strings.xml
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            folder="android/app/src/main/res/mipmap-$d"
+            if [ -d "$folder" ]; then
+              cp icon-192.png "$folder/ic_launcher.png" 2>/dev/null || true
+              cp icon-192.png "$folder/ic_launcher_round.png" 2>/dev/null || true
+              cp icon-512.png "$folder/ic_launcher_foreground.png" 2>/dev/null || true
+            fi
+          done
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Align Android version metadata
+        id: version
+        run: |
+          python3 scripts/configure-android-version.py
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Configure the four signing secrets in the protected android-release environment."
+            exit 1
+          fi
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          test -s "$ANDROID_KEYSTORE_PATH"
+          keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Configure release signing
+        run: |
+          cat > android/app/release-signing.gradle << 'EOF'
+          android {
+            signingConfigs {
+              release {
+                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+              }
+            }
+            buildTypes {
+              release {
+                signingConfig signingConfigs.release
+              }
+            }
+          }
+          EOF
+          printf "\napply from: 'release-signing.gradle'\n" >> android/app/build.gradle
+
+      - name: Build signed Release APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/release-signing.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew clean assembleRelease --no-daemon
+
+      - name: Verify APK signature, application identity, and certificate continuity
+        env:
+          ANDROID_EXPECTED_CERT_SHA256: ${{ vars.ANDROID_EXPECTED_CERT_SHA256 }}
+        run: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          SIGNATURE_REPORT="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+          printf '%s\n' "$SIGNATURE_REPORT"
+
+          EXPECTED_CERT="$(printf '%s' "$ANDROID_EXPECTED_CERT_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          EXPECTED_CERT_LENGTH="$(printf '%s' "$EXPECTED_CERT" | wc -c | tr -d ' ')"
+          if [ "$EXPECTED_CERT_LENGTH" -ne 64 ] || [[ "$EXPECTED_CERT" == *[!0-9a-f]* ]]; then
+            echo "::error::Set ANDROID_EXPECTED_CERT_SHA256 to the SHA-256 fingerprint of the currently distributed app certificate."
+            exit 1
+          fi
+          ACTUAL_CERTS="$(printf '%s\n' "$SIGNATURE_REPORT" | awk -F': ' '/Signer #[0-9]+ certificate SHA-256 digest:/ { gsub(/:/, "", $NF); print tolower($NF) }')"
+          CERT_COUNT="$(printf '%s\n' "$ACTUAL_CERTS" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+          if [ "$CERT_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly one APK signer certificate; found $CERT_COUNT."
+            exit 1
+          fi
+          ACTUAL_CERT="$(printf '%s' "$ACTUAL_CERTS" | tr -d '[:space:]')"
+          if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
+            echo "::error::Release signing certificate does not match the pinned production certificate."
+            exit 1
+          fi
+
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          printf '%s\n' "$BADGING" | grep -F "package: name='com.abac332211.timetasks'"
+          if grep -Fq "package: name='com.abac332211.timetasks.debug'" <<< "$BADGING"; then
+            echo "::error::Release APK must not use the Debug application ID."
+            exit 1
+          fi
+          PERMISSIONS="$("$AAPT" dump permissions "$APK")"
+          printf '%s\n' "$PERMISSIONS"
+          grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
+          grep -q "android.permission.RECEIVE_BOOT_COMPLETED" <<< "$PERMISSIONS"
+          grep -q "android.permission.WAKE_LOCK" <<< "$PERMISSIONS"
+          sha256sum "$APK" | tee "$APK.sha256"
+
+      - name: Upload signed Release APK
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: time-tasks-app-${{ steps.version.outputs.version }}-signed-release
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/release/app-release.apk.sha256
+          retention-days: 30
