@@ -4650,6 +4650,28 @@ function renderTypeGapAnalysis() {
  * phase already ended, preserve the pending confirmation instead of silently
  * losing the completed phase or logging it twice.
  */
+function _validateFocusSessionRecord(session) {
+  if (!session || typeof session !== "object" || Array.isArray(session)) return false;
+  if (session.id !== undefined
+      && (!Number.isInteger(session.id) || session.id <= 0)) return false;
+  if (typeof session.durationSec !== "number"
+      || !Number.isFinite(session.durationSec) || session.durationSec < 0) return false;
+  if (typeof session.startedAt !== "string" || !Number.isFinite(Date.parse(session.startedAt))) return false;
+  if (typeof session.endedAt !== "string" || !Number.isFinite(Date.parse(session.endedAt))) return false;
+  var startMs = Date.parse(session.startedAt);
+  var endMs = Date.parse(session.endedAt);
+  if (endMs < startMs || Math.abs((endMs - startMs) - session.durationSec * 1000) > 2000) return false;
+  if (session.mode !== "pomodoro" && session.mode !== "stopwatch") return false;
+  if (!["work", "short-break", "long-break"].includes(session.phase)) return false;
+  if (session.taskId !== undefined && session.taskId !== null
+      && (!Number.isInteger(session.taskId) || session.taskId <= 0)) return false;
+  if (session.taskName !== undefined && session.taskName !== null
+      && typeof session.taskName !== "string") return false;
+  if (session.completed !== undefined && typeof session.completed !== "boolean") return false;
+  if (session.clockAdjusted !== undefined && typeof session.clockAdjusted !== "boolean") return false;
+  return true;
+}
+
 function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, taskIds) {
   if (!timer || typeof timer !== "object" || Array.isArray(timer)) return null;
 
@@ -4663,7 +4685,8 @@ function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, 
     taskId: timer.taskId,
     sessionStartAt: timer.sessionStartAt,
     awaitingConfirmation: timer.awaitingConfirmation === true,
-    pendingPhaseEndedAt: timer.pendingPhaseEndedAt
+    pendingPhaseEndedAt: timer.pendingPhaseEndedAt,
+    clockAdjusted: timer.clockAdjusted === true
   };
   var capturedAt = Number.isFinite(now) ? now : Date.now();
 
@@ -4721,6 +4744,8 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
     return { valid: false, reason: "حالة تأكيد جلسة التركيز غير صالحة." };
   if (timer.pendingPhaseEndedAt !== null && !Number.isFinite(timer.pendingPhaseEndedAt))
     return { valid: false, reason: "وقت انتهاء مرحلة التركيز غير صالح." };
+  if (timer.clockAdjusted !== undefined && typeof timer.clockAdjusted !== "boolean")
+    return { valid: false, reason: "علامة تصحيح ساعة الجهاز غير صالحة." };
   if (timer.awaitingConfirmation) {
     if (timer.mode !== "pomodoro" || timer.sessionStartAt === null || timer.pendingPhaseEndedAt === null)
       return { valid: false, reason: "بيانات المرحلة المكتملة التي تنتظر التأكيد غير مكتملة." };
@@ -5117,38 +5142,18 @@ function validateBackup(obj) {
   if (d.focusSessions !== undefined && d.focusSessions !== null) {
     if (!Array.isArray(d.focusSessions))
       return { valid: false, reason: "حقل جلسات التركيز ليس مصفوفة." };
+    if (d.focusSessions.length > FOCUS_MAX_SESSIONS)
+      return { valid: false, reason: "عدد جلسات التركيز يتجاوز الحد الذي يمكن للتطبيق الاحتفاظ به." };
     const sessionIds = new Set();
     for (let i = 0; i < d.focusSessions.length; i++) {
-      const s = d.focusSessions[i];
-      if (!s || typeof s !== "object" || Array.isArray(s))
-        return { valid: false, reason: "جلسة التركيز رقم " + (i+1) + " تالفة." };
-      if (s.id !== undefined) {
-        if (typeof s.id !== "number" || !Number.isInteger(s.id) || s.id <= 0)
-          return { valid: false, reason: "معرّف جلسة التركيز غير صالح (" + (i+1) + ")." };
-        if (sessionIds.has(s.id))
-          return { valid: false, reason: "معرّف جلسة تركيز مكرر: " + s.id };
-        sessionIds.add(s.id);
+      const session = d.focusSessions[i];
+      if (!_validateFocusSessionRecord(session))
+        return { valid: false, reason: "جلسة التركيز رقم " + (i + 1) + " تفتقد حقلاً إلزامياً أو تحتوي وقتاً غير متسق." };
+      if (session.id !== undefined) {
+        if (sessionIds.has(session.id))
+          return { valid: false, reason: "معرّف جلسة تركيز مكرر: " + session.id };
+        sessionIds.add(session.id);
       }
-      if (typeof s.durationSec !== "number" || !Number.isFinite(s.durationSec) || s.durationSec < 0)
-        return { valid: false, reason: "مدة جلسة التركيز غير صالحة (" + (i+1) + ")." };
-      if (typeof s.startedAt !== "string" || !Number.isFinite(Date.parse(s.startedAt)))
-        return { valid: false, reason: "بداية جلسة التركيز غير صالحة (" + (i+1) + ")." };
-      if (s.endedAt !== undefined && s.endedAt !== null
-          && (typeof s.endedAt !== "string" || !Number.isFinite(Date.parse(s.endedAt))
-              || Date.parse(s.endedAt) < Date.parse(s.startedAt)))
-        return { valid: false, reason: "نهاية جلسة التركيز غير صالحة (" + (i+1) + ")." };
-      if (s.taskId !== undefined && s.taskId !== null
-          && (typeof s.taskId !== "number" || !Number.isInteger(s.taskId) || s.taskId <= 0))
-        return { valid: false, reason: "معرّف مهمة جلسة التركيز غير صالح (" + (i+1) + ")." };
-      if (s.taskName !== undefined && s.taskName !== null && typeof s.taskName !== "string")
-        return { valid: false, reason: "اسم مهمة جلسة التركيز غير صالح (" + (i+1) + ")." };
-      if (s.completed !== undefined && typeof s.completed !== "boolean")
-        return { valid: false, reason: "حالة جلسة التركيز غير صالحة (" + (i+1) + ")." };
-
-      if (s.mode !== undefined && s.mode !== "pomodoro" && s.mode !== "stopwatch")
-        return { valid: false, reason: "وضع جلسة التركيز غير صالح (" + (i+1) + ")." };
-      if (s.phase !== undefined && typeof s.phase !== "string")
-        return { valid: false, reason: "طور جلسة التركيز غير صالح (" + (i+1) + ")." };
     }
   }
   return { valid: true };
@@ -8011,30 +8016,67 @@ function _notifyPhaseTransition() {
 }
 
 var _sessionsCache = null;
+var _invalidFocusSessionsNoticeShown = false;
 
 function _loadSessions() {
   if (_sessionsCache !== null) return _sessionsCache.slice();
   try {
     var raw = _trackSecondaryStorageRead(FOCUS_SESSIONS_KEY, localStorage.getItem(FOCUS_SESSIONS_KEY));
-    if (!raw) { _sessionsCache = []; return []; }
+    if (raw === null) { _sessionsCache = []; return []; }
     var arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) { _sessionsCache = []; return []; }
-    _sessionsCache = arr.filter(function(s) {
-      return s && typeof s === 'object'
-        && typeof s.durationSec === 'number' && s.durationSec >= 0
-        && typeof s.startedAt === 'string'
-        && (s.mode === 'pomodoro' || s.mode === 'stopwatch')
-        && typeof s.phase === 'string'
-        && (s.taskName === undefined || s.taskName === null || typeof s.taskName === 'string');
-    });
+    if (!Array.isArray(arr)) throw new Error("focus sessions root is not an array");
+    var invalid = [];
+    var seenIds = new Set();
+    var valid = [];
+    for (var i = 0; i < arr.length; i++) {
+      var session = arr[i];
+      var sessionValid = _validateFocusSessionRecord(session);
+      if (sessionValid && session.id !== undefined) {
+        if (seenIds.has(session.id)) sessionValid = false;
+        else seenIds.add(session.id);
+      }
+      if (sessionValid) valid.push(session);
+      else invalid.push(i + 1);
+    }
+    if (arr.length > FOCUS_MAX_SESSIONS) {
+      invalid.push("تجاوز الحد " + FOCUS_MAX_SESSIONS);
+      valid = valid.slice(-FOCUS_MAX_SESSIONS);
+    }
+    if (invalid.length) {
+      _preserveCorruptStorageSnapshot(FOCUS_SESSIONS_KEY, raw);
+      storageRecoveryRequired = true;
+      if (!_invalidFocusSessionsNoticeShown) {
+        _invalidFocusSessionsNoticeShown = true;
+        showAlertModal("جلسات تركيز تحتاج إلى مراجعة",
+          "وجد التطبيق سجلات جلسات ناقصة أو غير متسقة (" + invalid.length +
+          "). احتفظنا بالنص الأصلي ومنعنا الكتابة كي لا تُسقط هذه السجلات أو تُستبدل بصمت.");
+      }
+    }
+    _sessionsCache = valid;
     return _sessionsCache.slice();
-  } catch (e) { _sessionsCache = []; return []; }
+  } catch (e) {
+    storageRecoveryRequired = true;
+    _sessionsCache = [];
+    console.error("Focus session storage could not be read or validated:", e);
+    if (!_invalidFocusSessionsNoticeShown) {
+      _invalidFocusSessionsNoticeShown = true;
+      showAlertModal("تعذر قراءة جلسات التركيز", "لم نستطع قراءة سجلات جلسات التركيز؛ منعنا الكتابة لحمايتها.");
+    }
+    return [];
+  }
 }
-
 function _saveSessions(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    if (arr.length > FOCUS_MAX_SESSIONS) arr = arr.slice(-FOCUS_MAX_SESSIONS);
+    if (!Array.isArray(arr) || arr.length > FOCUS_MAX_SESSIONS) return false;
+    var _idsToSave = new Set();
+    for (var _si = 0; _si < arr.length; _si++) {
+      if (!_validateFocusSessionRecord(arr[_si])) return false;
+      if (arr[_si].id !== undefined) {
+        if (_idsToSave.has(arr[_si].id)) return false;
+        _idsToSave.add(arr[_si].id);
+      }
+    }
     if (!_writeSecondaryStorageVerified(FOCUS_SESSIONS_KEY, JSON.stringify(arr))) return false;
     _sessionsCache = arr.slice();
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-session-save", 0);
