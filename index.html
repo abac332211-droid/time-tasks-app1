@@ -848,6 +848,10 @@ function _storageWriteAllowed() {
     for (var i = 0; i < blockingKeys.length; i++) {
       if (localStorage.getItem(blockingKeys[i]) !== null) return false;
     }
+    if (typeof _mainStorageBaselineReady !== "undefined" && _mainStorageBaselineReady) {
+      var currentMainRaw = localStorage.getItem(STORAGE_KEY);
+      if (_mainStorageExternalChangeObserved || currentMainRaw !== _mainStorageBaselineRaw) return false;
+    }
     return true;
   } catch (e) {
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
