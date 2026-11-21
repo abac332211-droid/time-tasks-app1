@@ -1326,6 +1326,18 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   let saveCalls = 0, resetCalls = 0, switchCalls = 0, renderCalls = 0;
   const sandbox = {
     _rollingRecoveryCheckpointHold: 0,
+    _acquireRollingRecoveryCheckpointHold(enabled) {
+      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
+      };
+    },
+    _completeRollingRecoveryCheckpoint(reason) {
+      return sandbox._storeRollingRecoveryBackup(reason, 0);
+    },
     _modalKeyHandler: null,
     storageRecoveryRequired: false,
     document,
@@ -2234,7 +2246,10 @@ test('mental-item conversion rollback refreshes rolling checkpoint to the restor
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
+          if ((typeof failRollback !== 'undefined' && failRollback)
+              || (typeof failCompensation !== 'undefined' && failCompensation)) {
+            throw new Error('simulated compensation failure');
+          }
           values.set(key, previous);
         }
         return true;
@@ -2315,7 +2330,10 @@ test('mental-item conversion blocks further writes when its main-data compensati
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
+          if ((typeof failRollback !== 'undefined' && failRollback)
+              || (typeof failCompensation !== 'undefined' && failCompensation)) {
+            throw new Error('simulated compensation failure');
+          }
           values.set(key, previous);
         }
         return true;
@@ -2332,7 +2350,10 @@ test('mental-item conversion blocks further writes when its main-data compensati
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
       setItem(key, value) {
-        if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
+        if ((typeof failRollback !== 'undefined' && failRollback)
+              || (typeof failCompensation !== 'undefined' && failCompensation)) {
+            throw new Error('simulated compensation failure');
+          }
         values.set(key, String(value));
       },
       removeItem(key) { values.delete(key); }
@@ -2393,7 +2414,10 @@ test('project deletion rollback refreshes rolling checkpoint only after both sto
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
+          if ((typeof failRollback !== 'undefined' && failRollback)
+              || (typeof failCompensation !== 'undefined' && failCompensation)) {
+            throw new Error('simulated compensation failure');
+          }
           values.set(key, previous);
         }
         return true;
@@ -2485,7 +2509,10 @@ test('project deletion enters recovery-required state if compensating writes fai
         if (values.get(key) !== expected) return false;
         if (previous === null) values.delete(key);
         else {
-          if (typeof failRollback !== 'undefined' && failRollback) throw new Error('simulated compensation failure');
+          if ((typeof failRollback !== 'undefined' && failRollback)
+              || (typeof failCompensation !== 'undefined' && failCompensation)) {
+            throw new Error('simulated compensation failure');
+          }
           values.set(key, previous);
         }
         return true;
