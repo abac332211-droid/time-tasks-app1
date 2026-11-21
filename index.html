@@ -837,6 +837,25 @@ function _captureMainStorageBaseline() {
   }
 }
 
+function _storageWriteAllowed() {
+  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
+  var blockingKeys = [];
+  if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
+  if (typeof MIGRATION_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(MIGRATION_IN_PROGRESS_KEY);
+  if (typeof RESET_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(RESET_IN_PROGRESS_KEY);
+  if (typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(ROLLING_RESTORE_IN_PROGRESS_KEY);
+  try {
+    for (var i = 0; i < blockingKeys.length; i++) {
+      if (localStorage.getItem(blockingKeys[i]) !== null) return false;
+    }
+    return true;
+  } catch (e) {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    console.error("Storage write blocked because recovery markers could not be read:", e);
+    return false;
+  }
+}
+
 function _setupMainStorageConflictListener() {
   if (_mainStorageConflictListenerInstalled || !window || typeof window.addEventListener !== "function") return;
   window.addEventListener("storage", function(event) {
@@ -2735,9 +2754,8 @@ function persistDailyLog(log) {
     return;
   }
   try {
-    if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined" && localStorage.getItem(IMPORT_IN_PROGRESS_KEY)) {
-      storageRecoveryRequired = true;
-      showToast("⚠️ توجد استعادة غير مكتملة؛ أوقفنا حفظ سجل اليوم");
+    if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
+      showToast("⚠️ توجد عملية استعادة أو ترحيل أو إعادة ضبط؛ أوقفنا حفظ سجل اليوم");
       return;
     }
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -2759,6 +2777,10 @@ function persistDailyLog(log) {
     var serializedDailyLogData = JSON.stringify(data);
     localStorage.setItem(STORAGE_KEY, serializedDailyLogData);
     _setMainStorageBaseline(serializedDailyLogData);
+    if (typeof _storeRollingRecoveryBackup === "function"
+        && !_storeRollingRecoveryBackup("daily-log-save", 0)) {
+      console.warn("Daily log saved, but its rolling recovery checkpoint could not be refreshed.");
+    }
   } catch (e) {
     console.error("Failed to persist daily log:", e);
     showToast("⚠️ تعذر حفظ تقييم اليوم — تحقق من مساحة التخزين");
@@ -2851,6 +2873,7 @@ function _loadMentalInbox() {
 }
 
 function _saveMentalInbox(arr) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     localStorage.setItem(MENTAL_INBOX_KEY, JSON.stringify(arr));
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("mental-inbox-save", 0);
@@ -6524,6 +6547,7 @@ function _loadFocusSettings() {
 }
 
 function _saveFocusSettings(w, s, l) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     localStorage.setItem(FOCUS_SETTINGS_KEY, JSON.stringify({ workMin: w, shortMin: s, longMin: l }));
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-settings-save", 0);
@@ -6616,6 +6640,7 @@ function _finalizeFocusTimerColdStartRestore() {
 }
 
 function _saveFocusTimer() {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     var now = Date.now();
     var running = _focusTimer.running === true;
@@ -6800,6 +6825,7 @@ function _getNotificationsPref() {
 }
 
 function _setNotificationsPref(enabled) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify({ enabled: !!enabled }));
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("notifications-save", 0);
@@ -7383,6 +7409,7 @@ function _loadSessions() {
 }
 
 function _saveSessions(arr) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (arr.length > FOCUS_MAX_SESSIONS) arr = arr.slice(-FOCUS_MAX_SESSIONS);
     localStorage.setItem(FOCUS_SESSIONS_KEY, JSON.stringify(arr));
@@ -8339,6 +8366,7 @@ function _loadThoughts() {
 }
 
 function _saveThoughts(arr) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     localStorage.setItem(THOUGHTS_KEY, JSON.stringify(arr));
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("thoughts-save", 0);
@@ -8542,6 +8570,7 @@ function _loadProjects() {
 }
 
 function _saveProjects(arr) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(arr));
     _invalidateProjectsCache();
