@@ -278,7 +278,7 @@ test('storage record copies discard prototype-sensitive property names', () => {
 
 test('V2 and backup recurring-date metadata share strict bounds and key validation', () => {
   const sandbox = {
-    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value)
+    isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value)
   };
   vm.runInNewContext(extractFunction('_validateLastRecurringDates'), sandbox);
   const validate = sandbox._validateLastRecurringDates;
@@ -2605,7 +2605,7 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
   const tooManyRecurringDates = {};
   for (let i = 0; i < 501; i++) tooManyRecurringDates['series:' + i] = '2026-11-21';
   assert.equal(sandbox.validateV2(makeData(tooManyRecurringDates)), false);
-  assert.match(extractFunction('validateBackup'), /_validateLastRecurringDates\\(/);
+  assert.ok(extractFunction('validateBackup').includes('_validateLastRecurringDates('));
 });
 
 test('all reviewed modal openers remove the previous shared keydown handler before registering', () => {
