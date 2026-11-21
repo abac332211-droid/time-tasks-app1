@@ -1634,7 +1634,9 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
       getItem(key) {
         reads.push(key);
         if (faults.throwOnGetKey === key) throw new Error('simulated read failure');
-        return values.has(key) ? values.get(key) : null;
+        const value = values.has(key) ? values.get(key) : null;
+        if (typeof faults.onGet === 'function') faults.onGet(key, values, reads.length);
+        return value;
       },
       setItem(key, value) {
         writes.push([key, String(value)]);
@@ -2049,4 +2051,21 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
   vm.runInNewContext(extractFunction('_storageWriteAllowed'), staleBaseline);
   assert.equal(staleBaseline._storageWriteAllowed(), false,
     'side-collection writes must stop when another tab changed the main record');
+});
+
+
+test('rolling recovery refuses a mixed multi-collection snapshot when another tab changes data during capture', () => {
+  let projectReads = 0;
+  const harness = rollingRecoveryHarness(rollingState('before'), {
+    onGet(key, values) {
+      if (key === 'projects') {
+        projectReads++;
+        if (projectReads === 1) values.set('projects', rollingState('during-capture').projects);
+      }
+    }
+  });
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), false);
+  assert.equal(harness.values.has(harness.keys.backupA), false);
+  assert.equal(harness.values.has(harness.keys.backupB), false);
+  assert.equal(projectReads, 2);
 });
