@@ -2268,7 +2268,8 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       targetKey = validA.sequence < validB.sequence
         ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
     } else {
-      targetKey = validA.createdAtMs <= validB.createdAtMs
+      // On an exact tie, keep slot A as the reader's deterministic winner.
+      targetKey = validA.createdAtMs < validB.createdAtMs
         ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
     }
 
