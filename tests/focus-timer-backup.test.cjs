@@ -679,8 +679,10 @@ test('running timer checkpoints persist elapsed time and reset the checkpoint ti
     FOCUS_TIMER_CHECKPOINT_INTERVAL_MS: 5_000,
     _focusTimerCheckpointAt: 1_000,
     _focusTimer: state,
+    _focusElapsedRemainderMs: 0,
     Date: { now: () => 7_000 },
     _getElapsedSec: () => 305,
+    _getFocusTimerElapsedParts: () => ({ seconds: 305, remainderMs: 0, monotonicNow: null, wallNow: 7_000 }),
     _storageWriteAllowed: () => true,
     _writeSecondaryStorageVerified(key, value) {
       assert.equal(key, 'timer-key');
