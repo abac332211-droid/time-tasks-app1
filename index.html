@@ -9041,17 +9041,18 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
     var _oldActual = currentTask ? currentTask.actual : null;
     var _actualWasIncremented = false;
     var _transitionCheckpointHold = false;
+    var releaseTransitionHold = function() {};
+    try {
     if (currentTask && elapsed >= 60
         && (modeSnapshot === 'stopwatch' || phaseSnapshot === 'work')) {
       var minutes = Math.max(1, Math.round(elapsed / 60));
       var _alreadyLoggedTransition = _sessionAlreadyLogged(phaseSnapshot, elapsed);
       if (!_alreadyLoggedTransition) {
         _transitionCheckpointHold = typeof _rollingRecoveryCheckpointHold !== "undefined";
-        if (_transitionCheckpointHold) _rollingRecoveryCheckpointHold++;
+        releaseTransitionHold = _acquireRollingRecoveryCheckpointHold(_transitionCheckpointHold);
         currentTask.actual = (_oldActual || 0) + minutes;
         _actualWasIncremented = true;
         if (!saveData()) {
-          if (_transitionCheckpointHold) _rollingRecoveryCheckpointHold--;
           currentTask.actual = _oldActual;
           showToast('⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة ولم يتم الانتقال');
           return;
@@ -9061,7 +9062,6 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
 
     var _logged = elapsed < 60 || _logSession(phaseSnapshot, elapsed, true);
     if (!_logged) {
-      if (_transitionCheckpointHold) _rollingRecoveryCheckpointHold--;
       var _rollbackOk = true;
       if (_actualWasIncremented && currentTask) {
         currentTask.actual = _oldActual;
@@ -9070,6 +9070,8 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
       }
       renderAll();
       _renderFocusTimer();
+      releaseTransitionHold();
+      if (_rollbackOk && _actualWasIncremented) _completeRollingRecoveryCheckpoint("transaction-rollback");
       if (_rollbackOk) {
         var _transitionFailureMessage = _actualWasIncremented
           ? "فشل حفظ جلسة التركيز. تراجعنا عن إضافة المدة الفعلية، وبقي المؤقت متوقفاً بالمدة الأصلية للمحاولة مجدداً. لم يتم الانتقال إلى المهمة الجديدة."
@@ -9081,16 +9083,10 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
       return;
     }
 
-    if (_transitionCheckpointHold) {
-      _rollingRecoveryCheckpointHold--;
-      if (typeof _storeRollingRecoveryBackup === "function"
-          && !_storeRollingRecoveryBackup("focus-session-transition-commit", 0)) {
-        storageRecoveryRequired = true;
-        showAlertModal("تعذر تأمين جلسة التركيز",
-          "حُفظت المهمة والجلسة، لكن تعذر تحديث نسخة الاسترداد للحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات قبل الانتقال.");
-        return;
-      }
-    }
+    releaseTransitionHold();
+    if (_transitionCheckpointHold && !_completeRollingRecoveryCheckpoint(
+        "focus-session-transition-commit", "حُفظت الجلسة",
+        "حُفظت المهمة والجلسة، لكن تعذر التحقق من لقطة الاسترداد. أوقفنا الكتابة اللاحقة لحماية البيانات.")) return;
 
     if (!_resetAfterSession()) {
       showToast('⚠️ سُجّلت الجلسة، لكن تعذر حفظ تصفير المؤقت؛ لم يتم الانتقال. لا تُعد تسجيلها.');
@@ -9099,6 +9095,9 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
     onSwitch();
     renderAll();
     showToast('✅ حُفظت الجلسة');
+    } finally {
+      releaseTransitionHold();
+    }
   };
 
   footerEl.appendChild(cancelBtn);
