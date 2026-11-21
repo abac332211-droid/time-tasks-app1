@@ -5451,6 +5451,13 @@ function showImportPreview(obj) {
               : "تعذّر إغلاق الاستيراد واستعادة الحالة السابقة؛ احتُفظ بعلامة الاسترداد ونسخة التراجع.");
           return;
         }
+        // The imported data is now fully written and the import marker is closed.
+        // Create a fresh rolling checkpoint for the committed imported state;
+        // PRE_IMPORT remains separate for the user's explicit undo action.
+        if (typeof _storeRollingRecoveryBackup === "function"
+            && !_storeRollingRecoveryBackup("import-success", 0)) {
+          console.warn("Import succeeded, but its rolling recovery checkpoint could not be refreshed.");
+        }
         try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تمت الاستعادة الكاملة'); } catch (e) {}
         location.reload();
       }
@@ -5536,6 +5543,13 @@ function undoLastImport() {
         if (localStorage.getItem(PRE_IMPORT_KEY) !== null) backupCleanupFailed = true;
       } catch (backupCleanupError) {
         backupCleanupFailed = true;
+      }
+
+      // A successful undo is also a new committed state. Keep the latest
+      // rolling checkpoint aligned even when PRE_IMPORT cleanup remains pending.
+      if (typeof _storeRollingRecoveryBackup === "function"
+          && !_storeRollingRecoveryBackup("import-undo", 0)) {
+        console.warn("Undo succeeded, but its rolling recovery checkpoint could not be refreshed.");
       }
 
       try {
