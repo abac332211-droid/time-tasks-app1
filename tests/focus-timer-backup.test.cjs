@@ -1658,3 +1658,104 @@ test('manual undo marks restoration in progress and startup recovery completes a
   assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), null);
   assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), null);
 });
+
+
+test('snapshot restore rejects a missing collection field before touching any stored value', () => {
+  const before = {
+    [STORAGE_KEYS.MAIN]: 'current-main',
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'current-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'current-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'current-inbox',
+    [STORAGE_KEYS.THOUGHTS]: 'current-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'current-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'current-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'current-notifications'
+  };
+  const storage = memoryStorage(before);
+  const harness = restoreContext(storage);
+  const restore = vm.runInNewContext(
+    '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+    harness.context
+  );
+  const incomplete = storageSnapshot('previous');
+  delete incomplete.projects;
+
+  assert.equal(restore(incomplete), false);
+  for (const [key, value] of Object.entries(before)) {
+    assert.equal(storage.getItem(key), value, 'no collection may be deleted or changed: ' + key);
+  }
+  assert.equal(harness.context.storageRecoveryRequired, true);
+});
+
+test('interrupted recovery refuses an incomplete snapshot and preserves its marker and bytes', () => {
+  const previous = storageSnapshot('previous');
+  previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] });
+  delete previous.notifications;
+  const rawSnapshot = JSON.stringify(previous);
+  const partiallyImported = {
+    [STORAGE_KEYS.MAIN]: 'partial-main',
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'partial-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'partial-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'partial-inbox',
+    [STORAGE_KEYS.THOUGHTS]: 'partial-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'partial-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'partial-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'partial-notifications',
+    [STORAGE_KEYS.IMPORT_IN_PROGRESS]: '1',
+    [STORAGE_KEYS.PRE_IMPORT]: rawSnapshot
+  };
+  const storage = memoryStorage(partiallyImported);
+  const harness = restoreContext(storage);
+  const recover = vm.runInNewContext(
+    extractTopLevelSource('_restoreStorageSnapshot') + '\n' +
+    extractTopLevelSource('_recoverInterruptedImport') + '\n_recoverInterruptedImport',
+    harness.context
+  );
+
+  assert.equal(recover(), false);
+  for (const [key, value] of Object.entries(partiallyImported)) {
+    assert.equal(storage.getItem(key), value, 'must preserve data and recovery evidence: ' + key);
+  }
+});
+
+test('manual undo reports restored data separately when only backup cleanup fails', () => {
+  const previous = storageSnapshot('previous');
+  previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] });
+  const storage = memoryStorage(
+    { [STORAGE_KEYS.PRE_IMPORT]: JSON.stringify(previous) },
+    { throwOnRemoveKey: STORAGE_KEYS.PRE_IMPORT }
+  );
+  const harness = restoreContext(storage);
+  const alerts = [];
+  let reloads = 0;
+  harness.context.showConfirmModal = (_title, _body, accept) => accept();
+  harness.context.showAlertModal = (...args) => alerts.push(args);
+  harness.context.validateV2 = () => true;
+  harness.context._restoreStorageSnapshot = () => true;
+  harness.context.sessionStorage = { setItem() {} };
+  harness.context.location = { reload() { reloads++; } };
+
+  const undo = vm.runInNewContext(
+    extractTopLevelSource('undoLastImport') + '\nundoLastImport',
+    harness.context
+  );
+  undo();
+
+  assert.equal(storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS), null);
+  assert.equal(storage.getItem(STORAGE_KEYS.PRE_IMPORT), JSON.stringify(previous));
+  assert.equal(reloads, 1);
+  assert.equal(alerts.length, 1);
+  assert.match(String(alerts[0][0]), /تم الاسترجاع مع بقاء نسخة التراجع/);
+  assert.doesNotMatch(String(alerts[0][0]), /فشل الاسترجاع/);
+});
+
+test('legacy import preview distinguishes replaced primary data from preserved optional collections', () => {
+  const backup = integrationBackup({ tasks: [], dailyLogs: [] });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer');
+  const preview = harness.confirmations[0].body;
+
+  assert.match(preview, /ستُستبدل المهام وسجلات الأيام وإعدادات التطبيق/);
+  assert.match(preview, /المجموعات غير الموجودة في الملف ستبقى كما هي على هذا الجهاز/);
+  assert.match(preview, /مؤقت التركيز/);
+  assert.doesNotMatch(preview, /سيتم استبدال كل البيانات الحالية/);
+});
