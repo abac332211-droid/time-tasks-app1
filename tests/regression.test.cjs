@@ -1347,3 +1347,211 @@ test('failed timer-transition checkpoint pauses safely and suppresses the succes
   assert.equal(notifications, 0);
   assert.equal(alerts.length, 1);
 });
+
+
+function migrationHarness(mainRaw, archiveRaw = null, markerRaw = null, faults = {}) {
+  const values = new Map([['main', mainRaw]]);
+  if (archiveRaw !== null) values.set('migration-archive', archiveRaw);
+  if (markerRaw !== null) values.set('migration-in-progress', markerRaw);
+  const writes = [];
+  const sandbox = {
+    STORAGE_KEY: 'main',
+    BACKUP_KEY: 'migration-archive',
+    MIGRATION_ARCHIVE_KEY: 'migration-archive',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+    CURRENT_SCHEMA_VERSION: 2,
+    APP_VERSION: 'test',
+    Date,
+    console,
+    localStorage: {
+      getItem(key) {
+        if (faults.throwOnGetKey === key) throw new Error('simulated read failure');
+        return values.has(key) ? values.get(key) : null;
+      },
+      setItem(key, value) {
+        writes.push([key, String(value)]);
+        if (faults.throwOnSetKey === key) throw new Error('simulated write failure');
+        values.set(key, String(value));
+      },
+      removeItem(key) {
+        if (faults.throwOnRemoveKey === key) throw new Error('simulated remove failure');
+        values.delete(key);
+      }
+    },
+    validateV2(data) {
+      return !!data
+        && data.schemaVersion === 2
+        && Array.isArray(data.tasks)
+        && Array.isArray(data.dailyLogs)
+        && data.tasks.every((task) => task
+          && task.status !== 'partial'
+          && typeof task.plannedDate === 'string'
+          && /^\d{4}-\d{2}-\d{2}$/.test(task.plannedDate)
+          && typeof task.plannedTime === 'string'
+          && (task.plannedTime === '' || /^\d{2}:\d{2}$/.test(task.plannedTime)));
+    },
+    migrateTaskV1toV2(rawTask, existingIds) {
+      const id = Number.isInteger(rawTask.id) && rawTask.id > 0 && !existingIds.has(rawTask.id)
+        ? rawTask.id : 1;
+      existingIds.add(id);
+      return {
+        task: {
+          id, name: typeof rawTask.name === 'string' && rawTask.name ? rawTask.name : 'مهمة',
+          type: 'معرفية', status: 'pending', expected: 10, actual: null,
+          plannedDate: '2026-11-21', plannedTime: '', completedAt: null, createdAt: 1000
+        },
+        repairs: []
+      };
+    },
+    todayStr: () => '2026-11-21',
+    buildEmptyV2: () => ({
+      schemaVersion: 2, createdByVersion: 'test',
+      settings: {}, tasks: [], dailyLogs: []
+    })
+  };
+  vm.runInNewContext(
+    extractFunction('_healTaskArray') + '\n' + extractFunction('migrateV1ToV2'),
+    sandbox
+  );
+  return { values, writes, sandbox, run: () => sandbox.migrateV1ToV2() };
+}
+
+test('V2 migration never writes partially healed tasks when a planned date or time is invalid', () => {
+  for (const invalidField of ['plannedDate', 'plannedTime']) {
+    const task = {
+      id: 7, name: 'مهمة قديمة', status: 'partial', priority: 'unknown',
+      plannedDate: '2026-11-21', plannedTime: '09:30',
+      completedAt: null, createdAt: 1000
+    };
+    task[invalidField] = 'invalid-value';
+    const original = JSON.stringify({
+      schemaVersion: 2, createdByVersion: 'old', settings: {},
+      tasks: [task], dailyLogs: []
+    });
+    const harness = migrationHarness(original);
+    const report = harness.run();
+
+    assert.equal(report.success, false, invalidField);
+    assert.equal(harness.values.get('main'), original, 'original V2 bytes remain untouched');
+    assert.deepEqual(harness.writes, [], 'no partial healing write is allowed');
+  }
+});
+
+test('corrupt current storage does not silently fall back to an old migration archive', () => {
+  const oldArchive = JSON.stringify({
+    tasks: [{ id: 7, name: 'بيانات قديمة' }],
+    dailyLogs: []
+  });
+  const harness = migrationHarness('{broken-json', oldArchive, null);
+  const report = harness.run();
+
+  assert.equal(report.success, false);
+  assert.equal(harness.values.get('main'), '{broken-json');
+  assert.deepEqual(harness.writes, [], 'a completed migration archive is not a rolling backup');
+  assert.equal(harness.values.get('migration-archive'), oldArchive);
+});
+
+test('an explicit pending migration marker allows archive recovery and is cleared after verified V2 write', () => {
+  const oldArchive = JSON.stringify({
+    tasks: [{ id: 7, name: 'مهمة الترحيل' }],
+    dailyLogs: []
+  });
+  const harness = migrationHarness('{interrupted-write', oldArchive, '1');
+  const report = harness.run();
+
+  assert.equal(report.success, true);
+  assert.equal(report.recoveredFromBackup, true);
+  assert.equal(JSON.parse(harness.values.get('main')).schemaVersion, 2);
+  assert.equal(harness.values.get('migration-archive'), oldArchive);
+  assert.equal(harness.values.get('migration-in-progress'), null);
+});
+
+test('migration archive write failure leaves the original V1 record unchanged and marked for retry', () => {
+  const original = JSON.stringify({ tasks: [{ id: 7, name: 'مهمة' }], dailyLogs: [] });
+  const harness = migrationHarness(original, null, null, { throwOnSetKey: 'migration-archive' });
+  const report = harness.run();
+
+  assert.equal(report.success, false);
+  assert.equal(harness.values.get('main'), original);
+  assert.equal(harness.values.get('migration-in-progress'), '1');
+  assert.equal(harness.values.get('migration-archive'), null);
+});
+
+function resetAllHarness(faults = {}) {
+  const keys = {
+    main: 'main', preImport: 'pre-import', importInProgress: 'import-in-progress',
+    migrationInProgress: 'migration-in-progress', testFlag: 'test-flag',
+    migrationArchive: 'migration-archive', testBackup: 'test-backup',
+    thoughts: 'thoughts', projects: 'projects', focusTimer: 'focus-timer',
+    focusSessions: 'focus-sessions', mentalInbox: 'mental-inbox'
+  };
+  const values = new Map(Object.values(keys).map((key) => [key, 'old-value']));
+  const removeCalls = [];
+  const alerts = [];
+  const toasts = [];
+  const confirmations = [];
+  const sandbox = {
+    STORAGE_KEY: keys.main,
+    PRE_IMPORT_KEY: keys.preImport,
+    IMPORT_IN_PROGRESS_KEY: keys.importInProgress,
+    MIGRATION_IN_PROGRESS_KEY: keys.migrationInProgress,
+    MIGRATION_ARCHIVE_KEY: keys.migrationArchive,
+    BACKUP_KEY: keys.migrationArchive,
+    TEST_FLAG_KEY: keys.testFlag,
+    TEST_BACKUP_KEY: keys.testBackup,
+    THOUGHTS_KEY: keys.thoughts,
+    PROJECTS_KEY: keys.projects,
+    FOCUS_TIMER_KEY: keys.focusTimer,
+    FOCUS_SESSIONS_KEY: keys.focusSessions,
+    MENTAL_INBOX_KEY: keys.mentalInbox,
+    APP_VERSION: 'test',
+    appSettings: { darkMode: false, themeMode: 'light' },
+    tasks: [{ id: 99 }],
+    createdByVersion: 'old',
+    storageRecoveryRequired: false,
+    _sessionsCache: [],
+    _focusTimer: {},
+    _awaySessionPromptOpen: false,
+    buildEmptyV2: () => ({
+      schemaVersion: 2, createdByVersion: 'test',
+      settings: {}, tasks: [], dailyLogs: []
+    }),
+    todayStr: () => '2026-11-21',
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(key, String(value)); },
+      removeItem(key) {
+        removeCalls.push(key);
+        if (faults.throwOnRemoveKey === key) throw new Error('simulated remove failure');
+        values.delete(key);
+      }
+    },
+    _setMainStorageBaseline: () => {},
+    showConfirmModal(title, body, accept) { confirmations.push({ title, body }); accept(); },
+    showAlertModal: (...args) => alerts.push(args),
+    showToast: (message) => toasts.push(message),
+    _invalidateProjectsCache: () => {},
+    _stopDisplayTick: () => {},
+    _applyThemePreference: () => {},
+    _queueAllTaskReminderSync: () => {},
+    cancelEdit: () => {},
+    cancelProjectEdit: () => {},
+    renderAll: () => {}
+  };
+  vm.runInNewContext(extractFunction('resetAll'), sandbox);
+  return { keys, values, removeCalls, alerts, toasts, confirmations, sandbox, run: () => sandbox.resetAll() };
+}
+
+test('resetAll attempts every deletion and never reports full success when one key cannot be removed', () => {
+  const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
+  harness.run();
+
+  assert.ok(harness.removeCalls.includes('focus-timer'));
+  assert.ok(harness.removeCalls.includes('focus-sessions'));
+  assert.ok(harness.removeCalls.includes('mental-inbox'));
+  assert.equal(harness.values.get('projects'), 'old-value');
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
+  assert.ok(harness.alerts.some((args) => /لم يكتمل حذف كل البيانات/.test(String(args[0]))));
+  assert.match(harness.confirmations[0].body, /النسخ الداخلية/);
+});
