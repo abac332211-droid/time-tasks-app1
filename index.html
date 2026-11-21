@@ -1382,11 +1382,6 @@ function _generateAndPersistRecurringTasks() {
     showToast("⚠️ تعذر حفظ المهام المتكررة؛ لم نعتمد الإضافات. تحقق من مساحة التخزين ثم أعد فتح التطبيق.");
     return 0;
   }
-  if (added > 0) {
-    for (var ni = previousTasks.length; ni < tasks.length; ni++) {
-      _queueTaskReminderSync(tasks[ni]);
-    }
-  }
   return added;
 }
 /* ============ IDs ============ */
@@ -3279,7 +3274,6 @@ function saveTask() {
       cancelEdit();
       showToast("✏️ تم تعديل المهمة");
       renderAll();
-      _queueTaskReminderSync(t);
     } else {
       Object.assign(t, _snap);
     }
@@ -3294,7 +3288,6 @@ function saveTask() {
       clearForm();
       showToast("➕ تمت إضافة المهمة");
       renderAll();
-      _queueTaskReminderSync(tasks[tasks.length - 1]);
     } else {
       tasks.pop();
     }
@@ -6172,6 +6165,10 @@ async function _syncTaskNotification(task, notificationId, permissionAlreadyGran
       if (!permission || permission.display !== "granted") return false;
     }
 
+    if (previous && (!previous.extra || previous.extra.kind !== "task-reminder")) {
+      console.warn("Refusing to replace a notification not owned by the task-reminder feature:", id);
+      return false;
+    }
     await LN.cancel({ notifications: [{ id: id }] });
     try {
       await LN.schedule({
@@ -7449,7 +7446,10 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
       renderAll();
       _renderFocusTimer();
       if (_rollbackOk) {
-        showAlertModal("تعذر تسجيل الجلسة", "فشل حفظ جلسة التركيز. تراجعنا عن إضافة المدة الفعلية، وبقي المؤقت متوقفاً بالمدة الأصلية للمحاولة مجدداً. لم يتم الانتقال إلى المهمة الجديدة.");
+        var _transitionFailureMessage = _actualWasIncremented
+          ? "فشل حفظ جلسة التركيز. تراجعنا عن إضافة المدة الفعلية، وبقي المؤقت متوقفاً بالمدة الأصلية للمحاولة مجدداً. لم يتم الانتقال إلى المهمة الجديدة."
+          : "فشل حفظ جلسة التركيز. بقي المؤقت متوقفاً بالمدة الأصلية للمحاولة مجدداً، ولم يتم الانتقال إلى المهمة الجديدة.";
+        showAlertModal("تعذر تسجيل الجلسة", _transitionFailureMessage);
       } else {
         showAlertModal("فشل تسجيل الجلسة والتراجع", "فشل تسجيل الجلسة وتعذر حفظ التراجع عن المدة الفعلية. قد تكون البيانات غير متسقة؛ صدّر نسخة احتياطية فوراً، ولا تُعد تسجيل المدة قبل مراجعة سجل الجلسات.");
       }
