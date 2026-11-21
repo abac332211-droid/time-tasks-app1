@@ -1906,3 +1906,131 @@ test('reset recovery retains its marker when marker cleanup fails and can finish
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
+
+
+test('daily-log save checkpoints the updated main record into rolling recovery storage', () => {
+  const original = JSON.stringify({
+    schemaVersion: 2, settings: {}, tasks: [], dailyLogs: []
+  });
+  const values = new Map([['main', original]]);
+  let checkpointRaw = null;
+  let checkpointReason = null;
+  const sandbox = {
+    STORAGE_KEY: 'main',
+    IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+    RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+    storageRecoveryRequired: false,
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: original,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(key, String(value)); }
+    },
+    _setMainStorageBaseline(raw) { sandbox._mainStorageBaselineRaw = raw; },
+    validateV2: () => true,
+    showToast: () => {},
+    console,
+    _storeRollingRecoveryBackup(reason) {
+      checkpointReason = reason;
+      checkpointRaw = values.get('main');
+      return true;
+    }
+  };
+  vm.runInNewContext(
+    extractFunction('_storageWriteAllowed') + '\\n'
+      + extractFunction('persistDailyLog') + '\\npersistDailyLog',
+    sandbox
+  );
+
+  const log = {
+    date: '2026-11-21', control: 4, execution: 5, wellbeing: 3,
+    energy: 'متوسط', distractions: 1, bufferUsed: 0,
+    mentalTask: '', mentalNext: '', createdAt: 1, updatedAt: 2
+  };
+  sandbox.persistDailyLog(log);
+
+  const saved = JSON.parse(values.get('main'));
+  assert.equal(saved.dailyLogs.length, 1);
+  assert.equal(saved.dailyLogs[0].date, log.date);
+  assert.equal(checkpointReason, 'daily-log-save');
+  assert.equal(checkpointRaw, values.get('main'),
+    'checkpoint must capture the new daily log, not the pre-save main record');
+});
+
+test('daily-log save refuses writes during migration, import, reset, and rolling restore', () => {
+  const original = JSON.stringify({ schemaVersion: 2, settings: {}, tasks: [], dailyLogs: [] });
+  const markerKeys = [
+    'import-in-progress', 'migration-in-progress',
+    'reset-in-progress', 'rolling-restore-in-progress'
+  ];
+  for (const markerKey of markerKeys) {
+    const values = new Map([['main', original], [markerKey, 'pending']]);
+    let checkpointCount = 0;
+    const sandbox = {
+      STORAGE_KEY: 'main',
+      IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+      MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+      RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+      ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+      storageRecoveryRequired: false,
+      _mainStorageBaselineReady: true,
+      _mainStorageExternalChangeObserved: false,
+      _mainStorageBaselineRaw: original,
+      localStorage: {
+        getItem(key) { return values.has(key) ? values.get(key) : null; },
+        setItem(key, value) { values.set(key, String(value)); }
+      },
+      _setMainStorageBaseline(raw) { sandbox._mainStorageBaselineRaw = raw; },
+      validateV2: () => true,
+      showToast: () => {},
+      console,
+      _storeRollingRecoveryBackup() { checkpointCount++; return true; }
+    };
+    vm.runInNewContext(
+      extractFunction('_storageWriteAllowed') + '\\n'
+        + extractFunction('persistDailyLog') + '\\npersistDailyLog',
+      sandbox
+    );
+    sandbox.persistDailyLog({
+      date: '2026-11-21', control: 4, execution: 5, wellbeing: 3,
+      energy: 'متوسط', distractions: 1, bufferUsed: 0,
+      mentalTask: '', mentalNext: '', createdAt: 1, updatedAt: 2
+    });
+    assert.equal(values.get('main'), original, 'must not write while marker is active: ' + markerKey);
+    assert.equal(checkpointCount, 0);
+  }
+});
+
+test('storage-write guard blocks all in-progress operations and fails closed on marker read errors', () => {
+  const markerKeys = [
+    'import-in-progress', 'migration-in-progress',
+    'reset-in-progress', 'rolling-restore-in-progress'
+  ];
+  for (const markerKey of markerKeys) {
+    const sandbox = {
+      IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+      MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+      RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+      ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+      storageRecoveryRequired: false,
+      localStorage: { getItem(key) { return key === markerKey ? 'pending' : null; } }
+    };
+    vm.runInNewContext(extractFunction('_storageWriteAllowed'), sandbox);
+    assert.equal(sandbox._storageWriteAllowed(), false, markerKey);
+  }
+
+  const readFailure = {
+    IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+    RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+    storageRecoveryRequired: false,
+    localStorage: { getItem() { throw new Error('storage unavailable'); } }
+  };
+  vm.runInNewContext(extractFunction('_storageWriteAllowed'), readFailure);
+  assert.equal(readFailure._storageWriteAllowed(), false);
+  assert.equal(readFailure.storageRecoveryRequired, true);
+});
