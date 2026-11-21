@@ -1535,6 +1535,13 @@ function validateV2(data) {
     if (s.darkMode !== undefined && typeof s.darkMode !== "boolean") return false;
     if (s.themeMode !== undefined && !["system", "light", "dark"].includes(s.themeMode)) return false;
     if (s.lastTaskId !== undefined && (!Number.isInteger(s.lastTaskId) || s.lastTaskId < 0)) return false;
+    if (s.lastRecurringDates !== undefined && s.lastRecurringDates !== null) {
+      if (typeof s.lastRecurringDates !== "object" || Array.isArray(s.lastRecurringDates)) return false;
+      const recurringKeys = Object.keys(s.lastRecurringDates);
+      for (let ri = 0; ri < recurringKeys.length; ri++) {
+        if (!isValidCalendarDate(s.lastRecurringDates[recurringKeys[ri]])) return false;
+      }
+    }
   }
 
   const taskIds = new Set();
@@ -1927,10 +1934,25 @@ function _applyThemePreference() {
   document.documentElement.setAttribute("data-theme", mode);
   _syncThemeMeta();
 }
+function _copyStorageRecord(source) {
+  var copied = {};
+  if (!source || typeof source !== "object" || Array.isArray(source)) return copied;
+  Object.keys(source).forEach(function(key) {
+    if (key === "__proto__") return;
+    Object.defineProperty(copied, key, {
+      value: source[key],
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  });
+  return copied;
+}
+
 function _loadAppSettings(settings) {
   var source = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
   var hasThemeMode = Object.prototype.hasOwnProperty.call(source, "themeMode") && ["system", "light", "dark"].includes(source.themeMode);
-  var merged = Object.assign({ operationalDayStart: 4, firstUseDate: null, darkMode: false, themeMode: "system", lastRecurringDates: {} }, source);
+  var merged = Object.assign({ operationalDayStart: 4, firstUseDate: null, darkMode: false, themeMode: "system", lastRecurringDates: {} }, _copyStorageRecord(source));
   if (!hasThemeMode) merged.themeMode = typeof source.darkMode === "boolean" ? (source.darkMode ? "dark" : "light") : "system";
   appSettings = merged;
   _applyThemePreference();
@@ -2902,7 +2924,7 @@ function _loadMentalInbox() {
         _mOut.push({ id: _mMaxId, text: "(فكرة تالفة — تم استردادها)", next: "", createdAt: new Date().toISOString(), resolvedAt: null, convertedTaskId: null, _healed: true });
         continue;
       }
-      var _m2 = Object.assign({}, _m);
+      var _m2 = _copyStorageRecord(_m);
       var _mHealed = false;
       if (typeof _m2.id !== "number" || !Number.isInteger(_m2.id) || _m2.id <= 0) { _mMaxId++; _m2.id = _mMaxId; _mHealed = true; }
       if (typeof _m2.text !== "string") { _m2.text = ""; _mHealed = true; }
@@ -3469,6 +3491,7 @@ function openSOSModal() {
 
   overlay.classList.remove('hidden');
   const trapFocus = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler = function(e) {
     if (e.key === 'Escape') { e.preventDefault(); closeModal(); }
     else trapFocus(e);
@@ -3742,6 +3765,7 @@ function openShutdownModal() {
 
   overlay.classList.remove('hidden');
   const trapFocus = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler = function(e) {
     if (e.key === 'Escape') { e.preventDefault(); closeModal(); }
     else trapFocus(e);
@@ -6306,7 +6330,7 @@ function runMigrationTests() {
       dailyLogs: [{ date: "2026-09-30" }, { date: "2026-09-30" }]
     }));
   }, function(r) { return r.success === false && r.error === "v2_invalid_no_recovery"; });
-  test("createdByVersion لا يتغير", function() {
+  test("ترحيل V2 يحافظ على createdByVersion", function() {
     const v2 = {
       schemaVersion: 2, createdByVersion: "1.0.0",
       settings: { operationalDayStart: 4, firstUseDate: "2026-01-01", darkMode: false },
@@ -6314,8 +6338,7 @@ function runMigrationTests() {
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(v2));
   }, function(r) {
-    tasks = [];
-    saveData();
+    if (!r.success) return "success=false";
     const d = JSON.parse(localStorage.getItem(STORAGE_KEY));
     return d.createdByVersion === "1.0.0";
   });
@@ -7827,23 +7850,45 @@ function setTimerMode(mode) {
 function toggleTimer() {
   _unlockAudioContext();
   if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return; }
+
+  var previousState = {
+    running: _focusTimer.running,
+    baseElapsed: _focusTimer.baseElapsed,
+    startedAt: _focusTimer.startedAt,
+    sessionStartAt: _focusTimer.sessionStartAt
+  };
+
   if (_focusTimer.running) {
     _focusTimer.baseElapsed = _getElapsedSec();
     _focusTimer.running = false;
     _focusTimer.startedAt = null;
     _stopDisplayTick();
-    if (!_saveFocusTimer()) showToast('⚠️ تعذر حفظ حالة المؤقت — تحقق من التخزين');
-    _renderFocusTimer();
+    if (!_saveFocusTimer()) {
+      Object.assign(_focusTimer, previousState);
+      _startDisplayTick();
+      showAlertModal(
+        "تعذر حفظ إيقاف المؤقت",
+        "لم يُحفظ الإيقاف؛ أُعيد المؤقت إلى حالته السابقة وسيظل مستمرًا. لا تغلق التطبيق قبل معالجة مشكلة التخزين."
+      );
+    }
   } else {
     if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
       _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
     }
     _focusTimer.startedAt = Date.now();
     _focusTimer.running = true;
-    _startDisplayTick();
-    if (!_saveFocusTimer()) showToast('⚠️ تعذر حفظ حالة المؤقت — تحقق من التخزين');
-    _renderFocusTimer();
+    if (!_saveFocusTimer()) {
+      Object.assign(_focusTimer, previousState);
+      _stopDisplayTick();
+      showAlertModal(
+        "تعذر حفظ تشغيل المؤقت",
+        "لم يُحفظ بدء المؤقت؛ أُعيدت الحالة السابقة ولم يبدأ العد. تحقق من التخزين ثم أعد المحاولة."
+      );
+    } else {
+      _startDisplayTick();
+    }
   }
+  _renderFocusTimer();
 }
 
 function resetTimer() {
@@ -7962,6 +8007,7 @@ function _showStopwatchSaveDialog(elapsedSec) {
 
   overlay.classList.remove('hidden');
   const trapFocus = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler = function(e) {
     if (e.key === 'Escape') { e.preventDefault(); cancelBtn.click(); }
     else trapFocus(e);
@@ -8129,6 +8175,7 @@ function finishTimer() {
 
   overlay.classList.remove('hidden');
   const trapFocus = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler = function(e) {
     if (e.key === 'Escape') { e.preventDefault(); cancelBtn.click(); }
     else trapFocus(e);
@@ -8371,6 +8418,7 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
 
   overlay.classList.remove('hidden');
   const trapFocus = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler = function(e) {
     if (e.key === 'Escape') { e.preventDefault(); cancelBtn.click(); }
     else trapFocus(e);
@@ -8462,6 +8510,24 @@ function _setupVisibilityListener() {
   });
 }
 
+var _recurringTaskRefreshInterval = null;
+
+function _setupRecurringTaskRefresh() {
+  if (_recurringTaskRefreshInterval !== null) return;
+  _recurringTaskRefreshInterval = setInterval(function() {
+    if (storageRecoveryRequired || document.visibilityState !== "visible") return;
+    try {
+      var generatedCount = _generateAndPersistRecurringTasks();
+      if (generatedCount > 0) {
+        renderAll();
+        showToast('🔁 أُضيفت ' + generatedCount + ' مهام لليوم الجديد');
+      }
+    } catch (e) {
+      console.error("Periodic recurring-task refresh failed:", e);
+    }
+  }, 60 * 1000);
+}
+
 window.addEventListener('pagehide', function() {
   if (_focusTimer.running) _saveFocusTimer();
 });
@@ -8496,7 +8562,7 @@ function _loadThoughts() {
         _tOut.push({ id: _tMaxId, text: "(خاطرة تالفة — تم استردادها)", createdAt: new Date().toISOString(), _healed: true });
         continue;
       }
-      var _t2 = Object.assign({}, _t);
+      var _t2 = _copyStorageRecord(_t);
       var _tHealed = false;
       if (typeof _t2.id !== "number" || !Number.isInteger(_t2.id) || _t2.id <= 0) { _tMaxId++; _t2.id = _tMaxId; _tHealed = true; }
       if (typeof _t2.text !== "string") { _t2.text = ""; _tHealed = true; }
@@ -8698,7 +8764,7 @@ function _loadProjects() {
         _pOut.push({ id: _pMaxId, name: "(مشروع تالف — تم استرداده)", description: "", status: "active", targetDate: "", createdAt: new Date().toISOString(), updatedAt: null, completedAt: null, _healed: true });
         continue;
       }
-      var _p2 = Object.assign({}, _p);
+      var _p2 = _copyStorageRecord(_p);
       var _pHealed = false;
       if (typeof _p2.id !== "number" || !Number.isInteger(_p2.id) || _p2.id <= 0) { _pMaxId++; _p2.id = _pMaxId; _pHealed = true; }
       if (typeof _p2.name !== "string" || _p2.name.trim() === "") { _p2.name = "(بلا اسم)"; _pHealed = true; }
@@ -9072,6 +9138,7 @@ if (_focusTimer.awaitingConfirmation) {
   setTimeout(function() { _showAwaySessionConfirmation(); }, 300);
 }
 _setupVisibilityListener();
+_setupRecurringTaskRefresh();
 if (_focusTimer.running) _startDisplayTick();
 
 _queueAllTaskReminderSync();
