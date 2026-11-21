@@ -3515,7 +3515,7 @@ function convertMentalItemToTask(id) {
       releaseHold();
       _completeRollingRecoveryCheckpoint("transaction-rollback", "استُعيدت الحالة السابقة",
         "استُعيدت المعاملة، لكن تعذر التحقق من اتساق لقطة الاسترداد.");
-      showToast("⚠️ تعذر حفظ حالة الفكرة — أُعيدت المهمة إلى حالتها السابقة");
+      showToast("⚠️ لم تُحوّل الفكرة — أُعيدت المهمة إلى حالتها السابقة");
       return;
     }
     converted = true;
