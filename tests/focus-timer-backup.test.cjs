@@ -108,6 +108,37 @@ test('completed Pomodoro phase becomes a pending confirmation with its exact end
   assert.equal(snapshot.pendingPhaseEndedAt, 55_000);
 });
 
+test('backup snapshots preserve milliseconds and compute pending phase end exactly', () => {
+  const pending = buildSnapshot(
+    timer({ baseElapsed: 1_499, startedAt: 5_000 }),
+    60_000,
+    1_500,
+    1_500,
+    new Set([10]),
+    0,
+    500
+  );
+  const paused = buildSnapshot(
+    timer({ running: false, startedAt: null, baseElapsed: 300 }),
+    60_000,
+    300,
+    1_500,
+    new Set([10]),
+    650,
+    650
+  );
+
+  assert.equal(pending.pendingPhaseEndedAt, 5_500);
+  assert.equal(pending.elapsedRemainderMs, 0);
+  assert.equal(paused.elapsedRemainderMs, 650);
+  assert.equal(validateSnapshot(paused, new Set([10])).valid, true);
+  assert.equal(
+    validateSnapshot({ ...paused, elapsedRemainderMs: 1_000 }, new Set([10])).valid,
+    false,
+    'backup validation bounds the millisecond remainder'
+  );
+});
+
 test('snapshot drops a task reference that is absent from the exported tasks', () => {
   const snapshot = buildSnapshot(timer(), 9_000, 300, 1_500, new Set());
   assert.equal(snapshot.taskId, null);
@@ -183,7 +214,9 @@ test('backup builder includes the paused focus timer and uses backup format v2',
     _loadSessions: () => [],
     _buildFocusTimerBackupSnapshot: buildSnapshot,
     _focusTimer: timer(),
+    _focusElapsedRemainderMs: 150,
     _getElapsedSec: () => 300,
+    _getFocusTimerElapsedParts: () => ({ seconds: 300, remainderMs: 420 }),
     _phaseTargetSec: () => 1_500,
     _loadMentalInbox: () => [],
     _loadThoughts: () => [],
@@ -197,6 +230,7 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.equal(backup.backupFormatVersion, 2);
   assert.equal(backup.data.focusTimer.running, false);
   assert.equal(backup.data.focusTimer.baseElapsed, 300);
+  assert.equal(backup.data.focusTimer.elapsedRemainderMs, 420);
 });
 
 test('backup builder validates raw session records instead of silently filtering corrupted sessions', () => {
@@ -222,7 +256,9 @@ test('backup builder validates raw session records instead of silently filtering
     localDateTimeString: () => '2026-11-19T18:00:00',
     _buildFocusTimerBackupSnapshot: () => timer(),
     _focusTimer: timer(),
+    _focusElapsedRemainderMs: 150,
     _getElapsedSec: () => 300,
+    _getFocusTimerElapsedParts: () => ({ seconds: 300, remainderMs: 420 }),
     _phaseTargetSec: () => 1_500,
     _getFocusSettingsSnapshot: () => ({ workMin: 25, shortMin: 5, longMin: 15 }),
     _getNotificationsPref: () => ({ enabled: false }),
