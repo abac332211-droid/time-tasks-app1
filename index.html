@@ -8369,6 +8369,10 @@ function setTimerMode(mode) {
 function toggleTimer() {
   _unlockAudioContext();
   if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return; }
+  if (_focusTimerExternalConflict) {
+    showAlertModal("تعارض حالة المؤقت", "تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل تعديله.");
+    return;
+  }
 
   var previousState = {
     running: _focusTimer.running,
@@ -8416,16 +8420,13 @@ function toggleTimer() {
 }
 
 function resetTimer() {
+  if (_focusTimerExternalConflict) {
+    showAlertModal("تعارض حالة المؤقت", "تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل إعادة تعيينه.");
+    return;
+  }
   var elapsed = _getElapsedSec();
   if (elapsed === 0 && !_focusTimer.running) {
-    _focusTimer.baseElapsed = 0;
-    _focusTimer.phase = 'work';
-    _focusTimer.startedAt = null;
-    _focusTimer.sessionStartAt = null;
-    _focusTimer.awaitingConfirmation = false;
-    _focusTimer.pendingPhaseEndedAt = null;
-    _saveFocusTimer();
-    _renderFocusTimer();
+    _resetAfterSession();
     return;
   }
   if (_focusTimer.mode === 'stopwatch' && elapsed >= STOPWATCH_SAVE_THRESHOLD_SEC) {
@@ -8434,100 +8435,116 @@ function resetTimer() {
   }
   showConfirmModal(
     'إعادة التعيين',
-    'هل تريد إلغاء الجلسة الحالية؟ (المدة: ' + _formatDuration(elapsed) + ')',
+    'سيتم تجاهل الجلسة الحالية دون تسجيلها وإعادة المؤقت إلى الصفر. المدة: ' + _formatDuration(elapsed) + '. متابعة؟',
     function() {
-      _stopDisplayTick();
-      _focusTimer.running = false;
-      _focusTimer.baseElapsed = 0;
-      _focusTimer.phase = 'work';
-      _focusTimer.startedAt = null;
-      _focusTimer.sessionStartAt = null;
-      _focusTimer.awaitingConfirmation = false;
-      _focusTimer.pendingPhaseEndedAt = null;
-      _saveFocusTimer();
-      _renderFocusTimer();
+      if (_resetAfterSession()) showToast('⚪ أُعيد تعيين المؤقت دون تسجيل الجلسة');
     }
   );
 }
-
 function _showStopwatchSaveDialog(elapsedSec) {
-  // Freeze and persist the exact elapsed time before showing any decision UI.
+  if (_focusTimerExternalConflict) {
+    showAlertModal("تعارض حالة المؤقت", "تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل إنهاء الجلسة أو إعادة تعيينها.");
+    return;
+  }
+  var previousTimerState = Object.assign({}, _focusTimer);
   _stopDisplayTick();
-  _focusTimer.baseElapsed = elapsedSec;
+  _focusTimer.baseElapsed = Math.max(0, Math.floor(elapsedSec));
   _focusTimer.running = false;
   _focusTimer.startedAt = null;
   if (!_saveFocusTimer()) {
-    showAlertModal('تعذر حفظ حالة المؤقت', 'تم تجميد الوقت في الذاكرة، لكن تعذر حفظه. لم نفتح شاشة الحفظ لتجنب متابعة العملية بحالة تخزين غير مؤكدة. لا تغلق الصفحة؛ تحقق من مساحة التخزين ثم أعد المحاولة.');
+    Object.assign(_focusTimer, previousTimerState);
+    if (_focusTimer.running) _startDisplayTick();
     _renderFocusTimer();
+    showAlertModal('تعذر حفظ حالة المؤقت', 'تعذر تأكيد تجميد المؤقت. أعدنا الحالة السابقة بدل عرض قرار حفظ على حالة غير مؤكدة.');
     return;
   }
+  _renderFocusTimer();
 
   var minutes = Math.max(1, Math.round(elapsedSec / 60));
-  var t = _focusTimer.taskId ? tasks.find(function(x) { return x.id === _focusTimer.taskId; }) : null;
-
-  if (!t) {
-    var loggedWithoutTask = _logSession('work', elapsedSec, true);
-    if (!loggedWithoutTask) {
-      showAlertModal('تعذر تسجيل الجلسة', 'لم تُسجّل الجلسة. أبقينا الوقت متوقفاً لاستعادته؛ حاول مجدداً بعد التحقق من مساحة التخزين.');
-      _renderFocusTimer();
-      return;
-    }
-    if (!_resetAfterSession()) {
-      showToast('⚠️ سُجّلت الجلسة لكن تعذر حفظ تصفير المؤقت؛ لا تُعد تسجيلها.');
-      return;
-    }
-    showToast('✅ حُفظت الجلسة (' + _formatDuration(elapsedSec) + ')');
-    renderFocusSessionsCard();
-    return;
-  }
-
-  var current = t.actual || 0;
+  var task = _focusTimer.taskId ? tasks.find(function(x) { return x.id === _focusTimer.taskId; }) : null;
   var overlay = document.getElementById('customModalOverlay');
   var card = document.getElementById('modalCardElement');
-  document.getElementById('modalTitle').textContent = '💾 إنهاء الجلسة';
+  document.getElementById('modalTitle').textContent = '💾 قرار جلسة Stopwatch';
   var bodyEl = document.getElementById('modalBody');
   bodyEl.innerHTML =
     '<p style="margin:0 0 10px;line-height:1.7;">المدة المقاسة: <b>' + _formatDuration(elapsedSec) + '</b></p>' +
-    '<p style="margin:0 0 10px;line-height:1.7;">المهمة: <b>' + escapeHTML(t.name) + '</b></p>' +
-    '<p style="margin:0;line-height:1.7;">المدة الفعلية الحالية: <b>' + current + ' دقيقة</b></p>';
+    '<p style="margin:0;line-height:1.7;">' +
+    (task ? 'المهمة: <b>' + escapeHTML(task.name) + '</b>' : 'الجلسة غير مرتبطة بمهمة.') +
+    '</p><p style="margin:10px 0 0;line-height:1.7;">اختر صراحةً حفظ الجلسة أو تجاهلها. إلغاء النافذة يُبقي الجلسة متوقفة دون حفظها أو حذفها.</p>';
 
   var footerEl = document.getElementById('modalFooter');
   footerEl.innerHTML = '';
 
   var cancelBtn = document.createElement('button');
   cancelBtn.className = 'btn-ghost';
-  cancelBtn.textContent = 'إلغاء';
-  cancelBtn.onclick = function() { closeModal(); };
-
-  var editBtn = document.createElement('button');
-  editBtn.className = 'btn-ghost';
-  editBtn.textContent = '✏️ تعديل';
-  editBtn.onclick = function() {
+  cancelBtn.textContent = 'إبقاء متوقفة';
+  cancelBtn.onclick = function() {
     closeModal();
-    showPromptModal(
-      'القيمة المضافة',
-      'أدخل عدد الدقائق المراد إضافتها إلى المدة الفعلية:',
-      String(minutes),
-      'دقائق',
-      function(val) {
-        var n = parseInt(val, 10);
-        if (!Number.isFinite(n) || n < 0) { showToast('⚠️ قيمة غير صالحة'); return; }
-        _applyStopwatchSave(elapsedSec, t, n);
-      }
-    );
+    _renderFocusTimer();
   };
 
-  var addBtn = document.createElement('button');
-  addBtn.className = 'btn-primary';
-  addBtn.textContent = '+ ' + minutes + ' د';
-  addBtn.onclick = function() {
+  var discardBtn = document.createElement('button');
+  discardBtn.className = 'btn-danger';
+  discardBtn.textContent = 'تجاهل وتصفير';
+  discardBtn.onclick = function() {
     closeModal();
-    _applyStopwatchSave(elapsedSec, t, minutes);
+    if (_resetAfterSession()) showToast('⚪ أُعيد تعيين Stopwatch دون تسجيل الجلسة');
   };
-
   footerEl.appendChild(cancelBtn);
-  footerEl.appendChild(editBtn);
-  footerEl.appendChild(addBtn);
+  footerEl.appendChild(discardBtn);
+
+  if (task) {
+    var current = task.actual || 0;
+    var editBtn = document.createElement('button');
+    editBtn.className = 'btn-ghost';
+    editBtn.textContent = '✏️ تعديل الدقائق';
+    editBtn.onclick = function() {
+      closeModal();
+      showPromptModal(
+        'القيمة المضافة',
+        'أدخل عدد الدقائق المراد إضافتها إلى المدة الفعلية:',
+        String(minutes),
+        'دقائق',
+        function(value) {
+          var amount = parseInt(value, 10);
+          if (!Number.isFinite(amount) || amount < 0) {
+            showToast('⚠️ قيمة غير صالحة');
+            return;
+          }
+          _applyStopwatchSave(elapsedSec, task, amount);
+        }
+      );
+    };
+    var saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-primary';
+    saveBtn.textContent = 'حفظ وإضافة ' + minutes + ' د';
+    saveBtn.onclick = function() {
+      closeModal();
+      _applyStopwatchSave(elapsedSec, task, minutes);
+    };
+    bodyEl.innerHTML += '<p style="margin:10px 0 0;line-height:1.7;">المدة الفعلية الحالية: <b>' + current + ' دقيقة</b></p>';
+    footerEl.appendChild(editBtn);
+    footerEl.appendChild(saveBtn);
+  } else {
+    var saveUnlinkedBtn = document.createElement('button');
+    saveUnlinkedBtn.className = 'btn-primary';
+    saveUnlinkedBtn.textContent = 'حفظ الجلسة';
+    saveUnlinkedBtn.onclick = function() {
+      closeModal();
+      if (!_logSession('work', elapsedSec, true)) {
+        _renderFocusTimer();
+        showAlertModal('تعذر تسجيل الجلسة', 'بقيت الجلسة متوقفة ومتاحة للمحاولة مجددًا؛ لم يتم تصفير المؤقت.');
+        return;
+      }
+      if (!_resetAfterSession()) {
+        showToast('⚠️ سُجلت الجلسة لكن تعذر حفظ تصفير المؤقت؛ لا تُعد تسجيلها.');
+        return;
+      }
+      showToast('✅ حُفظت الجلسة (' + _formatDuration(elapsedSec) + ')');
+      renderFocusSessionsCard();
+    };
+    footerEl.appendChild(saveUnlinkedBtn);
+  }
 
   overlay.classList.remove('hidden');
   const trapFocus = _setupModalFocusTrap(card);
@@ -8538,7 +8555,6 @@ function _showStopwatchSaveDialog(elapsedSec) {
   };
   document.addEventListener('keydown', _modalKeyHandler);
 }
-
 function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
   var _alreadyLogged = _sessionAlreadyLogged('work', elapsedSec);
   var _oldActual = task.actual;
@@ -8599,6 +8615,7 @@ function finishTimer() {
     _renderFocusTimer();
     return;
   }
+  _renderFocusTimer();
   var elapsed = _focusTimer.baseElapsed;
   var _capturedPhase = _focusTimer.phase;
   if (_focusTimer.mode === 'pomodoro' && _focusTimer.phase !== 'work') {
@@ -8664,7 +8681,7 @@ function finishTimer() {
   var cancelBtn = document.createElement('button');
   cancelBtn.className = 'btn-ghost';
   cancelBtn.textContent = 'إلغاء';
-  cancelBtn.onclick = closeModal;
+  cancelBtn.onclick = function() { closeModal(); _renderFocusTimer(); };
 
   var editBtn = document.createElement('button');
   editBtn.className = 'btn-ghost';
@@ -8773,6 +8790,11 @@ function _applyTimerFinish(elapsedSec, task, minutesToAdd, capturedPhase) {
 }
 
 function _resetAfterSession() {
+  if (_focusTimerExternalConflict) {
+    showAlertModal("تعارض حالة المؤقت", "لم نُصفّر المؤقت لأن نافذة أخرى غيّرت حالته. أعد تحميل التطبيق أولًا.");
+    return false;
+  }
+  var previousState = Object.assign({}, _focusTimer);
   _stopDisplayTick();
   _focusTimer.running = false;
   _focusTimer.baseElapsed = 0;
@@ -8782,12 +8804,18 @@ function _resetAfterSession() {
   _focusTimer.cyclePosition = 0;
   _focusTimer.awaitingConfirmation = false;
   _focusTimer.pendingPhaseEndedAt = null;
+  _focusTimer.clockAdjusted = false;
   var resetSaved = _saveFocusTimer();
+  if (!resetSaved) {
+    Object.assign(_focusTimer, previousState);
+    if (_focusTimer.running) _startDisplayTick();
+    _renderFocusTimer();
+    showAlertModal("تعذر حفظ تصفير المؤقت", "لم يُحفظ التصفير؛ أُعيدت حالة المؤقت السابقة كي لا تختلف الواجهة عن التخزين.");
+    return false;
+  }
   _renderFocusTimer();
-  if (!resetSaved) showAlertModal("تعذر حفظ تصفير المؤقت", "صُفّر المؤقت في الذاكرة، لكن التخزين لم يؤكد حفظ التصفير. تحقّق من التخزين وصدّر نسخة احتياطية؛ لا تُعد تسجيل الجلسة قبل مراجعة سجل الجلسات.");
-  return resetSaved;
+  return true;
 }
-
 function linkTimerToTask(taskId) {
   if (_focusTimer.running) {
     showToast('⚠️ أوقف المؤقت قبل تغيير الربط');
@@ -8852,7 +8880,15 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
       _focusTimer.baseElapsed = elapsed;
       _focusTimer.startedAt = Date.now();
       _focusTimer.running = true;
-      _saveFocusTimer();
+      _anchorFocusTimerClock(_focusTimer.startedAt);
+      if (!_saveFocusTimer()) {
+        _focusTimer.running = false;
+        _focusTimer.startedAt = null;
+        _clearFocusTimerClock();
+        _renderFocusTimer();
+        showAlertModal("تعذر استئناف المؤقت", "تعذر حفظ الاستئناف؛ بقيت الجلسة متوقفة بالمدة المحفوظة.");
+        return;
+      }
       _startDisplayTick();
       _renderFocusTimer();
     }
@@ -8863,7 +8899,7 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
   discardBtn.textContent = 'تجاهل';
   discardBtn.onclick = function() {
     closeModal();
-    _resetAfterSession();
+    if (!_resetAfterSession()) return;
     onSwitch();
     renderFocusSessionsCard();
   };
@@ -8961,13 +8997,22 @@ function startTimerForTask(taskId) {
     _focusTimer.mode = 'pomodoro';
     _focusTimer.phase = 'work';
     _focusTimer.baseElapsed = 0;
-    _focusTimer.startedAt = Date.now();
-    _focusTimer.sessionStartAt = Date.now();
+    var previousSessionState = Object.assign({}, _focusTimer);
+    var now = Date.now();
+    _focusTimer.startedAt = now;
+    _focusTimer.sessionStartAt = now;
     _focusTimer.running = true;
-    _startDisplayTick();
+    _focusTimer.clockAdjusted = false;
+    _anchorFocusTimerClock(now);
     if (!_saveFocusTimer()) {
-      showToast('⚠️ تحذير: التخزين ممتلئ، الجلسة قد لا تُحفظ عند الإغلاق');
+      Object.assign(_focusTimer, previousSessionState);
+      _clearFocusTimerClock();
+      _stopDisplayTick();
+      _renderFocusTimer();
+      showAlertModal("تعذر بدء جلسة التركيز", "لم يُحفظ بدء الجلسة؛ أُعيدت الحالة السابقة ولم يبدأ العد.");
+      return;
     }
+    _startDisplayTick();
     _renderFocusTimer();
     _scrollToTimer();
   }
