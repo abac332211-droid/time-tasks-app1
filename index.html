@@ -3093,13 +3093,61 @@ function setDailyMental(field, value) {
 
 var MENTAL_INBOX_KEY = "timeTasksApp_mentalInbox";
 
+function _preserveCorruptStorageSnapshot(baseKey, raw) {
+  if (typeof baseKey !== "string" || typeof raw !== "string" || raw.length === 0) return false;
+  var prefix = baseKey + "_corrupt_";
+  try {
+    var existing = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (typeof key === "string" && key.indexOf(prefix) === 0) {
+        var existingRaw = localStorage.getItem(key);
+        if (existingRaw === raw) return true;
+        existing.push({ key: key, stamp: Number(key.slice(prefix.length)) || 0 });
+      }
+    }
+
+    var stamp = Date.now();
+    var snapshotKey = prefix + stamp;
+    var suffix = 0;
+    while (localStorage.getItem(snapshotKey) !== null) {
+      suffix++;
+      snapshotKey = prefix + stamp + "_" + suffix;
+    }
+    localStorage.setItem(snapshotKey, raw);
+    if (localStorage.getItem(snapshotKey) !== raw) {
+      console.error("Corrupt storage snapshot read-back mismatch:", baseKey);
+      return false;
+    }
+
+    // Retention is applied only after the new original bytes have been verified.
+    // Keep at most three copies; never remove the last known-good forensic copy
+    // before a replacement has been durably stored.
+    existing.push({ key: snapshotKey, stamp: stamp + suffix / 1000 });
+    existing.sort(function(a, b) { return a.stamp - b.stamp; });
+    while (existing.length > 3) {
+      var oldest = existing.shift();
+      if (existing.length === 0) break;
+      try { localStorage.removeItem(oldest.key); } catch (pruneError) {
+        console.warn("Could not prune old corruption snapshot:", oldest.key, pruneError);
+        break;
+      }
+    }
+    return true;
+  } catch (e) {
+    console.warn("Could not preserve corrupt storage snapshot:", baseKey, e);
+    return false;
+  }
+}
+
 function _loadMentalInbox() {
   try {
     var raw = _trackSecondaryStorageRead(MENTAL_INBOX_KEY, localStorage.getItem(MENTAL_INBOX_KEY));
     if (!raw) return [];
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) {
-      try { localStorage.setItem(MENTAL_INBOX_KEY + "_corrupt_" + Date.now(), raw); } catch (_backupErr) {}
+      _preserveCorruptStorageSnapshot(MENTAL_INBOX_KEY, raw);
+      storageRecoveryRequired = true;
       return [];
     }
     // FIX F6 (N1): مصالحة بدل فلترة — لا نحذف أي فكرة، بل نُصلح التالف ونضع _healed
@@ -3129,8 +3177,9 @@ function _loadMentalInbox() {
   } catch (e) {
     try {
       var _mCorrupt = localStorage.getItem(MENTAL_INBOX_KEY);
-      if (_mCorrupt) localStorage.setItem(MENTAL_INBOX_KEY + "_corrupt_" + Date.now(), _mCorrupt);
+      if (_mCorrupt) _preserveCorruptStorageSnapshot(MENTAL_INBOX_KEY, _mCorrupt);
     } catch (_me) {}
+    storageRecoveryRequired = true;
     return [];
   }
 }
@@ -9155,7 +9204,8 @@ function _loadThoughts() {
     if (!raw) return [];
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) {
-      try { localStorage.setItem(THOUGHTS_KEY + "_corrupt_" + Date.now(), raw); } catch (_backupErr) {}
+      _preserveCorruptStorageSnapshot(THOUGHTS_KEY, raw);
+      storageRecoveryRequired = true;
       return [];
     }
     // FIX F5 (N1): مصالحة بدل فلترة — لا نحذف أي خاطرة، بل نُصلح التالف ونضع _healed
@@ -9186,8 +9236,9 @@ function _loadThoughts() {
   } catch (e) {
     try {
       var _tCorrupt = localStorage.getItem(THOUGHTS_KEY);
-      if (_tCorrupt) localStorage.setItem(THOUGHTS_KEY + "_corrupt_" + Date.now(), _tCorrupt);
+      if (_tCorrupt) _preserveCorruptStorageSnapshot(THOUGHTS_KEY, _tCorrupt);
     } catch (_te) {}
+    storageRecoveryRequired = true;
     return [];
   }
 }
@@ -9356,7 +9407,8 @@ function _loadProjects() {
     if (!raw) { _projectsCache = []; return []; }
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) {
-      try { localStorage.setItem(PROJECTS_KEY + "_corrupt_" + Date.now(), raw); } catch (_backupErr) {}
+      _preserveCorruptStorageSnapshot(PROJECTS_KEY, raw);
+      storageRecoveryRequired = true;
       _projectsCache = [];
       return [];
     }
@@ -9389,8 +9441,9 @@ function _loadProjects() {
   } catch (e) {
     try {
       var _pCorrupt = localStorage.getItem(PROJECTS_KEY);
-      if (_pCorrupt) localStorage.setItem(PROJECTS_KEY + "_corrupt_" + Date.now(), _pCorrupt);
+      if (_pCorrupt) _preserveCorruptStorageSnapshot(PROJECTS_KEY, _pCorrupt);
     } catch (_pe) {}
+    storageRecoveryRequired = true;
     _projectsCache = [];
     return [];
   }
