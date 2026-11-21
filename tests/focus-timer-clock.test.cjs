@@ -161,6 +161,28 @@ test('B6: losing performance.now mid-session switches to fallback without losing
   assert.equal(h.sandbox._getElapsedSec(), 6);
 });
 
+test('B6 fallback preserves the last monotonic sample across a wall-clock correction', () => {
+  const backward = createClockHarness();
+  backward.clock.mono = 3_000;
+  backward.clock.wall += 3_000;
+  assert.equal(backward.sandbox._getElapsedSec(), 3);
+  backward.clock.performanceAvailable = false;
+  backward.clock.wall -= 30 * 60 * 1000;
+  assert.equal(backward.sandbox._getElapsedSec(), 3);
+  backward.clock.wall += 1_000;
+  assert.equal(backward.sandbox._getElapsedSec(), 4);
+
+  const forward = createClockHarness();
+  forward.clock.mono = 3_000;
+  forward.clock.wall += 3_000;
+  assert.equal(forward.sandbox._getElapsedSec(), 3);
+  forward.clock.performanceAvailable = false;
+  forward.clock.wall += 30 * 60 * 1000;
+  assert.equal(forward.sandbox._getElapsedSec(), 3);
+  forward.clock.wall += 1_000;
+  assert.equal(forward.sandbox._getElapsedSec(), 4);
+});
+
 test('throwing or non-finite performance.now safely uses the fallback clock', () => {
   const throwing = createClockHarness();
   throwing.clock.performanceThrows = true;
