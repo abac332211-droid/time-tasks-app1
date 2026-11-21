@@ -5825,117 +5825,270 @@ function undoLastImport() {
 
 /* ============ Test Data ============ */
 
-function injectTestData() {
+function _writeMainStorageRecordVerified(raw) {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
+  var previousRaw;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) { showAlertModal("خطأ", "لا توجد بيانات أساسية"); return; }
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.dailyLogs)) { showAlertModal("خطأ", "بنية غير صالحة"); return; }
+    previousRaw = localStorage.getItem(STORAGE_KEY);
+  } catch (readError) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  if (_mainStorageBaselineReady
+      && (_mainStorageExternalChangeObserved || previousRaw !== _mainStorageBaselineRaw)) {
+    return false;
+  }
+  var candidate;
+  try {
+    candidate = JSON.parse(raw);
+  } catch (parseError) {
+    return false;
+  }
+  if (!validateV2(candidate)) return false;
+  try {
+    localStorage.setItem(STORAGE_KEY, raw);
+  } catch (writeError) {
+    try {
+      var afterWriteFailure = localStorage.getItem(STORAGE_KEY);
+      if (afterWriteFailure !== previousRaw) storageRecoveryRequired = true;
+    } catch (verifyError) {
+      storageRecoveryRequired = true;
+    }
+    return false;
+  }
+  try {
+    var verifiedRaw = localStorage.getItem(STORAGE_KEY);
+    if (verifiedRaw !== raw || !validateV2(JSON.parse(verifiedRaw))) {
+      storageRecoveryRequired = true;
+      _mainStorageBaselineReady = false;
+      return false;
+    }
+    _setMainStorageBaseline(verifiedRaw);
+    return true;
+  } catch (verificationError) {
+    storageRecoveryRequired = true;
+    _mainStorageBaselineReady = false;
+    return false;
+  }
+}
 
-    showConfirmModal("زرع بيانات تجريبية", "سيتم إنشاء 3 أيام تجريبية. متابعة؟", function() {
-      localStorage.setItem(TEST_FLAG_KEY, "1");
-      const now = new Date();
-      const start = Number.isInteger(appSettings.operationalDayStart) ? appSettings.operationalDayStart : 4;
-      if (now.getHours() < start) now.setDate(now.getDate() - 1);
-      const _testDates = [];
-      for (let _i = 1; _i <= 3; _i++) {
-        const _td = new Date(now); _td.setDate(_td.getDate() - _i);
-        _testDates.push(_td.getFullYear() + "-" + String(_td.getMonth() + 1).padStart(2, "0") + "-" + String(_td.getDate()).padStart(2, "0"));
+function _writeTestMetadataVerified(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+    return localStorage.getItem(key) === value;
+  } catch (e) {
+    return false;
+  }
+}
+
+function _rollbackTestDataTransaction(previousMainRaw, previousFlagRaw, previousBackupRaw) {
+  var mainOk = previousMainRaw === null
+    ? (function() {
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+          if (localStorage.getItem(STORAGE_KEY) !== null) return false;
+          _setMainStorageBaseline(null);
+          return true;
+        } catch (e) { return false; }
+      })()
+    : _writeMainStorageRecordVerified(previousMainRaw);
+  var flagOk = _writeTestMetadataVerified(TEST_FLAG_KEY, previousFlagRaw);
+  var backupOk = _writeTestMetadataVerified(TEST_BACKUP_KEY, previousBackupRaw);
+  if (!mainOk || !flagOk || !backupOk) {
+    storageRecoveryRequired = true;
+    console.error("Test-data transaction rollback could not be fully verified.", {
+      mainOk: mainOk, flagOk: flagOk, backupOk: backupOk
+    });
+    return false;
+  }
+  return true;
+}
+
+/* ============ Test Data ============ */
+
+function injectTestData() {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
+    showAlertModal("الحفظ محمي", "توجد حالة تعارض أو استرداد معلّقة؛ لم تبدأ إضافة البيانات التجريبية.");
+    return;
+  }
+  var initialRaw, previousFlagRaw, previousBackupRaw;
+  try {
+    initialRaw = localStorage.getItem(STORAGE_KEY);
+    previousFlagRaw = localStorage.getItem(TEST_FLAG_KEY);
+    previousBackupRaw = localStorage.getItem(TEST_BACKUP_KEY);
+    if (!initialRaw) { showAlertModal("خطأ", "لا توجد بيانات أساسية"); return; }
+    if (previousFlagRaw === "1") { showAlertModal("بيانات تجريبية موجودة", "أزل البيانات التجريبية الحالية قبل إنشاء مجموعة جديدة."); return; }
+    var originalData = JSON.parse(initialRaw);
+    if (!validateV2(originalData)) { showAlertModal("خطأ", "بنية البيانات الأساسية غير صالحة؛ لم يتم الزرع."); return; }
+  } catch (e) {
+    showAlertModal("خطأ", "تعذرت قراءة البيانات الأساسية: " + e.message);
+    return;
+  }
+
+  showConfirmModal("زرع بيانات تجريبية", "سيتم إنشاء 3 أيام تجريبية. متابعة؟", function() {
+    var currentRaw;
+    try {
+      if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
+        showAlertModal("تعارض التخزين", "تغيرت البيانات أو ظهرت علامة حماية منذ فتح النافذة. لم يتم زرع البيانات.");
+        return;
       }
-      const _conflicting = data.dailyLogs.filter(function(l) {
-        return _testDates.indexOf(l.date) !== -1 && !l._test;
+      currentRaw = localStorage.getItem(STORAGE_KEY);
+      if (currentRaw !== initialRaw
+          || localStorage.getItem(TEST_FLAG_KEY) !== previousFlagRaw
+          || localStorage.getItem(TEST_BACKUP_KEY) !== previousBackupRaw) {
+        showAlertModal("تعارض التخزين", "تغيرت البيانات أثناء تأكيد العملية. أعد تحميل التطبيق ثم أعد المحاولة.");
+        return;
+      }
+
+      var data = JSON.parse(currentRaw);
+      if (!validateV2(data)) {
+        showAlertModal("خطأ", "البيانات غير صالحة — لم يتم الزرع.");
+        return;
+      }
+      var now = new Date();
+      var operationalStart = Number.isInteger(data.settings && data.settings.operationalDayStart)
+        ? data.settings.operationalDayStart : 4;
+      if (now.getHours() < operationalStart) now.setDate(now.getDate() - 1);
+      var testDates = [];
+      for (var i = 1; i <= 3; i++) {
+        var date = new Date(now);
+        date.setDate(date.getDate() - i);
+        testDates.push(date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0")
+          + "-" + String(date.getDate()).padStart(2, "0"));
+      }
+      var conflicting = data.dailyLogs.filter(function(log) {
+        return testDates.indexOf(log.date) !== -1 && !log._test;
       });
-      if (_conflicting.length > 0) {
-        try { localStorage.setItem(TEST_BACKUP_KEY, JSON.stringify(_conflicting)); } catch (e) {}
-      }
-      const testLogs = [];
-      const testTasks = [];
-      let nextTestId = getNextTaskId();
-      const cfgList = [
+      var testLogs = [], testTasks = [];
+      var maxTaskId = Number.isInteger(data.settings && data.settings.lastTaskId) ? data.settings.lastTaskId : 0;
+      data.tasks.forEach(function(task) { if (task && task.id > maxTaskId) maxTaskId = task.id; });
+      var nextTestId = maxTaskId + 1;
+      var cfgList = [
         { offset: 1, control: 4, execution: 4, wellbeing: 4, energy: "مرتفع", distractions: 1 },
         { offset: 2, control: 3, execution: 2, wellbeing: 3, energy: "متوسط", distractions: 5 },
         { offset: 3, control: 4, execution: 3, wellbeing: 4, energy: "متوسط", distractions: 2 }
       ];
       cfgList.forEach(function(cfg) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - cfg.offset);
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const day = String(d.getDate()).padStart(2, "0");
-        const dateStr = y + "-" + m + "-" + day;
-        data.dailyLogs = data.dailyLogs.filter(function(l) { return l.date !== dateStr; });
+        var date = new Date(now);
+        date.setDate(date.getDate() - cfg.offset);
+        var dateStr = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0")
+          + "-" + String(date.getDate()).padStart(2, "0");
+        data.dailyLogs = data.dailyLogs.filter(function(log) { return log.date !== dateStr; });
         testLogs.push({
-          date: dateStr,
-          control: cfg.control, execution: cfg.execution, wellbeing: cfg.wellbeing,
-          energy: cfg.energy, distractions: cfg.distractions,
-          bufferUsed: null, mentalTask: "", mentalNext: "",
-          createdAt: Date.now(), updatedAt: Date.now(), _test: true
+          date: dateStr, control: cfg.control, execution: cfg.execution, wellbeing: cfg.wellbeing,
+          energy: cfg.energy, distractions: cfg.distractions, bufferUsed: null,
+          mentalTask: "", mentalNext: "", createdAt: Date.now(), updatedAt: Date.now(), _test: true
         });
         testTasks.push({
-          id: nextTestId++,
-          name: "قراءة كتاب " + dateStr,
-          type: "معرفية", status: "done",
-          expected: 60, actual: 60 + (cfg.offset * 20),
-          plannedDate: dateStr, plannedTime: "",
-          completedAt: dateStr + "T20:00:00",
-          createdAt: Date.now(), _test: true
+          id: nextTestId++, name: "قراءة كتاب " + dateStr, type: "معرفية", status: "done",
+          expected: 60, actual: 60 + (cfg.offset * 20), plannedDate: dateStr, plannedTime: "",
+          completedAt: dateStr + "T20:00:00", createdAt: Date.now(), _test: true
         });
         testTasks.push({
-          id: nextTestId++,
-          name: "مراجعة البريد " + dateStr,
-          type: "إدارية", status: "done",
-          expected: 30, actual: 32,
-          plannedDate: dateStr, plannedTime: "",
-          completedAt: dateStr + "T21:00:00",
-          createdAt: Date.now(), _test: true
+          id: nextTestId++, name: "مراجعة البريد " + dateStr, type: "إدارية", status: "done",
+          expected: 30, actual: 32, plannedDate: dateStr, plannedTime: "",
+          completedAt: dateStr + "T21:00:00", createdAt: Date.now(), _test: true
         });
       });
       data.dailyLogs = data.dailyLogs.concat(testLogs);
-      data.tasks = (data.tasks || []).filter(function(t) { return !t._test; });
-      data.tasks = data.tasks.concat(testTasks);
+      data.tasks = data.tasks.filter(function(task) { return !task._test; }).concat(testTasks);
+      if (data.settings && typeof data.settings === "object") data.settings.lastTaskId = nextTestId - 1;
       if (!validateV2(data)) {
-        showAlertModal("خطأ", "البيانات غير صالحة — لم يتم الزرع.");
+        showAlertModal("خطأ", "البيانات التجريبية الناتجة غير صالحة — لم يتم الزرع.");
         return;
       }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      showToast("🌱 تم زرع البيانات");
-      setTimeout(function() { location.reload(); }, 600);
-    });
-  } catch (e) { showAlertModal("خطأ", "فشل الزرع: " + e.message); }
+
+      var metadataOk = _writeTestMetadataVerified(TEST_BACKUP_KEY, JSON.stringify(conflicting))
+        && _writeTestMetadataVerified(TEST_FLAG_KEY, "1");
+      if (!metadataOk) {
+        var metadataRollbackOk = _rollbackTestDataTransaction(currentRaw, previousFlagRaw, previousBackupRaw);
+        showAlertModal("فشل الزرع", metadataRollbackOk
+          ? "تعذر حفظ بيانات حماية الاختبار؛ أُعيدت المفاتيح السابقة."
+          : "تعذر حفظ بيانات الاختبار والتراجع الكامل؛ أوقفنا الكتابة لحماية بياناتك.");
+        return;
+      }
+      var nextRaw = JSON.stringify(data);
+      if (!_writeMainStorageRecordVerified(nextRaw)) {
+        var rollbackOk = _rollbackTestDataTransaction(currentRaw, previousFlagRaw, previousBackupRaw);
+        showAlertModal("فشل الزرع", rollbackOk
+          ? "تعذر التحقق من حفظ البيانات التجريبية؛ استُعيدت الحالة السابقة."
+          : "تعذر التحقق من الحفظ والتراجع؛ أوقفنا الكتابة لحماية بياناتك.");
+        return;
+      }
+      showToast("🌱 تم زرع البيانات التجريبية والتحقق من حفظها");
+      setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
+    } catch (e) {
+      showAlertModal("خطأ", "فشل الزرع: " + e.message);
+    }
+  });
 }
 
 function removeTestData() {
+  if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
+    showAlertModal("الحفظ محمي", "توجد حالة تعارض أو استرداد معلّقة؛ لم تُحذف البيانات التجريبية.");
+    return;
+  }
+  var previousMainRaw, previousFlagRaw, previousBackupRaw;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const data = JSON.parse(raw);
-    if (!data) return;
-    if (Array.isArray(data.dailyLogs)) {
-      data.dailyLogs = data.dailyLogs.filter(function(l) { return !l._test; });
-      try {
-        const _tb = localStorage.getItem(TEST_BACKUP_KEY);
-        if (_tb) {
-          const _saved = JSON.parse(_tb);
-          if (Array.isArray(_saved)) {
-            const savedDates = new Set(_saved.map(function(s) { return s.date; }));
-            data.dailyLogs = data.dailyLogs.filter(function(l) { return !savedDates.has(l.date); });
-            data.dailyLogs = data.dailyLogs.concat(_saved);
-          }
-          localStorage.removeItem(TEST_BACKUP_KEY);
-        }
-      } catch (e) {}
-    }
-    if (Array.isArray(data.tasks))
-      data.tasks = data.tasks.filter(function(t) { return !t._test; });
+    previousMainRaw = localStorage.getItem(STORAGE_KEY);
+    previousFlagRaw = localStorage.getItem(TEST_FLAG_KEY);
+    previousBackupRaw = localStorage.getItem(TEST_BACKUP_KEY);
+  } catch (e) {
+    showAlertModal("خطأ", "تعذرت قراءة حالة البيانات التجريبية.");
+    return;
+  }
+  if (!previousMainRaw) return;
+  if (previousFlagRaw !== "1") {
+    showToast("لا توجد بيانات تجريبية مسجلة للإزالة.");
+    return;
+  }
+
+  try {
+    var data = JSON.parse(previousMainRaw);
     if (!validateV2(data)) {
-      showAlertModal("خطأ", "البيانات غير صالحة — لم يتم الحذف.");
+      showAlertModal("خطأ", "البيانات الأساسية غير صالحة؛ لم يتم الحذف.");
       return;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    localStorage.removeItem(TEST_FLAG_KEY);
-    showToast("🗑️ تم إزالة البيانات التجريبية");
-    setTimeout(function() { location.reload(); }, 600);
-  } catch (e) { showAlertModal("خطأ", "فشل الحذف: " + e.message); }
+    var restoredLogs = [];
+    if (previousBackupRaw !== null) {
+      var savedLogs = JSON.parse(previousBackupRaw);
+      if (!Array.isArray(savedLogs) || !savedLogs.every(validateDailyLog)) {
+        showAlertModal("نسخة اختبار غير صالحة", "تعذر التحقق من السجلات الأصلية المحفوظة؛ لم نحذف البيانات التجريبية أو نسخة الحماية.");
+        return;
+      }
+      restoredLogs = savedLogs;
+    }
+    data.dailyLogs = data.dailyLogs.filter(function(log) { return !log._test; });
+    if (restoredLogs.length) {
+      var restoredDates = new Set(restoredLogs.map(function(log) { return log.date; }));
+      data.dailyLogs = data.dailyLogs.filter(function(log) { return !restoredDates.has(log.date); });
+      data.dailyLogs = data.dailyLogs.concat(restoredLogs);
+    }
+    data.tasks = data.tasks.filter(function(task) { return !task._test; });
+    if (!validateV2(data)) {
+      showAlertModal("خطأ", "البيانات الناتجة غير صالحة — لم يتم الحذف.");
+      return;
+    }
+    var nextRaw = JSON.stringify(data);
+    if (!_writeMainStorageRecordVerified(nextRaw)) {
+      showAlertModal("فشل الحذف", "لم نتمكن من تأكيد حفظ النسخة المنظفة؛ بقيت نسخة الحماية والعلامة كما هما.");
+      return;
+    }
+
+    var flagRemoved = _writeTestMetadataVerified(TEST_FLAG_KEY, null);
+    var backupRemoved = flagRemoved && _writeTestMetadataVerified(TEST_BACKUP_KEY, null);
+    if (!flagRemoved || !backupRemoved) {
+      storageRecoveryRequired = true;
+      showAlertModal("تم تنظيف البيانات مع بقاء علامة داخلية",
+        "حُفظت البيانات بعد إزالة العناصر التجريبية والتحقق منها، لكن تعذر تنظيف جميع مفاتيح الاختبار. احتفظنا بحاجز الكتابة حتى تُراجع الحالة.");
+      return;
+    }
+    showToast("🗑️ أُزيلت البيانات التجريبية والتحقق من الحفظ");
+    setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
+  } catch (e) {
+    showAlertModal("خطأ", "فشل الحذف: " + e.message);
+  }
 }
 
 /* ============ Rendering ============ */
