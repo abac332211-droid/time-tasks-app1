@@ -415,6 +415,9 @@ function restoreContext(storage) {
   const context = {
     localStorage: storage,
     STORAGE_KEY: STORAGE_KEYS.MAIN,
+    FOCUS_SESSIONS_KEY: STORAGE_KEYS.FOCUS_SESSIONS,
+    FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
+    MENTAL_INBOX_KEY: STORAGE_KEYS.MENTAL_INBOX,
     THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
     PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
     FOCUS_SETTINGS_KEY: STORAGE_KEYS.FOCUS_SETTINGS,
@@ -477,6 +480,31 @@ test('rollback reports failure when focus-timer storage write or read-back fails
     readHarness.context
   );
   assert.equal(restoreAfterReadbackFailure(snapshot), false);
+});
+
+test('failed snapshot restore compensates already-written keys to the pre-call state', () => {
+  const before = {
+    [STORAGE_KEYS.MAIN]: 'current-main',
+    [STORAGE_KEYS.FOCUS_SESSIONS]: 'current-sessions',
+    [STORAGE_KEYS.FOCUS_TIMER]: 'current-timer',
+    [STORAGE_KEYS.MENTAL_INBOX]: 'current-inbox',
+    [STORAGE_KEYS.THOUGHTS]: 'current-thoughts',
+    [STORAGE_KEYS.PROJECTS]: 'current-projects',
+    [STORAGE_KEYS.FOCUS_SETTINGS]: 'current-settings',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'current-notifications'
+  };
+  const faults = { failSetOnceKey: STORAGE_KEYS.FOCUS_TIMER, didFailSetOnce: false };
+  const storage = memoryStorage(before, faults);
+  const harness = restoreContext(storage);
+  const restore = vm.runInNewContext(
+    '(' + extractTopLevelSource('_restoreStorageSnapshot') + ')',
+    harness.context
+  );
+
+  assert.equal(restore(storageSnapshot('previous')), false);
+  for (const [key, value] of Object.entries(before)) {
+    assert.equal(storage.getItem(key), value, 'pre-call value restored for ' + key);
+  }
 });
 
 test('interrupted import recovery restores the previous timer and clears both markers', () => {
@@ -964,7 +992,9 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
   let reloads = 0;
   const sandbox = {
     STORAGE_KEY: STORAGE_KEYS.MAIN,
+    FOCUS_SESSIONS_KEY: STORAGE_KEYS.FOCUS_SESSIONS,
     FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
+    MENTAL_INBOX_KEY: STORAGE_KEYS.MENTAL_INBOX,
     IMPORT_IN_PROGRESS_KEY: STORAGE_KEYS.IMPORT_IN_PROGRESS,
     PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
     THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
@@ -1087,6 +1117,25 @@ test('backup validator rejects duplicate mental-inbox identifiers', () => {
   }));
   assert.equal(result.valid, false);
   assert.match(result.reason, /معرّف فكرة مكرر/);
+});
+
+test('backup validator checks convertedTaskId type but preserves deleted-task history', () => {
+  const validate = vm.runInNewContext(
+    '(' + extractTopLevelSource('validateBackup') + ')',
+    backupValidationContext()
+  );
+  const historicalReference = validate(integrationBackup({
+    tasks: [], dailyLogs: [],
+    mentalInbox: [{ id: 1, text: 'فكرة محوّلة', createdAt: 'legacy', convertedTaskId: 987654 }]
+  }));
+  assert.equal(historicalReference.valid, true, 'a deleted task may remain as historical archive metadata');
+
+  const malformedReference = validate(integrationBackup({
+    tasks: [], dailyLogs: [],
+    mentalInbox: [{ id: 1, text: 'فكرة', createdAt: 'legacy', convertedTaskId: 'not-an-id' }]
+  }));
+  assert.equal(malformedReference.valid, false);
+  assert.match(malformedReference.reason, /مرجع المهمة المحوّلة غير صالح/);
 });
 
 test('backup validator rejects dangling task project references only when a projects collection is supplied', () => {
