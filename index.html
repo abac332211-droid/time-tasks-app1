@@ -7972,16 +7972,23 @@ function _showStopwatchSaveDialog(elapsedSec) {
 function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
   var _alreadyLogged = _sessionAlreadyLogged('work', elapsedSec);
   var _oldActual = task.actual;
-  if (!_alreadyLogged && minutesToAdd > 0) task.actual = (task.actual || 0) + minutesToAdd;
-  if (!_alreadyLogged && !saveData()) {
+  var _mainUpdateNeeded = !_alreadyLogged && minutesToAdd > 0;
+  var _checkpointHold = _mainUpdateNeeded
+    && typeof _rollingRecoveryCheckpointHold !== "undefined";
+  if (_checkpointHold) _rollingRecoveryCheckpointHold++;
+  if (_mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
+  if (_mainUpdateNeeded && !saveData()) {
+    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
     task.actual = _oldActual;
     showToast('⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة والوقت محفوظاً للمحاولة مجدداً');
     return;
   }
   var _logged = _logSession('work', elapsedSec, true);
   if (!_logged) {
+    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
     task.actual = _oldActual;
-    var rollbackOk = saveData();
+    var rollbackOk = !_mainUpdateNeeded || saveData();
+    if (!rollbackOk) storageRecoveryRequired = true;
     _renderFocusTimer();
     if (rollbackOk) {
       showAlertModal('فشل تسجيل الجلسة', 'تعذر تسجيل جلسة التركيز، لذلك تراجعنا عن إضافة المدة الفعلية. بقي الوقت محفوظاً ومتوقفاً؛ أعد المحاولة بعد التحقق من التخزين.');
@@ -7989,6 +7996,16 @@ function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
       showAlertModal('فشل التسجيل والتراجع', 'تعذر تسجيل الجلسة وتعذر حفظ التراجع عن المدة الفعلية. قد تكون البيانات غير متسقة؛ صدّر نسخة احتياطية فوراً.');
     }
     return;
+  }
+  if (_checkpointHold) {
+    _rollingRecoveryCheckpointHold--;
+    if (typeof _storeRollingRecoveryBackup === "function"
+        && !_storeRollingRecoveryBackup("focus-session-commit", 0)) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر تأمين جلسة التركيز",
+        "حُفظت المدة والجلسة، لكن تعذر تحديث نسخة الاسترداد للحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات حتى تُراجع النسخة الداخلية.");
+      return;
+    }
   }
   if (!_resetAfterSession()) {
     showToast('⚠️ سُجّلت الجلسة، لكن تعذر حفظ تصفير المؤقت. لا تُعد تسجيلها؛ أعد التحميل ثم تحقق من سجل الجلسات.');
@@ -8124,8 +8141,13 @@ function _applyTimerFinish(elapsedSec, task, minutesToAdd, capturedPhase) {
   var _phase = (typeof capturedPhase === 'string' && capturedPhase) ? capturedPhase : _focusTimer.phase;
   var _alreadyLogged = _sessionAlreadyLogged(_phase, elapsedSec);
   var _oldActual = task.actual;
-  if (!_alreadyLogged && minutesToAdd > 0) task.actual = (task.actual || 0) + minutesToAdd;
-  if (!_alreadyLogged && !saveData()) {
+  var _mainUpdateNeeded = !_alreadyLogged && minutesToAdd > 0;
+  var _checkpointHold = _mainUpdateNeeded
+    && typeof _rollingRecoveryCheckpointHold !== "undefined";
+  if (_checkpointHold) _rollingRecoveryCheckpointHold++;
+  if (_mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
+  if (_mainUpdateNeeded && !saveData()) {
+    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
     task.actual = _oldActual;
     showToast('⚠️ تعذر الحفظ — لم تُضف. المؤقت يستمر');
     return;
@@ -8133,8 +8155,10 @@ function _applyTimerFinish(elapsedSec, task, minutesToAdd, capturedPhase) {
   var _logged = _logSession(_phase, elapsedSec, true);
   // FIX TI4 (E2): عند فشل التسجيل، rollback task.actual لمنع عدم الاتساق مع سجل الجلسات
   if (!_logged) {
+    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
     task.actual = _oldActual;
-    var _rbOk = saveData();
+    var _rbOk = !_mainUpdateNeeded || saveData();
+    if (!_rbOk) storageRecoveryRequired = true;
     _renderFocusTimer();
     renderAll();
     if (_rbOk) {
@@ -8152,6 +8176,16 @@ function _applyTimerFinish(elapsedSec, task, minutesToAdd, capturedPhase) {
       );
     }
     return;
+  }
+  if (_checkpointHold) {
+    _rollingRecoveryCheckpointHold--;
+    if (typeof _storeRollingRecoveryBackup === "function"
+        && !_storeRollingRecoveryBackup("focus-session-commit", 0)) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر تأمين جلسة التركيز",
+        "حُفظت المدة والجلسة، لكن تعذر تحديث نسخة الاسترداد للحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات حتى تُراجع النسخة الداخلية.");
+      return;
+    }
   }
   if (!_resetAfterSession()) {
     showToast('⚠️ سُجّلت الجلسة، لكن تعذر حفظ تصفير المؤقت. لا تُعد تسجيلها؛ أعد التحميل ثم تحقق من سجل الجلسات.');
@@ -8270,14 +8304,18 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
     closeModal();
     var _oldActual = currentTask ? currentTask.actual : null;
     var _actualWasIncremented = false;
+    var _transitionCheckpointHold = false;
     if (currentTask && elapsed >= 60
         && (modeSnapshot === 'stopwatch' || phaseSnapshot === 'work')) {
       var minutes = Math.max(1, Math.round(elapsed / 60));
       var _alreadyLoggedTransition = _sessionAlreadyLogged(phaseSnapshot, elapsed);
       if (!_alreadyLoggedTransition) {
+        _transitionCheckpointHold = typeof _rollingRecoveryCheckpointHold !== "undefined";
+        if (_transitionCheckpointHold) _rollingRecoveryCheckpointHold++;
         currentTask.actual = (_oldActual || 0) + minutes;
         _actualWasIncremented = true;
         if (!saveData()) {
+          if (_transitionCheckpointHold) _rollingRecoveryCheckpointHold--;
           currentTask.actual = _oldActual;
           showToast('⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة ولم يتم الانتقال');
           return;
@@ -8287,10 +8325,12 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
 
     var _logged = elapsed < 60 || _logSession(phaseSnapshot, elapsed, true);
     if (!_logged) {
+      if (_transitionCheckpointHold) _rollingRecoveryCheckpointHold--;
       var _rollbackOk = true;
       if (_actualWasIncremented && currentTask) {
         currentTask.actual = _oldActual;
         _rollbackOk = saveData();
+        if (!_rollbackOk) storageRecoveryRequired = true;
       }
       renderAll();
       _renderFocusTimer();
@@ -8303,6 +8343,17 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
         showAlertModal("فشل تسجيل الجلسة والتراجع", "فشل تسجيل الجلسة وتعذر حفظ التراجع عن المدة الفعلية. قد تكون البيانات غير متسقة؛ صدّر نسخة احتياطية فوراً، ولا تُعد تسجيل المدة قبل مراجعة سجل الجلسات.");
       }
       return;
+    }
+
+    if (_transitionCheckpointHold) {
+      _rollingRecoveryCheckpointHold--;
+      if (typeof _storeRollingRecoveryBackup === "function"
+          && !_storeRollingRecoveryBackup("focus-session-transition-commit", 0)) {
+        storageRecoveryRequired = true;
+        showAlertModal("تعذر تأمين جلسة التركيز",
+          "حُفظت المهمة والجلسة، لكن تعذر تحديث نسخة الاسترداد للحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات قبل الانتقال.");
+        return;
+      }
     }
 
     if (!_resetAfterSession()) {
