@@ -2260,16 +2260,34 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       return true;
     }
 
-    var data = {
-      main: localStorage.getItem(STORAGE_KEY),
-      focusSessions: localStorage.getItem(FOCUS_SESSIONS_KEY),
-      focusTimer: localStorage.getItem(FOCUS_TIMER_KEY),
-      mentalInbox: localStorage.getItem(MENTAL_INBOX_KEY),
-      thoughts: localStorage.getItem(THOUGHTS_KEY),
-      projects: localStorage.getItem(PROJECTS_KEY),
-      focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
-      notifications: localStorage.getItem(NOTIFICATIONS_KEY)
-    };
+    var snapshotKeys = [
+      ["main", STORAGE_KEY],
+      ["focusSessions", FOCUS_SESSIONS_KEY],
+      ["focusTimer", FOCUS_TIMER_KEY],
+      ["mentalInbox", MENTAL_INBOX_KEY],
+      ["thoughts", THOUGHTS_KEY],
+      ["projects", PROJECTS_KEY],
+      ["focusSettings", FOCUS_SETTINGS_KEY],
+      ["notifications", NOTIFICATIONS_KEY]
+    ];
+    function readSnapshot() {
+      var snapshot = {};
+      for (var si = 0; si < snapshotKeys.length; si++) {
+        snapshot[snapshotKeys[si][0]] = localStorage.getItem(snapshotKeys[si][1]);
+      }
+      return snapshot;
+    }
+
+    // LocalStorage has no multi-key transaction. Read the full state twice and
+    // refuse to checkpoint a mixed snapshot if another tab changes any group
+    // while this snapshot is being assembled.
+    var data = readSnapshot();
+    var confirmationSnapshot = readSnapshot();
+    for (var verifyIndex = 0; verifyIndex < snapshotKeys.length; verifyIndex++) {
+      var property = snapshotKeys[verifyIndex][0];
+      if (data[property] !== confirmationSnapshot[property]) return false;
+    }
+
     var candidate = {
       formatVersion: 1,
       sequence: latest ? latest.record.sequence + 1 : 1,
