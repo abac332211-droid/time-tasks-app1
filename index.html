@@ -2515,7 +2515,8 @@ function saveData() {
     localStorage.setItem(STORAGE_KEY, serializedV2);
     _setMainStorageBaseline(serializedV2);
     _queueAllTaskReminderSync();
-    if (!_storeRollingRecoveryBackup("main-save", 0)) {
+    if (typeof _storeRollingRecoveryBackup === "function"
+        && !_storeRollingRecoveryBackup("main-save", 0)) {
       console.warn("Main data saved, but the rolling recovery checkpoint could not be refreshed.");
     }
     return true;
@@ -2845,7 +2846,7 @@ function _loadMentalInbox() {
 function _saveMentalInbox(arr) {
   try {
     localStorage.setItem(MENTAL_INBOX_KEY, JSON.stringify(arr));
-    _storeRollingRecoveryBackup("mental-inbox-save", 0);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("mental-inbox-save", 0);
     return true;
   } catch (e) {
     return false;
@@ -6518,7 +6519,7 @@ function _loadFocusSettings() {
 function _saveFocusSettings(w, s, l) {
   try {
     localStorage.setItem(FOCUS_SETTINGS_KEY, JSON.stringify({ workMin: w, shortMin: s, longMin: l }));
-    _storeRollingRecoveryBackup("focus-settings-save", 0);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-settings-save", 0);
     return true;
   } catch (e) { return false; }
 }
@@ -6627,7 +6628,7 @@ function _saveFocusTimer() {
       savedAt: now
     }));
     _focusTimerCheckpointAt = running ? now : 0;
-    _storeRollingRecoveryBackup("focus-timer-checkpoint", 60 * 1000);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-timer-checkpoint", 60 * 1000);
     return true;
   } catch (e) {
     return false;
@@ -6794,7 +6795,7 @@ function _getNotificationsPref() {
 function _setNotificationsPref(enabled) {
   try {
     localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify({ enabled: !!enabled }));
-    _storeRollingRecoveryBackup("notifications-save", 0);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("notifications-save", 0);
     return true;
   } catch (e) { return false; }
 }
@@ -7379,7 +7380,7 @@ function _saveSessions(arr) {
     if (arr.length > FOCUS_MAX_SESSIONS) arr = arr.slice(-FOCUS_MAX_SESSIONS);
     localStorage.setItem(FOCUS_SESSIONS_KEY, JSON.stringify(arr));
     _sessionsCache = arr.slice();
-    _storeRollingRecoveryBackup("focus-session-save", 0);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-session-save", 0);
     return true;
   } catch (e) {
     return false;
@@ -8333,7 +8334,7 @@ function _loadThoughts() {
 function _saveThoughts(arr) {
   try {
     localStorage.setItem(THOUGHTS_KEY, JSON.stringify(arr));
-    _storeRollingRecoveryBackup("thoughts-save", 0);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("thoughts-save", 0);
     return true;
   } catch (e) { return false; }
 }
@@ -8537,7 +8538,7 @@ function _saveProjects(arr) {
   try {
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(arr));
     _invalidateProjectsCache();
-    _storeRollingRecoveryBackup("projects-save", 0);
+    if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("projects-save", 0);
     return true;
   } catch (e) {
     _invalidateProjectsCache();
@@ -8860,7 +8861,9 @@ if (_focusTimer.running) _startDisplayTick();
 
 _queueAllTaskReminderSync();
 _updateNotifToggleUI();
-if (!storageRecoveryRequired) _storeRollingRecoveryBackup("startup", 60 * 1000);
+if (!storageRecoveryRequired && typeof _storeRollingRecoveryBackup === "function") {
+  _storeRollingRecoveryBackup("startup", 60 * 1000);
+}
 
 // FIX F1: عرض التوست المؤجل بعد reload المستحث بالاستيراد أو التراجع
 try {
