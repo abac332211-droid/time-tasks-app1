@@ -5402,14 +5402,21 @@ function _validateFocusSessionRecord(session) {
   return true;
 }
 
-function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, taskIds) {
+function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, taskIds, elapsedRemainderMs, anchorRemainderMs) {
   if (!timer || typeof timer !== "object" || Array.isArray(timer)) return null;
 
+  var capturedRemainder = Number.isInteger(elapsedRemainderMs)
+      && elapsedRemainderMs >= 0 && elapsedRemainderMs < 1000
+    ? elapsedRemainderMs : 0;
+  var anchorRemainder = Number.isInteger(anchorRemainderMs)
+      && anchorRemainderMs >= 0 && anchorRemainderMs < 1000
+    ? anchorRemainderMs : 0;
   var snapshot = {
     mode: timer.mode,
     phase: timer.phase,
     running: timer.running === true,
     baseElapsed: timer.baseElapsed,
+    elapsedRemainderMs: capturedRemainder,
     startedAt: timer.startedAt,
     cyclePosition: timer.cyclePosition,
     taskId: timer.taskId,
@@ -5429,12 +5436,14 @@ function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, 
         && elapsed >= phaseTargetSec && !snapshot.awaitingConfirmation) {
       var segmentStart = Number.isFinite(snapshot.startedAt) ? snapshot.startedAt : capturedAt;
       var previousElapsed = Number.isFinite(snapshot.baseElapsed) ? snapshot.baseElapsed : 0;
-      snapshot.pendingPhaseEndedAt = segmentStart
-        + Math.max(0, phaseTargetSec - previousElapsed) * 1000;
+      var remainingMs = Math.max(0, (phaseTargetSec - previousElapsed) * 1000 - anchorRemainder);
+      snapshot.pendingPhaseEndedAt = segmentStart + remainingMs;
       snapshot.baseElapsed = phaseTargetSec;
+      snapshot.elapsedRemainderMs = 0;
       snapshot.awaitingConfirmation = true;
     } else {
       snapshot.baseElapsed = elapsed;
+      snapshot.elapsedRemainderMs = capturedRemainder;
       if (!snapshot.awaitingConfirmation) snapshot.pendingPhaseEndedAt = null;
     }
     snapshot.running = false;
@@ -5463,6 +5472,10 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
     return { valid: false, reason: "يجب أن تكون حالة المؤقت في النسخة الاحتياطية متوقفة مؤقتًا." };
   if (!Number.isInteger(timer.baseElapsed) || timer.baseElapsed < 0)
     return { valid: false, reason: "الوقت المحفوظ في المؤقت غير صالح." };
+  if (timer.elapsedRemainderMs !== undefined
+      && (!Number.isInteger(timer.elapsedRemainderMs)
+        || timer.elapsedRemainderMs < 0 || timer.elapsedRemainderMs >= 1000))
+    return { valid: false, reason: "جزء الثانية المحفوظ في المؤقت غير صالح." };
   if (!Number.isInteger(timer.cyclePosition) || timer.cyclePosition < 0 || timer.cyclePosition > 3)
     return { valid: false, reason: "موضع دورة المؤقت غير صالح." };
   if (timer.taskId !== null && (!Number.isInteger(timer.taskId) || timer.taskId <= 0
@@ -5512,6 +5525,7 @@ function buildBackupObject() {
     return parsed;
   }
 
+  const focusTimerElapsedParts = _getFocusTimerElapsedParts();
   const backup = {
     backupFormatVersion: BACKUP_FORMAT_VERSION,
     exportedAt: localDateTimeString(),
@@ -5525,9 +5539,11 @@ function buildBackupObject() {
       focusTimer: _buildFocusTimerBackupSnapshot(
         _focusTimer,
         Date.now(),
-        _getElapsedSec(),
+        focusTimerElapsedParts.seconds,
         _phaseTargetSec(),
-        new Set(data.tasks.map(function(task) { return task && task.id; }))
+        new Set(data.tasks.map(function(task) { return task && task.id; })),
+        focusTimerElapsedParts.remainderMs,
+        _focusElapsedRemainderMs
       ),
       mentalInbox: readStoredArray(MENTAL_INBOX_KEY, "العقل المفتوح"),
       thoughts: readStoredArray(THOUGHTS_KEY, "الخواطر"),
