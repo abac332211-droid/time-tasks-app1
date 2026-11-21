@@ -1953,17 +1953,25 @@ function saveData() {
     if (!appSettings.firstUseDate) appSettings.firstUseDate = todayStr();
 
     _pruneLastRecurringDates();
+    // Preserve forward-compatible settings fields while refreshing known fields
+    // from the normalized in-memory settings. Exclude prototype-sensitive keys.
+    const persistedSettings = {};
+    Object.keys(appSettings).forEach(function(key) {
+      if (key === "__proto__" || key === "constructor" || key === "prototype") return;
+      persistedSettings[key] = appSettings[key];
+    });
+    Object.assign(persistedSettings, {
+      operationalDayStart: Number.isInteger(appSettings.operationalDayStart) ? appSettings.operationalDayStart : 4,
+      firstUseDate: appSettings.firstUseDate || todayStr(),
+      darkMode: appSettings.darkMode || false,
+      themeMode: ["system", "light", "dark"].includes(appSettings.themeMode) ? appSettings.themeMode : (appSettings.darkMode ? "dark" : "light"),
+      lastTaskId: (Number.isInteger(appSettings.lastTaskId) && appSettings.lastTaskId > 0) ? appSettings.lastTaskId : 0,
+      lastRecurringDates: appSettings.lastRecurringDates || {}
+    });
     const v2 = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       createdByVersion: createdVer,
-      settings: {
-        operationalDayStart: Number.isInteger(appSettings.operationalDayStart) ? appSettings.operationalDayStart : 4,
-        firstUseDate: appSettings.firstUseDate || todayStr(),
-        darkMode: appSettings.darkMode || false,
-        themeMode: ["system", "light", "dark"].includes(appSettings.themeMode) ? appSettings.themeMode : (appSettings.darkMode ? "dark" : "light"),
-        lastTaskId: (Number.isInteger(appSettings.lastTaskId) && appSettings.lastTaskId > 0) ? appSettings.lastTaskId : 0,
-        lastRecurringDates: appSettings.lastRecurringDates || {}
-      },
+      settings: persistedSettings,
       tasks: tasks,
       dailyLogs: existing.dailyLogs || []
     };
