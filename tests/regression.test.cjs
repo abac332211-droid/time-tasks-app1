@@ -322,13 +322,6 @@ test('recurring task refresh uses an app-lifetime interval independent of the fo
   assert.equal(generated, 1, 'hidden tabs do not run recurring generation');
 });
 
-test('SOS and shutdown modals replace the previous shared key handler', () => {
-  for (const name of ['openSOSModal', 'openShutdownModal']) {
-    const body = extractFunction(name);
-    assert.match(body, /if \\(_modalKeyHandler\\) \\{ document\\.removeEventListener\\(['"]keydown['"], _modalKeyHandler\\); \\}/);
-  }
-});
-
 test('recurring date pruning preserves valid historical dates and removes invalid values', () => {
   const sandbox = {
     appSettings: { lastRecurringDates: { 'series:1': '2026-10-01', 'series:2': '2026-11-04', 'series:3': 'yesterday', constructor: '2026-10-01' } },
@@ -2592,7 +2585,10 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  vm.runInNewContext(
+    extractFunction('_validateLastRecurringDates') + '\\n' + extractFunction('validateV2'),
+    sandbox
+  );
   const makeData = (lastRecurringDates) => ({
     schemaVersion: 2,
     settings: { lastRecurringDates },
@@ -2604,6 +2600,12 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
   assert.equal(sandbox.validateV2(makeData('not-an-object')), false);
   assert.equal(sandbox.validateV2(makeData([])), false);
   assert.equal(sandbox.validateV2(makeData({ 'series:1': '2026-02-31' })), false);
+  assert.equal(sandbox.validateV2(makeData(JSON.parse('{"constructor":"2026-11-21"}'))), false);
+  assert.equal(sandbox.validateV2(makeData(JSON.parse('{"__proto__":"2026-11-21"}'))), false);
+  const tooManyRecurringDates = {};
+  for (let i = 0; i < 501; i++) tooManyRecurringDates['series:' + i] = '2026-11-21';
+  assert.equal(sandbox.validateV2(makeData(tooManyRecurringDates)), false);
+  assert.match(extractFunction('validateBackup'), /_validateLastRecurringDates\\(/);
 });
 
 test('all reviewed modal openers remove the previous shared keydown handler before registering', () => {
