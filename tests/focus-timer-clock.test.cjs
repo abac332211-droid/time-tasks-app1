@@ -176,6 +176,7 @@ test('throwing or non-finite performance.now safely uses the fallback clock', ()
 test('a regressing monotonic clock is flagged and does not make elapsed time negative', () => {
   const h = createClockHarness();
   h.clock.mono = 4_000;
+  h.clock.wall += 4_000;
   assert.equal(h.sandbox._getElapsedSec(), 4);
 
   h.clock.mono = 3_000;
@@ -259,4 +260,44 @@ test('checkpoint stores a bounded millisecond remainder for cold-start restorati
   assert.equal(persisted.baseElapsed, 7);
   assert.equal(persisted.elapsedRemainderMs, 650);
   assert.ok(persisted.elapsedRemainderMs >= 0 && persisted.elapsedRemainderMs < 1000);
+});
+
+
+test('cold start restores the durable millisecond remainder and resumes without losing it', () => {
+  const h = createClockHarness();
+  const stored = {
+    mode: 'pomodoro',
+    phase: 'work',
+    running: true,
+    baseElapsed: 7,
+    elapsedRemainderMs: 650,
+    startedAt: h.clock.wall - 7_650,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: h.clock.wall - 7_650,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false,
+    savedAt: h.clock.wall
+  };
+
+  h.sandbox.localStorage = { getItem: () => JSON.stringify(stored) };
+  h.sandbox._trackSecondaryStorageRead = (_key, raw) => raw;
+  h.sandbox._focusTimerColdStartWasRunning = false;
+  h.sandbox._focusTimerSavedAtAtLoad = null;
+  h.sandbox.tasks = [];
+  h.sandbox._phaseTargetSec = () => 1_500;
+  vm.runInNewContext(extractFunction('_loadFocusTimer'), h.sandbox);
+  h.sandbox._loadFocusTimer();
+
+  assert.equal(h.timer.running, false, 'cold start must remain paused');
+  assert.equal(h.timer.baseElapsed, 7);
+  assert.equal(h.sandbox._focusElapsedRemainderMs, 650);
+
+  h.timer.startedAt = h.clock.wall;
+  h.timer.running = true;
+  h.sandbox._anchorFocusTimerClock(h.clock.wall);
+  h.clock.mono += 350;
+  h.clock.wall += 350;
+  assert.equal(h.sandbox._getElapsedSec(), 8);
 });
