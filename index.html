@@ -1237,20 +1237,32 @@ function stopRecurringSeries(taskId) {
     showToast("ℹ️ سلسلة التكرار متوقفة بالفعل أو غير موجودة");
     return false;
   }
-  var members = tasks.filter(function(task) { return resolveRoot(task) === root; });
-  var previous = members.map(function(task) { return { task: task, recurrence: task.recurrence }; });
-  members.forEach(function(entry) { entry.recurrence = null; });
-  if (!saveData()) {
-    previous.forEach(function(entry) { entry.task.recurrence = entry.recurrence; });
-    showToast("⚠️ تعذر إيقاف سلسلة التكرار — لم يُحفظ التغيير");
-    return false;
-  }
-  if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
-  renderAll();
-  showToast("⛔ أُوقفت سلسلة التكرار بالكامل؛ لم تُحذف المهام السابقة");
+
+  showConfirmModal(
+    "⛔ إيقاف سلسلة التكرار",
+    "سيوقف هذا الإجراء إنشاء المهام المستقبلية لهذه السلسلة بالكامل، بما فيها النسخ المرتبطة. لن تُحذف المهام السابقة أو سجلاتها. لإلغاء موعد واحد فقط، استخدم حالة «ملغاة» بدلاً من هذا الخيار. هل تريد إيقاف السلسلة؟",
+    function() {
+      var currentSelected = tasks.find(function(task) { return task && task.id === taskId; });
+      var currentRoot = currentSelected ? resolveRoot(currentSelected) : null;
+      if (!currentRoot || !currentRoot.recurrence) {
+        showToast("ℹ️ سلسلة التكرار متوقفة بالفعل أو لم تعد موجودة");
+        return;
+      }
+      var members = tasks.filter(function(task) { return resolveRoot(task) === currentRoot; });
+      var previous = members.map(function(task) { return { task: task, recurrence: task.recurrence }; });
+      members.forEach(function(task) { task.recurrence = null; });
+      if (!saveData()) {
+        previous.forEach(function(entry) { entry.task.recurrence = entry.recurrence; });
+        showToast("⚠️ تعذر إيقاف سلسلة التكرار — لم يُحفظ التغيير");
+        return;
+      }
+      if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
+      renderAll();
+      showToast("⛔ أُوقفت سلسلة التكرار بالكامل؛ لم تُحذف المهام السابقة");
+    }
+  );
   return true;
 }
-
 function _shouldGenerateToday(template, todayStrVal) {
   var rec = template.recurrence;
   if (!rec) return false;
@@ -2000,6 +2012,19 @@ function saveData() {
     showAlertModal("تنبيه الحفظ", "البيانات القديمة لم تُرحَّل بعد. استعدها من نسخة احتياطية، أو احذف كل البيانات من الإعدادات.");
     return false;
   }
+  if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") {
+    try {
+      if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY)) {
+        storageRecoveryRequired = true;
+        showAlertModal("الاستعادة لم تكتمل", "توجد عملية استعادة أو تراجع لم تُغلق بعد. أوقفنا الحفظ حتى يستعيد التطبيق الحالة السابقة ويتحقق منها عند إعادة الفتح.");
+        return false;
+      }
+    } catch (markerReadError) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر التحقق من حالة الاستعادة", "تعذر قراءة علامة الاسترداد؛ أوقف التطبيق الحفظ حمايةً من الكتابة فوق حالة غير محسومة.");
+      return false;
+    }
+  }
   try {
     let raw;
     try {
@@ -2203,6 +2228,11 @@ function persistDailyLog(log) {
     return;
   }
   try {
+    if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined" && localStorage.getItem(IMPORT_IN_PROGRESS_KEY)) {
+      storageRecoveryRequired = true;
+      showToast("⚠️ توجد استعادة غير مكتملة؛ أوقفنا حفظ سجل اليوم");
+      return;
+    }
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     if (_mainStorageBaselineReady
@@ -4355,6 +4385,9 @@ function _restoreStorageSnapshot(rb) {
     [NOTIFICATIONS_KEY, rb.notifications]
   ];
   var before = [];
+  function markRecoveryRequired() {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+  }
   function writeAndVerify(key, value) {
     if (value === null || value === undefined) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -4370,6 +4403,7 @@ function _restoreStorageSnapshot(rb) {
       before.push([entries[r][0], localStorage.getItem(entries[r][0])]);
     }
   } catch (readError) {
+    markRecoveryRequired();
     return false;
   }
   try {
@@ -4378,6 +4412,7 @@ function _restoreStorageSnapshot(rb) {
     }
     _invalidateProjectsCache();
     if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(rb.main === undefined ? null : rb.main);
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = false;
     return true;
   } catch (restoreError) {
     // Compensate to the exact pre-call state. If compensation also fails, the
@@ -4395,6 +4430,7 @@ function _restoreStorageSnapshot(rb) {
     if (compensationVerified && typeof _setMainStorageBaseline === "function") {
       _setMainStorageBaseline(before[0][1]);
     }
+    markRecoveryRequired();
     return false;
   }
 }
