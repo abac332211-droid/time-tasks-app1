@@ -522,6 +522,7 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
     <label for="taskProject" class="field-label">🎯 المشروع <span class="optional-hint">(اختياري)</span></label>
     <select id="taskProject" aria-label="المشروع"></select>
     <button class="btn-primary" id="taskSaveBtn" onclick="saveTask()">إضافة المهمة</button>
+    <button type="button" class="btn-ghost hidden" id="taskCancelOccurrenceBtn" onclick="cancelRecurringOccurrence(editingId)" style="width:100%;margin-top:6px;">🚫 إلغاء هذه المهمة فقط</button>
     <button type="button" class="btn-danger hidden" id="taskStopSeriesBtn" onclick="stopRecurringSeries(editingId)" style="width:100%;margin-top:6px;">⛔ إيقاف سلسلة التكرار بالكامل</button>
     <button class="btn-ghost hidden" id="taskCancelBtn" onclick="cancelEdit()" style="width:100%;margin-top:6px;">إلغاء التعديل</button>
     <p class="small" style="margin-top:8px;">💡 لإنجاز مهمة، اضغط زر <b>✓ إنجاز</b> في بطاقة المهمة.</p>
@@ -1217,6 +1218,33 @@ function priorityRank(p) {
 
 /* ============ المهام المتكررة المحمية ============ */
 
+function cancelRecurringOccurrence(taskId) {
+  var selected = tasks.find(function(task) { return task && task.id === taskId; });
+  if (!selected || selected.status === "cancelled" || !(selected.recurrence || selected._recurringGenerated)) return false;
+
+  showConfirmModal(
+    "🚫 إلغاء هذه المهمة فقط",
+    "سيُلغى هذا الموعد وحده، مع الاحتفاظ بسلسلة التكرار حتى تستمر مواعيدها المستقبلية. لن تُحذف المهمة أو سجل وقتها الفعلي. لإيقاف السلسلة كلها استخدم الخيار الآخر. هل تريد المتابعة؟",
+    function() {
+      var task = tasks.find(function(item) { return item && item.id === taskId; });
+      if (!task || task.status === "cancelled") return;
+      var previous = { status: task.status, completedAt: task.completedAt };
+      task.status = "cancelled";
+      task.completedAt = null;
+      if (!saveData()) {
+        task.status = previous.status;
+        task.completedAt = previous.completedAt;
+        showToast("⚠️ تعذر إلغاء هذه المهمة — لم يُحفظ التغيير");
+        return;
+      }
+      if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
+      renderAll();
+      showToast("🚫 أُلغيت هذه المهمة فقط؛ ستستمر السلسلة في مواعيدها القادمة");
+    }
+  );
+  return true;
+}
+
 function stopRecurringSeries(taskId) {
   var selected = tasks.find(function(task) { return task && task.id === taskId; });
   if (!selected) return false;
@@ -1240,7 +1268,7 @@ function stopRecurringSeries(taskId) {
 
   showConfirmModal(
     "⛔ إيقاف سلسلة التكرار",
-    "سيوقف هذا الإجراء إنشاء المهام المستقبلية لهذه السلسلة بالكامل، بما فيها النسخ المرتبطة. لن تُحذف المهام السابقة أو سجلاتها. لإلغاء موعد واحد فقط، استخدم حالة «ملغاة» بدلاً من هذا الخيار. هل تريد إيقاف السلسلة؟",
+    "سيوقف هذا الإجراء إنشاء المهام المستقبلية لهذه السلسلة بالكامل، بما فيها النسخ المرتبطة. لن تُحذف المهام السابقة أو سجلاتها. لإلغاء هذا الموعد وحده استخدم زر «إلغاء هذه المهمة فقط». هل تريد إيقاف السلسلة؟",
     function() {
       var currentSelected = tasks.find(function(task) { return task && task.id === taskId; });
       var currentRoot = currentSelected ? resolveRoot(currentSelected) : null;
@@ -3340,6 +3368,8 @@ function clearForm() {
   if (recurrenceSelect) recurrenceSelect.value = "";
   const stopSeriesBtn = document.getElementById("taskStopSeriesBtn");
   if (stopSeriesBtn && stopSeriesBtn.classList) stopSeriesBtn.classList.add("hidden");
+  const cancelOccurrenceBtn = document.getElementById("taskCancelOccurrenceBtn");
+  if (cancelOccurrenceBtn && cancelOccurrenceBtn.classList) cancelOccurrenceBtn.classList.add("hidden");
   updateEstimatorHint();
 }
 
@@ -3362,10 +3392,16 @@ function editTask(id) {
   document.getElementById("taskFormTitle").textContent = "✏️ تعديل المهمة";
   document.getElementById("taskSaveBtn").textContent = "حفظ التعديل";
   document.getElementById("taskCancelBtn").classList.remove("hidden");
+  const isRecurringTask = !!(t.recurrence || t._recurringGenerated);
   const stopSeriesBtn = document.getElementById("taskStopSeriesBtn");
   if (stopSeriesBtn && stopSeriesBtn.classList) {
-    if (t.recurrence || t._recurringGenerated) stopSeriesBtn.classList.remove("hidden");
+    if (isRecurringTask) stopSeriesBtn.classList.remove("hidden");
     else stopSeriesBtn.classList.add("hidden");
+  }
+  const cancelOccurrenceBtn = document.getElementById("taskCancelOccurrenceBtn");
+  if (cancelOccurrenceBtn && cancelOccurrenceBtn.classList) {
+    if (isRecurringTask && t.status !== "cancelled") cancelOccurrenceBtn.classList.remove("hidden");
+    else cancelOccurrenceBtn.classList.add("hidden");
   }
   const navTaskBtn = document.querySelector('nav button[data-page="tasks"]');
   showPage("tasks", navTaskBtn);
