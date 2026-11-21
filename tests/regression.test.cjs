@@ -79,6 +79,7 @@ function timerSandbox(saveSessions, saveTimer) {
     tasks: [],
     _getElapsedSec: () => 4 * 3600 + 10,
     _phaseTargetSec: () => 5 * 60,
+    _anchorFocusTimerClock: () => {},
     _loadSessions: () => saved.slice(),
     _saveSessions: (arr) => {
       if (saveSessions && !saveSessions(arr)) return false;
@@ -165,6 +166,8 @@ test('failed persistence of a pending background phase does not create a fake se
 test('resume keeps the original sessionStartAt instead of drifting it forward', () => {
   const sandbox = {
     _focusTimer: { running: false, baseElapsed: 420, startedAt: null, sessionStartAt: 123456789, awaitingConfirmation: false },
+    _focusTimerExternalConflict: false,
+    _anchorFocusTimerClock: () => {},
     _getElapsedSec: () => 420, _unlockAudioContext: () => {}, _startDisplayTick: () => {},
     _stopDisplayTick: () => {}, _saveFocusTimer: () => true, _renderFocusTimer: () => {}, showToast: () => {}
   };
@@ -531,12 +534,21 @@ test('backup validator rejects malformed focus-session timestamps', () => {
   const sandbox = {
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 1,
+    FOCUS_MAX_SESSIONS: 5000,
     VALID_STATUS: ['pending', 'done', 'cancelled'],
     VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     isValidLocalTime: (value) => value === '' || /^\d{2}:\d{2}$/.test(value),
     isValidLocalDateTime: (value) => typeof value === 'string',
-    validateDailyLog: () => true
+    validateDailyLog: () => true,
+    _validateFocusSessionRecord(session) {
+      return !!session && Number.isFinite(session.durationSec) && session.durationSec >= 0
+        && typeof session.startedAt === 'string' && Number.isFinite(Date.parse(session.startedAt))
+        && typeof session.endedAt === 'string' && Number.isFinite(Date.parse(session.endedAt))
+        && Date.parse(session.endedAt) >= Date.parse(session.startedAt)
+        && ['pomodoro', 'stopwatch'].includes(session.mode)
+        && ['work', 'short-break', 'long-break'].includes(session.phase);
+    }
   };
   vm.runInNewContext(extractFunction('validateBackup'), sandbox);
   const result = sandbox.validateBackup({
@@ -544,7 +556,7 @@ test('backup validator rejects malformed focus-session timestamps', () => {
     schemaVersion: 2,
     data: {
       tasks: [], dailyLogs: [],
-      focusSessions: [{ durationSec: 60, startedAt: 'not-a-date', mode: 'pomodoro', phase: 'work' }]
+      focusSessions: [{ durationSec: 60, startedAt: 'not-a-date', endedAt: 'not-a-date', mode: 'pomodoro', phase: 'work' }]
     }
   });
   assert.equal(result.valid, false);
@@ -589,6 +601,7 @@ test('weekly report separates planned cohort from actual completion dates', () =
 test('restored notebook records normalize imported IDs before inline event handlers use them', () => {
   const thoughtsSandbox = {
     THOUGHTS_KEY: 'thoughts',
+    _trackSecondaryStorageRead: (_key, raw) => raw,
     localStorage: {
       getItem: () => JSON.stringify([{
         id: '1);globalThis.pwned=true;//',
@@ -606,6 +619,7 @@ test('restored notebook records normalize imported IDs before inline event handl
 
   const inboxSandbox = {
     MENTAL_INBOX_KEY: 'inbox',
+    _trackSecondaryStorageRead: (_key, raw) => raw,
     localStorage: {
       getItem: () => JSON.stringify([{
         id: '2);globalThis.pwned=true;//',
@@ -1408,6 +1422,7 @@ test('failed timer-transition checkpoint pauses safely and suppresses the succes
     _logSession: () => { savedSessions++; return true; },
     _saveFocusTimer: () => { timerSaves++; return timerSaves > 1; },
     _stopDisplayTick: () => { stopped++; },
+    _anchorFocusTimerClock: () => {},
     _renderFocusTimer: () => {},
     renderFocusSessionsCard: () => {},
     _notifyPhaseTransition: () => { notifications++; },
@@ -2622,6 +2637,8 @@ test('failed timer pause save restores the exact prior running state', () => {
   const alerts = [];
   let starts = 0, stops = 0;
   const sandbox = {
+    _focusTimerExternalConflict: false,
+    _anchorFocusTimerClock: () => {},
     _focusTimer: {
       running: true, awaitingConfirmation: false, baseElapsed: 90,
       startedAt: originalStartedAt, sessionStartAt: originalStartedAt - 500
@@ -2650,6 +2667,8 @@ test('failed timer start save restores the exact prior stopped state', () => {
   const alerts = [];
   let starts = 0, stops = 0;
   const sandbox = {
+    _focusTimerExternalConflict: false,
+    _anchorFocusTimerClock: () => {},
     _focusTimer: {
       running: false, awaitingConfirmation: false, baseElapsed: 240,
       startedAt: null, sessionStartAt: null
