@@ -1516,6 +1516,19 @@ function validateDailyLog(log) {
   return true;
 }
 
+function _validateLastRecurringDates(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  var keys = Object.keys(value);
+  if (keys.length > 500) return false;
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    if (key === "__proto__" || key === "constructor" || key === "prototype") return false;
+    if (!isValidCalendarDate(value[key])) return false;
+  }
+  return true;
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -1535,13 +1548,7 @@ function validateV2(data) {
     if (s.darkMode !== undefined && typeof s.darkMode !== "boolean") return false;
     if (s.themeMode !== undefined && !["system", "light", "dark"].includes(s.themeMode)) return false;
     if (s.lastTaskId !== undefined && (!Number.isInteger(s.lastTaskId) || s.lastTaskId < 0)) return false;
-    if (s.lastRecurringDates !== undefined && s.lastRecurringDates !== null) {
-      if (typeof s.lastRecurringDates !== "object" || Array.isArray(s.lastRecurringDates)) return false;
-      const recurringKeys = Object.keys(s.lastRecurringDates);
-      for (let ri = 0; ri < recurringKeys.length; ri++) {
-        if (!isValidCalendarDate(s.lastRecurringDates[recurringKeys[ri]])) return false;
-      }
-    }
+    if (!_validateLastRecurringDates(s.lastRecurringDates)) return false;
   }
 
   const taskIds = new Set();
@@ -1938,7 +1945,10 @@ function _copyStorageRecord(source) {
   var copied = {};
   if (!source || typeof source !== "object" || Array.isArray(source)) return copied;
   Object.keys(source).forEach(function(key) {
-    if (key === "__proto__") return;
+    // Storage records are data, not executable object metadata. Drop keys that
+    // can shadow built-in object methods or alter prototype-related behavior.
+    if (["__proto__", "constructor", "prototype", "hasOwnProperty",
+      "isPrototypeOf", "propertyIsEnumerable", "toString", "toLocaleString", "valueOf"].indexOf(key) !== -1) return;
     Object.defineProperty(copied, key, {
       value: source[key],
       enumerable: true,
@@ -4759,15 +4769,8 @@ function validateBackup(obj) {
       return { valid: false, reason: "وضع المظهر غير صالح." };
     if (st.lastTaskId !== undefined && (!Number.isInteger(st.lastTaskId) || st.lastTaskId < 0))
       return { valid: false, reason: "عداد المهام غير صالح." };
-    if (st.lastRecurringDates !== undefined && st.lastRecurringDates !== null) {
-      if (typeof st.lastRecurringDates !== "object" || Array.isArray(st.lastRecurringDates))
-        return { valid: false, reason: "تواريخ توليد المهام المتكررة غير صالحة." };
-      const recurringKeys = Object.keys(st.lastRecurringDates);
-      for (let ri = 0; ri < recurringKeys.length; ri++) {
-        if (!isValidCalendarDate(st.lastRecurringDates[recurringKeys[ri]]))
-          return { valid: false, reason: "تاريخ توليد متكرر غير صالح." };
-      }
-    }
+    if (!_validateLastRecurringDates(st.lastRecurringDates))
+      return { valid: false, reason: "تواريخ توليد المهام المتكررة غير صالحة." };
   }
 
   const ids = new Set();
