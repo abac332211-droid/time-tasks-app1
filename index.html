@@ -2848,7 +2848,7 @@ function retryStorageRecovery() {
   if (resetPending) {
     if (_recoverInterruptedReset()) {
       showToast("✅ اكتمل تنظيف إعادة الضبط — أعد التحميل");
-      setTimeout(function() { location.reload(); }, 600);
+      setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
     } else {
       storageRecoveryRequired = true;
       showAlertModal("لا يزال حذف البيانات غير مكتمل",
@@ -2860,7 +2860,7 @@ function retryStorageRecovery() {
   if (rollingRestorePending) {
     if (_recoverInterruptedRollingRestore()) {
       showToast("✅ اكتملت استعادة النسخة الداخلية — أعد التحميل");
-      setTimeout(function() { location.reload(); }, 600);
+      setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
     } else {
       storageRecoveryRequired = true;
       showAlertModal("لم تكتمل الاستعادة",
@@ -2883,7 +2883,7 @@ function retryStorageRecovery() {
       function() {
         if (_restoreLatestRollingRecoveryBackup()) {
           showToast("✅ تمت استعادة النسخة الداخلية — أعد التحميل");
-          setTimeout(function() { location.reload(); }, 600);
+          setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
         } else {
           storageRecoveryRequired = true;
           showAlertModal("تعذرت استعادة النسخة الداخلية",
@@ -2906,7 +2906,7 @@ function retryStorageRecovery() {
       }
       storageRecoveryRequired = false;
       showToast('✅ رُفع الحظر — أعد التحميل');
-      setTimeout(function() { location.reload(); }, 600);
+      setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
     }
   );
 }
@@ -5709,7 +5709,7 @@ function showImportPreview(obj) {
           console.warn("Import succeeded, but its rolling recovery checkpoint could not be refreshed.");
         }
         try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تمت الاستعادة الكاملة'); } catch (e) {}
-        location.reload();
+        _reloadAfterVerifiedOperation();
       }
     );
   });
@@ -5815,7 +5815,7 @@ function undoLastImport() {
         showAlertModal("تم الاسترجاع مع بقاء نسخة التراجع",
           "تمت استعادة البيانات السابقة والتحقق منها. تعذر حذف نسخة التراجع الداخلية فقط؛ بقيت محفوظة ولم تُستخدم تلقائيًا.");
       }
-      location.reload();
+      _reloadAfterVerifiedOperation();
     } catch (e) {
       showAlertModal("فشل الاسترجاع", e.message);
     }
@@ -6723,7 +6723,24 @@ function runTestsAndShow() {
 
 /* ============ Beforeunload ============ */
 
+var _suppressBeforeUnload = false;
+
+function _reloadAfterVerifiedOperation() {
+  _suppressBeforeUnload = true;
+  try {
+    location.reload();
+  } catch (reloadError) {
+    _suppressBeforeUnload = false;
+    throw reloadError;
+  }
+}
+
+window.addEventListener("pageshow", function() {
+  _suppressBeforeUnload = false;
+});
+
 window.addEventListener("beforeunload", function(e) {
+  if (_suppressBeforeUnload) return;
   var dirty = false;
   var _nameEl = document.getElementById("taskName");
   var _expEl = document.getElementById("taskExpected");
