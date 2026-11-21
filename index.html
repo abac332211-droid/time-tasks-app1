@@ -2508,6 +2508,52 @@ function _isOptionalRollingRecoveryBackupFailure() {
   return _rollingRecoveryBackupLastFailure === "backup_write_failed"
     || _rollingRecoveryBackupLastFailure === "backup_verification_failed";
 }
+function _acquireRollingRecoveryCheckpointHold(enabled) {
+  if (!enabled || typeof _rollingRecoveryCheckpointHold === "undefined") return function() {};
+  _rollingRecoveryCheckpointHold++;
+  var released = false;
+  return function() {
+    if (released) return;
+    released = true;
+    _rollingRecoveryCheckpointHold = Math.max(0, _rollingRecoveryCheckpointHold - 1);
+  };
+}
+
+function _completeRollingRecoveryCheckpoint(reason, title, message) {
+  if (typeof _storeRollingRecoveryBackup !== "function"
+      || _storeRollingRecoveryBackup(reason, 0)) return true;
+  if (_isOptionalRollingRecoveryBackupFailure()) {
+    _rollingRecoveryBackupStale = true;
+    showToast("⚠️ " + (title || "تم حفظ البيانات") +
+      "، لكن النسخة الاحتياطية الدوّارة لم تُحدّث. بقيت النسخة السابقة كما هي.");
+    return true;
+  }
+  storageRecoveryRequired = true;
+  showAlertModal("تعذر التحقق من نسخة الاسترداد",
+    message || "لم نستطع قراءة اللقطة أو التحقق من اتساقها. أوقفنا الكتابة اللاحقة حتى تُراجع حالة التخزين.");
+  return false;
+}
+
+function _restoreStorageValueIfUnchanged(key, expectedCurrentRaw, previousRaw) {
+  try {
+    if (localStorage.getItem(key) !== expectedCurrentRaw) return false;
+    if (previousRaw === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, previousRaw);
+    if (localStorage.getItem(key) !== previousRaw) return false;
+    if (key === STORAGE_KEY) _setMainStorageBaseline(previousRaw);
+    else {
+      _secondaryStorageBaselines[key] = previousRaw;
+      delete _secondaryStorageConflicts[key];
+      if (key === PROJECTS_KEY) _invalidateProjectsCache();
+      if (key === FOCUS_SESSIONS_KEY) _sessionsCache = null;
+    }
+    return true;
+  } catch (e) {
+    console.error("Conditional storage rollback failed:", key, e);
+    return false;
+  }
+}
+
 function _recoverInterruptedRollingRestore() {
   var markerRaw;
   try {
@@ -3406,93 +3452,103 @@ function convertMentalItemToTask(id) {
   var arr = _loadMentalInbox();
   var m = arr.find(function(x) { return x.id === id; });
   if (!m || m.resolvedAt || m.convertedTaskId) return;
-  var _snap = tasks.slice();
-  var _mainRawBefore = localStorage.getItem(STORAGE_KEY);
-  var _convertedTaskIdBefore = m.convertedTaskId;
-  var _resolvedAtBefore = m.resolvedAt;
-  var _checkpointHoldActive = typeof _rollingRecoveryCheckpointHold !== "undefined";
-  if (_checkpointHoldActive) _rollingRecoveryCheckpointHold++;
-  // FIX N8 (G4) & FIX J3 (G-P2-1): دمج next بحصص منفصلة لمنع الاقتطاع
-  var _taskNameBase = String(m.text || '').trim().slice(0, 180);
-  if (m.next && String(m.next).trim()) {
-    _taskNameBase = _taskNameBase + ' — ' + String(m.next).trim().slice(0, 120);
-  }
-  var _newTask = {
-    id: getNextTaskId(),
-    name: _taskNameBase.slice(0, 200),
-    type: "معرفية",
-    status: "pending",
-    expected: 30,
-    actual: null,
-    plannedDate: todayStr(),
-    plannedTime: "",
-    completedAt: null,
-    createdAt: Date.now()
-  };
-  tasks.push(_newTask);
-  if (!saveData()) {
-    if (_checkpointHoldActive) _rollingRecoveryCheckpointHold--;
-    tasks = _snap;
-    showToast("⚠️ تعذر الحفظ — لم تُحوّل");
+
+  var oldMainRaw, oldMentalRaw;
+  try {
+    oldMainRaw = localStorage.getItem(STORAGE_KEY);
+    oldMentalRaw = localStorage.getItem(MENTAL_INBOX_KEY);
+  } catch (readError) {
+    storageRecoveryRequired = true;
+    showAlertModal("تعذر قراءة بيانات التحويل", "لم نبدأ التحويل لأن قراءة البيانات السابقة لم تكتمل.");
     return;
   }
-  m.convertedTaskId = _newTask.id;
-  m.resolvedAt = new Date().toISOString();
-  if (!_saveMentalInbox(arr)) {
-    if (_checkpointHoldActive) _rollingRecoveryCheckpointHold--;
-    tasks = _snap;
-    if (_convertedTaskIdBefore === undefined) delete m.convertedTaskId;
-    else m.convertedTaskId = _convertedTaskIdBefore;
-    if (_resolvedAtBefore === undefined) delete m.resolvedAt;
-    else m.resolvedAt = _resolvedAtBefore;
-
-    var _rbConvertOk = false;
-    try {
-      if (_mainRawBefore === null) localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, _mainRawBefore);
-      if (localStorage.getItem(STORAGE_KEY) !== _mainRawBefore) {
-        throw new Error("main rollback readback mismatch");
-      }
-      _setMainStorageBaseline(_mainRawBefore);
-      _rbConvertOk = true;
-    } catch (e) {
-      console.error("Mental-item conversion rollback failed:", e);
+  var taskSnapshot = tasks.slice();
+  var oldLastTaskId = appSettings.lastTaskId;
+  var oldConvertedTaskId = m.convertedTaskId;
+  var oldResolvedAt = m.resolvedAt;
+  var releaseHold = _acquireRollingRecoveryCheckpointHold(true);
+  var mainCommitRaw = null;
+  var converted = false;
+  try {
+    var name = String(m.text || "").trim().slice(0, 180);
+    if (m.next && String(m.next).trim()) name += " — " + String(m.next).trim().slice(0, 120);
+    var newTask = {
+      id: getNextTaskId(), name: name.slice(0, 200), type: "معرفية",
+      status: "pending", expected: 30, actual: null, plannedDate: todayStr(),
+      plannedTime: "", completedAt: null, createdAt: Date.now()
+    };
+    tasks.push(newTask);
+    if (!saveData()) {
+      tasks = taskSnapshot;
+      appSettings.lastTaskId = oldLastTaskId;
+      showToast("⚠️ تعذر حفظ المهمة — لم تُحوّل الفكرة");
+      return;
+    }
+    mainCommitRaw = localStorage.getItem(STORAGE_KEY);
+    if (typeof mainCommitRaw !== "string" || mainCommitRaw === oldMainRaw) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر التحقق من التحويل", "لم نستطع قراءة نسخة البيانات الرئيسية بعد الحفظ. أوقفنا الكتابة حتى تُراجع الحالة.");
+      return;
     }
 
-    if (_rbConvertOk) {
-      if (typeof _storeRollingRecoveryBackup === "function"
-          && !_storeRollingRecoveryBackup("transaction-rollback", 0)) {
+    m.convertedTaskId = newTask.id;
+    m.resolvedAt = new Date().toISOString();
+    if (!_saveMentalInbox(arr)) {
+      tasks = taskSnapshot;
+      appSettings.lastTaskId = oldLastTaskId;
+      if (oldConvertedTaskId === undefined) delete m.convertedTaskId;
+      else m.convertedTaskId = oldConvertedTaskId;
+      if (oldResolvedAt === undefined) delete m.resolvedAt;
+      else m.resolvedAt = oldResolvedAt;
+
+      var mainRollbackOk = _restoreStorageValueIfUnchanged(STORAGE_KEY, mainCommitRaw, oldMainRaw);
+      var mentalNow = localStorage.getItem(MENTAL_INBOX_KEY);
+      var mentalSafe = mentalNow === oldMentalRaw
+        || mentalNow === JSON.stringify(arr);
+      if (!mainRollbackOk || !mentalSafe) {
         storageRecoveryRequired = true;
-        showAlertModal(
-          "⚠️ تعذر تحديث نسخة الاسترداد",
-          "أُعيدت البيانات السابقة، لكن تعذر تحديث النسخة الداخلية لتعكس التراجع. أوقف التطبيق الكتابة لحماية الحالة حتى تُراجع النسخة الداخلية."
-        );
+        showAlertModal("فشل التراجع عن التحويل الجزئي",
+          "تعذر تأكيد استعادة المهمة وحالة الفكرة معًا. لم نستبدل أي قيمة خارجية متغيرة؛ أوقفنا الكتابة لحماية البيانات.");
         return;
       }
-      showToast("⚠️ تعذر حفظ حالة الفكرة — أُعيدت الحالة السابقة ولم تُحوّل");
-    } else {
-      storageRecoveryRequired = true;
-      showAlertModal(
-        "⚠️ فشل التحويل الجزئي",
-        "فشل حفظ حالة الفكرة، وتعذر التحقق من استرجاع المهمة السابقة. أوقف التطبيق الكتابة لحماية البيانات؛ لا تتابع قبل إكمال الاستعادة."
-      );
+      releaseHold();
+      _completeRollingRecoveryCheckpoint("transaction-rollback", "استُعيدت الحالة السابقة",
+        "استُعيدت المعاملة، لكن تعذر التحقق من اتساق لقطة الاسترداد.");
+      showToast("⚠️ تعذر حفظ حالة الفكرة — أُعيدت المهمة إلى حالتها السابقة");
+      return;
     }
-    return;
+    converted = true;
+    releaseHold();
+    if (!_completeRollingRecoveryCheckpoint("mental-item-conversion", "تم التحويل",
+      "تم حفظ التحويل، لكن تعذر التحقق من لقطة الاسترداد. أوقفنا الكتابة اللاحقة لحماية البيانات.")) return;
+    renderAll();
+    showToast("✅ حُوّلت إلى مهمة");
+  } catch (e) {
+    console.error("Mental item conversion transaction failed:", e);
+    if (!converted && mainCommitRaw !== null) {
+      tasks = taskSnapshot;
+      appSettings.lastTaskId = oldLastTaskId;
+      if (oldConvertedTaskId === undefined) delete m.convertedTaskId;
+      else m.convertedTaskId = oldConvertedTaskId;
+      if (oldResolvedAt === undefined) delete m.resolvedAt;
+      else m.resolvedAt = oldResolvedAt;
+      if (!_restoreStorageValueIfUnchanged(STORAGE_KEY, mainCommitRaw, oldMainRaw)) {
+        storageRecoveryRequired = true;
+      } else {
+        releaseHold();
+        _completeRollingRecoveryCheckpoint("transaction-rollback");
+      }
+    } else if (!converted) {
+      tasks = taskSnapshot;
+      appSettings.lastTaskId = oldLastTaskId;
+    }
+    showAlertModal("تعذر إكمال التحويل", storageRecoveryRequired
+      ? "حدث خطأ أثناء المعاملة ولم نتمكن من التحقق من التراجع بالكامل. بقي حاجز الحماية مفعّلًا."
+      : "لم تكتمل عملية التحويل؛ راجع البيانات ثم أعد المحاولة.");
+  } finally {
+    releaseHold();
   }
-  if (_checkpointHoldActive) _rollingRecoveryCheckpointHold--;
-  if (typeof _storeRollingRecoveryBackup === "function"
-      && !_storeRollingRecoveryBackup("mental-item-conversion", 0)) {
-    storageRecoveryRequired = true;
-    showAlertModal(
-      "⚠️ تعذر تأمين التحويل",
-      "تم حفظ المهمة وحالة الفكرة، لكن تعذر إنشاء نسخة استرداد متوافقة مع الحالة الجديدة. أوقف التطبيق الكتابة لحماية البيانات؛ راجع النسخة الداخلية قبل المتابعة."
-    );
-    return;
-  }
-  renderAll();
-  showToast("✅ حُوّلت إلى مهمة");
 }
-
 function _mentalElapsed(iso) {
   try {
     var t = new Date(iso).getTime();
@@ -8647,51 +8703,50 @@ function _showStopwatchSaveDialog(elapsedSec) {
   document.addEventListener('keydown', _modalKeyHandler);
 }
 function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
-  var _alreadyLogged = _sessionAlreadyLogged('work', elapsedSec);
-  var _oldActual = task.actual;
-  var _mainUpdateNeeded = !_alreadyLogged && minutesToAdd > 0;
-  var _checkpointHold = _mainUpdateNeeded
-    && typeof _rollingRecoveryCheckpointHold !== "undefined";
-  if (_checkpointHold) _rollingRecoveryCheckpointHold++;
-  if (_mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
-  if (_mainUpdateNeeded && !saveData()) {
-    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
-    task.actual = _oldActual;
-    showToast('⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة والوقت محفوظاً للمحاولة مجدداً');
-    return;
-  }
-  var _logged = _logSession('work', elapsedSec, true);
-  if (!_logged) {
-    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
-    task.actual = _oldActual;
-    var rollbackOk = !_mainUpdateNeeded || saveData();
-    if (!rollbackOk) storageRecoveryRequired = true;
-    _renderFocusTimer();
-    if (rollbackOk) {
-      showAlertModal('فشل تسجيل الجلسة', 'تعذر تسجيل جلسة التركيز، لذلك تراجعنا عن إضافة المدة الفعلية. بقي الوقت محفوظاً ومتوقفاً؛ أعد المحاولة بعد التحقق من التخزين.');
-    } else {
-      showAlertModal('فشل التسجيل والتراجع', 'تعذر تسجيل الجلسة وتعذر حفظ التراجع عن المدة الفعلية. قد تكون البيانات غير متسقة؛ صدّر نسخة احتياطية فوراً.');
-    }
-    return;
-  }
-  if (_checkpointHold) {
-    _rollingRecoveryCheckpointHold--;
-    if (typeof _storeRollingRecoveryBackup === "function"
-        && !_storeRollingRecoveryBackup("focus-session-commit", 0)) {
-      storageRecoveryRequired = true;
-      showAlertModal("تعذر تأمين جلسة التركيز",
-        "حُفظت المدة والجلسة، لكن تعذر تحديث نسخة الاسترداد للحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات حتى تُراجع النسخة الداخلية.");
+  var alreadyLogged = _sessionAlreadyLogged("work", elapsedSec);
+  var oldActual = task.actual;
+  var mainUpdateNeeded = !alreadyLogged && minutesToAdd > 0;
+  var releaseHold = _acquireRollingRecoveryCheckpointHold(mainUpdateNeeded);
+  try {
+    if (mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
+    if (mainUpdateNeeded && !saveData()) {
+      task.actual = oldActual;
+      showToast("⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة والوقت محفوظًا للمحاولة مجددًا");
       return;
     }
-  }
-  if (!_resetAfterSession()) {
-    showToast('⚠️ سُجّلت الجلسة، لكن تعذر حفظ تصفير المؤقت. لا تُعد تسجيلها؛ أعد التحميل ثم تحقق من سجل الجلسات.');
-    return;
-  }
-  renderAll();
-  showToast((_alreadyLogged ? '✅ استُكمل تصفير جلسة مسجلة سابقًا' : '✅ أُضيف ' + minutesToAdd + ' دقيقة للفعلي وسُجّلت الجلسة'));
-}
 
+    if (!_logSession("work", elapsedSec, true)) {
+      task.actual = oldActual;
+      var rollbackOk = !mainUpdateNeeded || saveData();
+      if (!rollbackOk) storageRecoveryRequired = true;
+      releaseHold();
+      if (rollbackOk && mainUpdateNeeded) _completeRollingRecoveryCheckpoint("transaction-rollback");
+      _renderFocusTimer();
+      showAlertModal(rollbackOk ? "فشل تسجيل الجلسة" : "فشل التسجيل والتراجع",
+        rollbackOk
+          ? "تعذر تسجيل جلسة التركيز؛ تراجعنا عن إضافة المدة للمهمة وبقي المؤقت متوقفًا."
+          : "تعذر تسجيل الجلسة والتراجع عن المدة؛ قد تكون البيانات غير متسقة. أوقفنا الكتابة لحمايتها.");
+      return;
+    }
+
+    releaseHold();
+    if (mainUpdateNeeded && !_completeRollingRecoveryCheckpoint("focus-session-commit",
+      "سُجلت الجلسة", "تم حفظ الجلسة، لكن تعذر التحقق من لقطة الاسترداد. أوقفنا الكتابة اللاحقة لحماية البيانات.")) return;
+    if (!_resetAfterSession()) {
+      showToast("⚠️ سُجلت الجلسة، لكن لم يُحفظ التصفير؛ لا تُعد تسجيلها.");
+      return;
+    }
+    renderAll();
+    showToast(alreadyLogged
+      ? "✅ استُكمل تصفير جلسة مسجلة سابقًا"
+      : "✅ أُضيفت " + minutesToAdd + " دقيقة للمدة الفعلية وسُجلت الجلسة");
+  } catch (e) {
+    console.error("Stopwatch save transaction failed:", e);
+    showAlertModal("تعذر إكمال حفظ Stopwatch", "لم نكمل العملية. أُبقي المؤقت متوقفًا، ولا تفترض أن الجلسة حُفظت دون مراجعة سجل الجلسات.");
+  } finally {
+    releaseHold();
+  }
+}
 function finishTimer() {
   // FIX TI3 (E1a): إيقاف tick + تجميد الوقت + لقطة الطور — يمنع انتقال الطور أثناء المودال
   _stopDisplayTick();
@@ -8816,70 +8871,52 @@ function finishTimer() {
 }
 
 function _applyTimerFinish(elapsedSec, task, minutesToAdd, capturedPhase) {
-  // FIX TI3 (E1b): استخدام الطور المُلتقط بدل قراءته لحظياً
-  var _phase = (typeof capturedPhase === 'string' && capturedPhase) ? capturedPhase : _focusTimer.phase;
-  var _alreadyLogged = _sessionAlreadyLogged(_phase, elapsedSec);
-  var _oldActual = task.actual;
-  var _mainUpdateNeeded = !_alreadyLogged && minutesToAdd > 0;
-  var _checkpointHold = _mainUpdateNeeded
-    && typeof _rollingRecoveryCheckpointHold !== "undefined";
-  if (_checkpointHold) _rollingRecoveryCheckpointHold++;
-  if (_mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
-  if (_mainUpdateNeeded && !saveData()) {
-    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
-    task.actual = _oldActual;
-    showToast('⚠️ تعذر الحفظ — لم تُضف. المؤقت يستمر');
-    return;
-  }
-  var _logged = _logSession(_phase, elapsedSec, true);
-  // FIX TI4 (E2): عند فشل التسجيل، rollback task.actual لمنع عدم الاتساق مع سجل الجلسات
-  if (!_logged) {
-    if (_checkpointHold) _rollingRecoveryCheckpointHold--;
-    task.actual = _oldActual;
-    var _rbOk = !_mainUpdateNeeded || saveData();
-    if (!_rbOk) storageRecoveryRequired = true;
-    _renderFocusTimer();
-    renderAll();
-    if (_rbOk) {
-      showAlertModal(
-        "⚠️ فشل تسجيل الجلسة",
-        "تعذر تسجيل الجلسة في سجل التركيز.<br><br>" +
-        "تم التراجع عن إضافة المدة الفعلية للمهمة للحفاظ على الاتساق.<br><br>" +
-        "صدّر نسخة احتياطية وأعد المحاولة."
-      );
-    } else {
-      showAlertModal(
-        "⚠️ فشل التسجيل والتراجع",
-        "تعذر تسجيل الجلسة، وتعذر التراجع عن إضافة المدة الفعلية للمهمة.<br><br>" +
-        "<b>الحالة قد تكون غير متسقة.</b> صدّر نسخة احتياطية الآن يدوياً، وأعد تحميل التطبيق."
-      );
-    }
-    return;
-  }
-  if (_checkpointHold) {
-    _rollingRecoveryCheckpointHold--;
-    if (typeof _storeRollingRecoveryBackup === "function"
-        && !_storeRollingRecoveryBackup("focus-session-commit", 0)) {
-      storageRecoveryRequired = true;
-      showAlertModal("تعذر تأمين جلسة التركيز",
-        "حُفظت المدة والجلسة، لكن تعذر تحديث نسخة الاسترداد للحالة المكتملة. أوقف التطبيق الكتابة لحماية البيانات حتى تُراجع النسخة الداخلية.");
+  var phase = (typeof capturedPhase === "string" && capturedPhase) ? capturedPhase : _focusTimer.phase;
+  var alreadyLogged = _sessionAlreadyLogged(phase, elapsedSec);
+  var oldActual = task.actual;
+  var mainUpdateNeeded = !alreadyLogged && minutesToAdd > 0;
+  var releaseHold = _acquireRollingRecoveryCheckpointHold(mainUpdateNeeded);
+  try {
+    if (mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
+    if (mainUpdateNeeded && !saveData()) {
+      task.actual = oldActual;
+      showToast("⚠️ تعذر الحفظ — لم تُضف المدة. بقي المؤقت متوقفًا.");
       return;
     }
-  }
-  if (!_resetAfterSession()) {
-    showToast('⚠️ سُجّلت الجلسة، لكن تعذر حفظ تصفير المؤقت. لا تُعد تسجيلها؛ أعد التحميل ثم تحقق من سجل الجلسات.');
-    return;
-  }
-  renderAll();
-  if (_alreadyLogged) {
-    showToast('✅ استُكمل تصفير جلسة مسجلة سابقًا دون تكرار المدة');
-  } else if (minutesToAdd > 0) {
-    showToast('✅ أُنهيت الجلسة — أُضيف ' + minutesToAdd + ' دقيقة');
-  } else {
-    showToast('✅ أُنهيت الجلسة');
+
+    if (!_logSession(phase, elapsedSec, true)) {
+      task.actual = oldActual;
+      var rollbackOk = !mainUpdateNeeded || saveData();
+      if (!rollbackOk) storageRecoveryRequired = true;
+      releaseHold();
+      if (rollbackOk && mainUpdateNeeded) _completeRollingRecoveryCheckpoint("transaction-rollback");
+      _renderFocusTimer();
+      renderAll();
+      showAlertModal(rollbackOk ? "فشل تسجيل الجلسة" : "فشل التسجيل والتراجع",
+        rollbackOk
+          ? "تعذر تسجيل الجلسة؛ تراجعنا عن إضافة المدة الفعلية وبقي المؤقت متوقفًا."
+          : "تعذر تسجيل الجلسة والتراجع عن المدة الفعلية؛ أوقفنا الكتابة لحماية البيانات.");
+      return;
+    }
+
+    releaseHold();
+    if (mainUpdateNeeded && !_completeRollingRecoveryCheckpoint("focus-session-commit",
+      "أُنهيت الجلسة", "تم حفظ المهمة والجلسة، لكن تعذر التحقق من لقطة الاسترداد. أوقفنا الكتابة اللاحقة.")) return;
+    if (!_resetAfterSession()) {
+      showToast("⚠️ سُجلت الجلسة، لكن لم يُحفظ تصفير المؤقت؛ لا تُعد تسجيلها.");
+      return;
+    }
+    renderAll();
+    showToast(alreadyLogged ? "✅ استُكمل تصفير جلسة مسجلة سابقًا دون تكرار"
+      : minutesToAdd > 0 ? "✅ أُنهيت الجلسة — أُضيفت " + minutesToAdd + " دقيقة"
+      : "✅ أُنهيت الجلسة");
+  } catch (e) {
+    console.error("Timer finish transaction failed:", e);
+    showAlertModal("تعذر إكمال إنهاء المؤقت", "حدث خطأ أثناء حفظ الجلسة أو المدة. بقي المؤقت متوقفًا؛ راجع سجل الجلسات قبل إعادة المحاولة.");
+  } finally {
+    releaseHold();
   }
 }
-
 function _resetAfterSession() {
   if (_focusTimerExternalConflict) {
     showAlertModal("تعارض حالة المؤقت", "لم نُصفّر المؤقت لأن نافذة أخرى غيّرت حالته. أعد تحميل التطبيق أولًا.");
