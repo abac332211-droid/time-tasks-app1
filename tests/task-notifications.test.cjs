@@ -41,10 +41,11 @@ function validTime(value) {
   return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
 }
 
-function makeNotificationHarness({ enabled = true, permission = 'granted', tasks = [], pending = [], failCancelAll = false } = {}) {
+function makeNotificationHarness({ enabled = true, permission = 'granted', tasks = [], pending = [], failCancelAll = false, failScheduleTimes = 0 } = {}) {
   const calls = { cancel: [], schedule: [], checkPermissions: 0, requestPermissions: 0, cancelAll: 0 };
   let currentPending = pending.map((item) => ({ ...item }));
   let enabledState = enabled;
+  let scheduleAttempts = 0;
   const LN = {
     async getPending() {
       return { notifications: currentPending.map((item) => ({ ...item })) };
@@ -63,7 +64,11 @@ function makeNotificationHarness({ enabled = true, permission = 'granted', tasks
       return { display: permission === 'prompt' ? 'granted' : permission };
     },
     async schedule(options) {
+      scheduleAttempts++;
       calls.schedule.push(...options.notifications);
+      if (scheduleAttempts <= failScheduleTimes) throw new Error('simulated schedule failure');
+      const ids = options.notifications.map((item) => item.id);
+      currentPending = currentPending.filter((item) => !ids.includes(item.id));
       currentPending.push(...options.notifications);
       return { notifications: options.notifications.map(({ id }) => ({ id })) };
     },
@@ -334,6 +339,32 @@ test('startup reconciliation replaces a pending reminder when task title or due 
   assert.equal(new Date(harness.calls.schedule[0].schedule.at).getTime(), at.getTime());
 });
 
+test('failed replacement restores the previous reminder instead of leaving no reminder', async () => {
+  const task = { id: 43, name: 'العنوان الجديد', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' };
+  const { _taskNotificationId } = loadFunctions(['_taskNotificationId']);
+  const id = _taskNotificationId(task.id);
+  const previous = {
+    id,
+    title: 'تذكير بمهمة',
+    body: 'العنوان السابق',
+    schedule: { at: new Date(2099, 11, 31, 21, 30, 0, 0) },
+    extra: { kind: 'task-reminder', taskId: String(task.id) }
+  };
+  const harness = makeNotificationHarness({
+    tasks: [task],
+    pending: [previous],
+    failScheduleTimes: 1
+  });
+  const fns = loadFunctions(reminderFunctions, harness.context);
+
+  assert.equal(await fns._syncAllTaskNotifications(), false);
+  assert.equal(harness.calls.cancel.length, 1);
+  assert.equal(harness.calls.schedule.length, 2, 'new schedule attempt followed by previous reminder restoration');
+  assert.equal(harness.pending().length, 1);
+  assert.equal(harness.pending()[0].body, 'العنوان السابق');
+  assert.equal(new Date(harness.pending()[0].schedule.at).getTime(), new Date(previous.schedule.at).getTime());
+});
+
 
 test('native notification UI shows an enabled preference with failed reminder reconciliation', async () => {
   const harness = makeNotificationHarness({ enabled: true, permission: 'granted' });
@@ -394,4 +425,34 @@ test('colliding task reminder identifiers mark full reconciliation as incomplete
   assert.equal(await fns._syncAllTaskNotifications(), false);
   assert.equal(harness.calls.schedule.length, 1);
   assert.equal(harness.calls.schedule[0].id, 501);
+});
+
+test('full reconciliation after deleting a colliding task transfers the shared ID to the remaining task', async () => {
+  const tasks = [
+    { id: 31, name: 'المهمة الأولى', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' },
+    { id: 32, name: 'المهمة الثانية', status: 'pending', plannedDate: '2099-12-31', plannedTime: '23:59' }
+  ];
+  const harness = makeNotificationHarness({
+    tasks,
+    permission: 'granted',
+    pending: [{
+      id: 501,
+      title: 'تذكير بمهمة',
+      body: 'المهمة الأولى',
+      schedule: { at: new Date(2099, 11, 31, 23, 59, 0, 0) },
+      extra: { kind: 'task-reminder', taskId: '31' }
+    }]
+  });
+  const context = Object.assign({}, harness.context, {
+    _taskNotificationId: () => 501,
+    _taskReminderAt: () => new Date(2099, 11, 31, 23, 59, 0, 0)
+  });
+  const fns = loadFunctions(['_syncTaskNotification', '_syncAllTaskNotifications'], context);
+
+  tasks.splice(0, 1);
+  assert.equal(await fns._syncAllTaskNotifications(), true);
+  assert.equal(harness.pending().length, 1);
+  assert.equal(harness.pending()[0].id, 501);
+  assert.equal(harness.pending()[0].extra.taskId, '32');
+  assert.equal(harness.pending()[0].body, 'المهمة الثانية');
 });
