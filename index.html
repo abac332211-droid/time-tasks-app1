@@ -7999,6 +7999,8 @@ function _saveFocusTimer() {
     var now = Date.now();
     var running = _focusTimer.running === true;
     var elapsedParts = running ? _getFocusTimerElapsedParts() : null;
+    // The elapsed-time read may conservatively pause the timer if the monotonic clock stalled.
+    if (running && !_focusTimer.running) running = false;
     var checkpointElapsed = running ? elapsedParts.seconds : _focusTimer.baseElapsed;
     var checkpointRemainderMs = running
       ? elapsedParts.remainderMs
@@ -8071,6 +8073,28 @@ function _getFocusTimerElapsedParts() {
         var expectedWall = _focusWallClockAnchor + elapsedMs;
         if (Math.abs(wallNow - expectedWall) > 120000) _focusTimer.clockAdjusted = true;
       }
+      var previousMonotonicSample = _focusMonotonicLastSample;
+      var previousWallSample = _focusMonotonicLastWallSample;
+      if (Number.isFinite(previousMonotonicSample)
+          && Number.isFinite(previousWallSample)
+          && monoNow === previousMonotonicSample
+          && wallNow - previousWallSample > 120000) {
+        // A present but frozen monotonic source cannot prove time spent in device sleep.
+        // Keep the last trusted sample, pause, and require the user to resume explicitly.
+        var trustedElapsedMs = remainder + Math.max(0, previousMonotonicSample - _focusMonotonicStart);
+        _focusTimer.baseElapsed = base + Math.floor(trustedElapsedMs / 1000);
+        _focusElapsedRemainderMs = trustedElapsedMs % 1000;
+        _focusTimer.clockAdjusted = true;
+        _focusTimer.running = false;
+        _focusTimer.startedAt = null;
+        if (typeof _stopDisplayTick === "function") _stopDisplayTick();
+        return {
+          seconds: _focusTimer.baseElapsed,
+          remainderMs: _focusElapsedRemainderMs,
+          monotonicNow: null,
+          wallNow: null
+        };
+      }
       _focusMonotonicLastSample = monoNow;
       _focusMonotonicLastWallSample = wallNow;
       var totalElapsedMs = remainder + elapsedMs;
@@ -8126,6 +8150,16 @@ function _phaseTargetSec() {
   return POMODORO_SHORT_BREAK_SEC;
 }
 
+function _handleFocusTimerClockDiscontinuity() {
+  _stopDisplayTick();
+  var saved = _saveFocusTimer();
+  showAlertModal(
+    "⏸ أُوقف المؤقت للتحقق من الساعة",
+    "تقدّم توقيت الجهاز بينما بقيت الساعة الرتيبة دون تقدم. احتُفظ بالوقت حتى آخر قراءة موثوقة فقط؛ لم تُحتسب فترة الغياب، ولم تُسجّل جلسة أو تنتقل مرحلة تلقائيًا. راجع ساعة الجهاز، ثم اضغط «ابدأ» يدويًا للاستئناف." +
+      (saved ? "" : "<br><br>تعذر تأكيد حفظ حالة الإيقاف. لا تغلق التطبيق قبل التحقق من التخزين.")
+  );
+}
+
 /* Catch-up: حساب الوقت الحقيقي بدقة تامة دون تجميد عشوائي */
 function _catchUp(backgroundReturn) {
   if (!_focusTimer.running || _focusTimer.mode !== "pomodoro") return;
@@ -8134,6 +8168,10 @@ function _catchUp(backgroundReturn) {
     return;
   }
   var elapsedParts = _getFocusTimerElapsedParts();
+  if (!_focusTimer.running) {
+    _handleFocusTimerClockDiscontinuity();
+    return;
+  }
   var elapsedTotal = elapsedParts.seconds, targetNow = _phaseTargetSec();
   if (elapsedTotal > 4 * 3600 || (backgroundReturn && elapsedTotal >= targetNow)) {
     var segmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
@@ -8161,6 +8199,10 @@ function _catchUp(backgroundReturn) {
   while (safety-- > 0) {
     var target = _phaseTargetSec();
     elapsedParts = _getFocusTimerElapsedParts();
+    if (!_focusTimer.running) {
+      _handleFocusTimerClockDiscontinuity();
+      return;
+    }
     var elapsed = elapsedParts.seconds;
     if (elapsed < target) break;
     var completedPhase = _focusTimer.phase;
@@ -9093,7 +9135,11 @@ function resetTimerDurationsToDefault() {
 function _renderFocusTimer() {
   var displayEl = document.getElementById('timerDisplay2');
   if (!displayEl) return;
+  var wasRunning = _focusTimer.running === true;
   var elapsed = _getElapsedSec();
+  if (wasRunning && !_focusTimer.running && _focusTimer.clockAdjusted) {
+    _handleFocusTimerClockDiscontinuity();
+  }
   var displaySec;
   if (_focusTimer.mode === 'pomodoro') {
     displaySec = Math.max(0, _phaseTargetSec() - elapsed);
@@ -9119,6 +9165,9 @@ function _renderFocusTimer() {
       }
     } else {
       phaseLabel.textContent = '⏱️ ساعة توقيت';
+    }
+    if (_focusTimer.clockAdjusted && !_focusTimer.running) {
+      phaseLabel.textContent += ' · ⚠️ المؤقت متوقف للتحقق من الساعة؛ راجعها ثم اضغط «ابدأ» يدويًا';
     }
   }
 

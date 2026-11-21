@@ -80,7 +80,8 @@ function createClockHarness(options = {}) {
     '_clearFocusTimerClock',
     '_getFocusTimerElapsedParts',
     '_getElapsedSec',
-    '_saveFocusTimer'
+    '_saveFocusTimer',
+    '_handleFocusTimerClockDiscontinuity'
   ];
   vm.runInNewContext(
     functionNames.map((name) => {
@@ -432,4 +433,74 @@ test('pause captures sub-second elapsed time and failed pause restores the prior
   assert.equal(state.baseElapsed, 12);
   assert.equal(state.startedAt, 1_000);
   assert.equal(sandbox._focusElapsedRemainderMs, 200);
+});
+
+
+test('an available but stalled monotonic clock pauses Pomodoro without logging or auto-transitioning after a long sleep', () => {
+  const h = createClockHarness({ baseElapsed: 40 });
+  h.clock.mono = 1_750;
+  h.clock.wall += 1_750;
+  assert.equal(h.sandbox._getElapsedSec(), 41);
+
+  // Simulate a long Android sleep: Date.now advances, performance.now remains present and unchanged.
+  h.clock.wall += 30 * 60 * 1000;
+  let logged = 0;
+  let confirmations = 0;
+  let saved = 0;
+  const alerts = [];
+  h.sandbox._phaseTargetSec = () => 45;
+  h.sandbox._stopDisplayTick = () => {};
+  h.sandbox._saveFocusTimer = () => { saved++; return true; };
+  h.sandbox._renderFocusTimer = () => {};
+  h.sandbox._logSession = () => { logged++; return true; };
+  h.sandbox._showAwaySessionConfirmation = () => { confirmations++; };
+  h.sandbox.showAlertModal = (title, message) => alerts.push({ title, message });
+
+  vm.runInNewContext(extractFunction('_handleFocusTimerClockDiscontinuity') + '\\n' + extractFunction('_catchUp'), h.sandbox);
+  h.sandbox._catchUp(true);
+
+  assert.equal(h.timer.running, false, 'the timer must pause when the monotonic source is frozen');
+  assert.equal(h.timer.clockAdjusted, true, 'the disagreement must be recorded');
+  assert.equal(h.timer.baseElapsed, 41, 'only the last trusted monotonic sample is retained');
+  assert.equal(h.sandbox._focusElapsedRemainderMs, 750, 'the trusted sub-second remainder is retained');
+  assert.equal(h.timer.awaitingConfirmation, false, 'untrusted wall time must not complete a Pomodoro phase');
+  assert.equal(h.timer.phase, 'work', 'untrusted wall time must not advance the phase');
+  assert.equal(logged, 0, 'no session may be registered from the untrusted gap');
+  assert.equal(confirmations, 0, 'no away-session completion prompt may be inferred from the wall-clock jump');
+  assert.equal(saved, 1, 'the paused state must be checkpointed');
+  assert.equal(alerts.length, 1, 'the user must receive an explicit explanation');
+  assert.match(alerts[0].message, /آخر قراءة موثوقة/);
+  assert.match(alerts[0].message, /ابدأ/);
+});
+
+test('a stalled available monotonic clock also pauses Stopwatch and excludes the wall-clock gap', () => {
+  const h = createClockHarness();
+  h.timer.mode = 'stopwatch';
+  h.clock.mono = 2_250;
+  h.clock.wall += 2_250;
+  assert.equal(h.sandbox._getElapsedSec(), 2);
+
+  h.clock.wall += 20 * 60 * 1000;
+  const elapsed = h.sandbox._getFocusTimerElapsedParts();
+
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.clockAdjusted, true);
+  assert.equal(elapsed.seconds, 2);
+  assert.equal(elapsed.remainderMs, 250);
+});
+
+test('a checkpoint persists paused state when it is the first caller to detect a stalled monotonic clock', () => {
+  const h = createClockHarness();
+  h.clock.mono = 2_250;
+  h.clock.wall += 2_250;
+  assert.equal(h.sandbox._getElapsedSec(), 2);
+
+  h.clock.wall += 20 * 60 * 1000;
+  assert.equal(h.sandbox._saveFocusTimer(), true);
+
+  const persisted = JSON.parse(h.clock.writes.at(-1).raw);
+  assert.equal(persisted.running, false, 'the outer checkpoint must not overwrite the conservative pause');
+  assert.equal(persisted.baseElapsed, 2);
+  assert.equal(persisted.elapsedRemainderMs, 250);
+  assert.equal(persisted.clockAdjusted, true);
 });
