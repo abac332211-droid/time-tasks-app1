@@ -4724,12 +4724,16 @@ function showImportPreview(obj) {
     if (d[group[0]] !== undefined && d[group[0]] !== null) replacingGroups.push(group[1]);
     else preservingGroups.push(group[1]);
   });
+  const projectPreservationNote = d.projects === undefined || d.projects === null
+    ? "<br><small>عند غياب مجموعة المشاريع، تبقى مشاريع هذا الجهاز، وتُفصل مراجع المشاريع من المهام المستوردة إن وجدت لتجنب الإسناد الخاطئ عند تطابق المعرّفات.</small>"
+    : "";
   const importBehaviorHtml =
     "<br><br><b>ستُستبدل المهام وسجلات الأيام وإعدادات التطبيق الرئيسية.</b>" +
     "<br>المجموعات الموجودة في الملف ستُستبدل على هذا الجهاز: "
       + (replacingGroups.length ? replacingGroups.join("، ") : "لا توجد") + "." +
     "<br>المجموعات غير الموجودة في الملف ستبقى كما هي على هذا الجهاز: "
-      + (preservingGroups.length ? preservingGroups.join("، ") : "لا توجد") + ".";
+      + (preservingGroups.length ? preservingGroups.join("، ") : "لا توجد") + "." +
+    projectPreservationNote;
 
   const textHtml =
     "<b>📅 تاريخ التصدير:</b> " + escapeHTML(exportedAt) + "<br>" +
@@ -4785,6 +4789,15 @@ function showImportPreview(obj) {
         };
 
         _healTaskArray(newData.tasks);
+        if (d.projects === undefined || d.projects === null) {
+          // Keep this device's project collection, but never attach imported
+          // tasks to a local project merely because a numeric ID happens to match.
+          newData.tasks.forEach(function(task) {
+            if (task && Object.prototype.hasOwnProperty.call(task, "projectId")) {
+              task.projectId = null;
+            }
+          });
+        }
 
         if (!validateV2(newData)) {
           showAlertModal("خطأ", "البيانات بعد التحويل غير صالحة.");
@@ -4837,8 +4850,15 @@ function showImportPreview(obj) {
           } catch (_legacyTimerIdentityError) {}
         }
         try {
-          localStorage.setItem(PRE_IMPORT_KEY, JSON.stringify(_rollback));
+          var _rollbackRaw = JSON.stringify(_rollback);
+          localStorage.setItem(PRE_IMPORT_KEY, _rollbackRaw);
+          if (localStorage.getItem(PRE_IMPORT_KEY) !== _rollbackRaw) {
+            throw new Error("فشل التحقق من كتابة نسخة التراجع.");
+          }
           localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
+          if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== "1") {
+            throw new Error("فشل التحقق من علامة الاستيراد.");
+          }
         } catch (e) {
           try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); } catch (_markerCleanupError) {}
           try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (_backupCleanupError) {}
@@ -5016,6 +5036,9 @@ function showImportPreview(obj) {
 
         try {
           localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+          if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== null) {
+            throw new Error("لم تُحذف علامة الاستيراد بعد التحقق النهائي.");
+          }
         } catch (_finishImportMarkerError) {
           var _finishRollbackOk = _rollbackRestore(_rollback);
           if (_finishRollbackOk) {
