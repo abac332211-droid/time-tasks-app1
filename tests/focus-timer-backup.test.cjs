@@ -1748,6 +1748,15 @@ test('manual undo reports restored data separately when only backup cleanup fail
   harness.context._restoreStorageSnapshot = () => true;
   harness.context.sessionStorage = { setItem() {} };
   harness.context.location = { reload() { reloads++; } };
+  const rollingCheckpoints = [];
+  harness.context._storeRollingRecoveryBackup = (reason) => {
+    rollingCheckpoints.push({
+      reason,
+      importMarkerPresent: storage.getItem(STORAGE_KEYS.IMPORT_IN_PROGRESS) !== null,
+      main: storage.getItem(STORAGE_KEYS.MAIN)
+    });
+    return true;
+  };
 
   const undo = vm.runInNewContext(
     extractTopLevelSource('undoLastImport') + '\nundoLastImport',
@@ -1760,6 +1769,10 @@ test('manual undo reports restored data separately when only backup cleanup fail
   assert.equal(reloads, 1);
   assert.equal(alerts.length, 1);
   assert.match(String(alerts[0][0]), /تم الاسترجاع مع بقاء نسخة التراجع/);
+  assert.equal(rollingCheckpoints.length, 1);
+  assert.equal(rollingCheckpoints[0].reason, 'import-undo');
+  assert.equal(rollingCheckpoints[0].importMarkerPresent, false);
+  assert.equal(rollingCheckpoints[0].main, storage.getItem(STORAGE_KEYS.MAIN));
   assert.doesNotMatch(String(alerts[0][0]), /فشل الاسترجاع/);
 });
 
