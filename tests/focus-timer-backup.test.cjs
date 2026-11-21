@@ -992,6 +992,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
   const sessionValues = new Map();
   const alerts = [];
   const confirmations = [];
+  const rollingCheckpoints = [];
   let reloads = 0;
   const sandbox = {
     STORAGE_KEY: STORAGE_KEYS.MAIN,
@@ -1016,6 +1017,14 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
     validateV2: () => true,
     _healTaskArray: () => false,
     _invalidateProjectsCache: () => {},
+    _storeRollingRecoveryBackup(reason) {
+      rollingCheckpoints.push({
+        reason,
+        main: values.get(STORAGE_KEYS.MAIN),
+        importMarkerPresent: values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS)
+      });
+      return true;
+    },
     showConfirmModal: (title, body, accept) => { confirmations.push({ title, body }); accept(); },
     showPromptModal: (_title, _body, _initial, _placeholder, submit) => submit('استبدال'),
     showAlertModal: (...args) => alerts.push(args),
@@ -1032,7 +1041,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
   ].join('\n');
   vm.runInNewContext(source, sandbox);
   const recover = vm.runInNewContext('_recoverInterruptedImport', sandbox);
-  return { values, sessionValues, alerts, confirmations, reloads: () => reloads, recover, faults };
+  return { values, sessionValues, alerts, confirmations, rollingCheckpoints, reloads: () => reloads, recover, faults };
 }
 
 function integrationBackup(data) {
@@ -1221,6 +1230,11 @@ test('full import preview restores the focus timer and the system theme preferen
   assert.equal(harness.values.get('timeTasksApp_focusTimer'), JSON.stringify(timerSnapshot));
   assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
   assert.equal(harness.reloads(), 1);
+  assert.equal(harness.rollingCheckpoints.length, 1);
+  assert.equal(harness.rollingCheckpoints[0].reason, 'import-success');
+  assert.equal(harness.rollingCheckpoints[0].main, harness.values.get(STORAGE_KEYS.MAIN));
+  assert.equal(harness.rollingCheckpoints[0].importMarkerPresent, false,
+    'checkpoint must be captured only after the import marker is cleared');
   assert.deepEqual(harness.alerts, []);
 });
 
