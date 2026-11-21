@@ -862,7 +862,7 @@ test('new task is retained and rendered only after successful persistence', () =
   assert.equal(harness.sandbox.tasks[0].plannedDate, '2026-11-19');
   assert.equal(harness.sandbox.renderCalls, 1);
   assert.equal(harness.sandbox.clearFormCalls, 1);
-  assert.deepEqual(harness.sandbox.reminderSyncs, [10]);
+  assert.deepEqual(harness.sandbox.reminderSyncs, [], 'saveData owns the one full reminder reconciliation');
 });
 
 test('editing a task restores every edited field when persistence fails', () => {
@@ -1233,7 +1233,7 @@ test('failed session logging reports inconsistency if rollback persistence also 
 
 test('transition dialog is not opened when the initial paused-timer checkpoint fails', () => {
   const harness = transitionDialogHarness({ checkpointResult: false });
-  assert.equal(harness.footer.children.length, 0);
+  assert.equal(harness.footer, undefined, 'the modal is not constructed when the initial checkpoint fails');
   assert.equal(harness.alerts.length, 1);
   assert.deepEqual(harness.counts(), { saveCalls: 0, resetCalls: 0, switchCalls: 0, renderCalls: 0 });
 });
