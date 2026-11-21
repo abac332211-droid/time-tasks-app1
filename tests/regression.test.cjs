@@ -2216,6 +2216,34 @@ test('mental-item conversion rollback refreshes rolling checkpoint to the restor
   const checkpoints = [];
   const toasts = [];
   const sandbox = {
+    MENTAL_INBOX_KEY: 'inbox',
+    appSettings: { lastTaskId: 0 },
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _acquireRollingRecoveryCheckpointHold(enabled) {
+      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
+      };
+    },
+    _restoreStorageValueIfUnchanged(key, expected, previous) {
+      try {
+        if (values.get(key) !== expected) return false;
+        if (previous === null) values.delete(key);
+        else {
+          if (failRollback) throw new Error('simulated compensation failure');
+          values.set(key, previous);
+        }
+        return true;
+      } catch (e) { return false; }
+    },
+    _completeRollingRecoveryCheckpoint(reason) {
+      sandbox._storeRollingRecoveryBackup(reason, 0);
+      return true;
+    },
     tasks,
     STORAGE_KEY: 'main',
     Date,
@@ -2269,6 +2297,34 @@ test('mental-item conversion blocks further writes when its main-data compensati
   const checkpoints = [];
   const alerts = [];
   const sandbox = {
+    MENTAL_INBOX_KEY: 'inbox',
+    appSettings: { lastTaskId: 0 },
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _acquireRollingRecoveryCheckpointHold(enabled) {
+      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
+      };
+    },
+    _restoreStorageValueIfUnchanged(key, expected, previous) {
+      try {
+        if (values.get(key) !== expected) return false;
+        if (previous === null) values.delete(key);
+        else {
+          if (failRollback) throw new Error('simulated compensation failure');
+          values.set(key, previous);
+        }
+        return true;
+      } catch (e) { return false; }
+    },
+    _completeRollingRecoveryCheckpoint(reason) {
+      sandbox._storeRollingRecoveryBackup(reason, 0);
+      return true;
+    },
     tasks: [],
     STORAGE_KEY: 'main',
     storageRecoveryRequired: false,
@@ -2319,6 +2375,34 @@ test('project deletion rollback refreshes rolling checkpoint only after both sto
   const checkpoints = [];
   const toasts = [];
   const sandbox = {
+    MENTAL_INBOX_KEY: 'inbox',
+    appSettings: { lastTaskId: 0 },
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _acquireRollingRecoveryCheckpointHold(enabled) {
+      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
+      };
+    },
+    _restoreStorageValueIfUnchanged(key, expected, previous) {
+      try {
+        if (values.get(key) !== expected) return false;
+        if (previous === null) values.delete(key);
+        else {
+          if (failRollback) throw new Error('simulated compensation failure');
+          values.set(key, previous);
+        }
+        return true;
+      } catch (e) { return false; }
+    },
+    _completeRollingRecoveryCheckpoint(reason) {
+      sandbox._storeRollingRecoveryBackup(reason, 0);
+      return true;
+    },
     tasks,
     STORAGE_KEY: 'main',
     PROJECTS_KEY: 'projects',
@@ -2383,6 +2467,34 @@ test('project deletion enters recovery-required state if compensating writes fai
   const alerts = [];
   const checkpoints = [];
   const sandbox = {
+    MENTAL_INBOX_KEY: 'inbox',
+    appSettings: { lastTaskId: 0 },
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _acquireRollingRecoveryCheckpointHold(enabled) {
+      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
+      };
+    },
+    _restoreStorageValueIfUnchanged(key, expected, previous) {
+      try {
+        if (values.get(key) !== expected) return false;
+        if (previous === null) values.delete(key);
+        else {
+          if (failRollback) throw new Error('simulated compensation failure');
+          values.set(key, previous);
+        }
+        return true;
+      } catch (e) { return false; }
+    },
+    _completeRollingRecoveryCheckpoint(reason) {
+      sandbox._storeRollingRecoveryBackup(reason, 0);
+      return true;
+    },
     tasks,
     STORAGE_KEY: 'main',
     PROJECTS_KEY: 'projects',
