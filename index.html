@@ -782,10 +782,13 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
 
 <script>
 const STORAGE_KEY = "timeTasksApp_v1";
-const BACKUP_KEY = "timeTasksApp_backup_v1";
+const MIGRATION_ARCHIVE_KEY = "timeTasksApp_backup_v1";
+// Legacy alias retained for the in-app migration test harness.
+const BACKUP_KEY = MIGRATION_ARCHIVE_KEY;
 const PRE_IMPORT_KEY = "timeTasksApp_preImportBackup";
 
 const IMPORT_IN_PROGRESS_KEY = "timeTasksApp_importInProgress";
+const MIGRATION_IN_PROGRESS_KEY = "timeTasksApp_migrationInProgress";
 const TEST_FLAG_KEY = "timeTasksApp_testInjected";
 const TEST_BACKUP_KEY = "timeTasksApp_testBackup";
 const CURRENT_SCHEMA_VERSION = 2;
@@ -1676,66 +1679,131 @@ function migrateV1ToV2() {
     fromVersion: 1, toVersion: 2,
     totalOriginal: 0, migratedSuccessfully: 0, repaired: 0,
     unrecoverable: 0, unrecoverableItems: [], repairsByType: {},
-    backupKey: BACKUP_KEY, recoveredFromBackup: false,
+    backupKey: MIGRATION_ARCHIVE_KEY, recoveredFromBackup: false,
     success: false, error: null
   };
+
+  function writeAndVerify(key, value, label) {
+    localStorage.setItem(key, value);
+    if (localStorage.getItem(key) !== value) {
+      throw new Error((label || "storage") + "_write_verification_failed");
+    }
+  }
+
+  function clearMigrationMarker() {
+    localStorage.removeItem(MIGRATION_IN_PROGRESS_KEY);
+    if (localStorage.getItem(MIGRATION_IN_PROGRESS_KEY) !== null) {
+      throw new Error("migration_marker_clear_verification_failed");
+    }
+  }
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(buildEmptyV2()));
+    const pendingMigration = localStorage.getItem(MIGRATION_IN_PROGRESS_KEY) === "1";
+
+    if (raw === null && !pendingMigration) {
+      const empty = buildEmptyV2();
+      if (!validateV2(empty)) {
+        report.error = "generated_empty_v2_invalid";
+        return report;
+      }
+      writeAndVerify(STORAGE_KEY, JSON.stringify(empty), "empty_main");
       report.success = true;
       return report;
     }
-    let parsed = null, mainCorrupt = false;
-    try {
-      parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { mainCorrupt = true; parsed = null; }
-    } catch (e) { mainCorrupt = true; }
 
-    if (mainCorrupt) {
-      const backupRaw = localStorage.getItem(BACKUP_KEY);
-      if (!backupRaw) { report.error = "JSON_parse_failed_no_backup"; return report; }
+    let parsed = null;
+    let mainCorrupt = raw === null;
+    if (raw !== null) {
       try {
-        const bp = JSON.parse(backupRaw);
-        if (!bp || typeof bp !== "object" || Array.isArray(bp)) { report.error = "JSON_parse_failed_backup_invalid"; return report; }
-        parsed = bp; report.recoveredFromBackup = true;
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(bp));
-        } catch (e) {
-          report.error = "backup_recovery_write_failed";
+        parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          mainCorrupt = true;
+          parsed = null;
+        }
+      } catch (e) {
+        mainCorrupt = true;
+      }
+    }
+
+    let sourceRaw = raw;
+    if (mainCorrupt) {
+      if (!pendingMigration) {
+        report.error = "JSON_parse_failed_no_migration_marker";
+        return report;
+      }
+      const archiveRaw = localStorage.getItem(MIGRATION_ARCHIVE_KEY);
+      if (!archiveRaw) {
+        report.error = "JSON_parse_failed_backup_missing_during_migration";
+        return report;
+      }
+      try {
+        const archiveData = JSON.parse(archiveRaw);
+        if (!archiveData || typeof archiveData !== "object" || Array.isArray(archiveData)) {
+          report.error = "JSON_parse_failed_backup_invalid";
           return report;
         }
-      } catch (e2) { report.error = "JSON_parse_failed_backup_also_corrupt"; return report; }
-    }
-
-    const sv = parsed.schemaVersion;
-
-    if (sv === CURRENT_SCHEMA_VERSION) {
-      if (parsed && Array.isArray(parsed.tasks)) {
-        var _healed = _healTaskArray(parsed.tasks);
-        if (_healed) {
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); } catch (e) {}
+        if (archiveData.schemaVersion !== undefined && archiveData.schemaVersion !== 1) {
+          report.error = "migration_archive_not_v1";
+          return report;
         }
+        parsed = archiveData;
+        sourceRaw = archiveRaw;
+        report.recoveredFromBackup = true;
+      } catch (e) {
+        report.error = "JSON_parse_failed_backup_also_corrupt";
+        return report;
       }
-      if (validateV2(parsed)) { report.success = true; report.fromVersion = 2; return report; }
-      const backupRaw = localStorage.getItem(BACKUP_KEY);
-      if (backupRaw) {
-        try {
-          const bp = JSON.parse(backupRaw);
-          if (bp && Array.isArray(bp.tasks)) _healTaskArray(bp.tasks);
-          if (validateV2(bp)) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(bp));
-            report.success = true; report.fromVersion = 2; report.recoveredFromBackup = true;
-            return report;
-          }
-        } catch (e) {}
-      }
-      report.error = "v2_invalid_no_recovery"; return report;
     }
 
-    if (sv !== undefined && sv !== 1) { report.error = "unknown_schema_version_" + sv; return report; }
+    const schemaVersion = parsed.schemaVersion;
 
-    if (!report.recoveredFromBackup) localStorage.setItem(BACKUP_KEY, raw);
+    if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+      // Heal a private candidate only. The stored bytes remain untouched unless
+      // the complete candidate passes the V2 validator.
+      const candidate = JSON.parse(JSON.stringify(parsed));
+      const candidateHealed = Array.isArray(candidate.tasks)
+        ? _healTaskArray(candidate.tasks)
+        : false;
+
+      if (!validateV2(candidate)) {
+        report.error = "v2_invalid_no_recovery";
+        return report;
+      }
+
+      if (candidateHealed) {
+        writeAndVerify(STORAGE_KEY, JSON.stringify(candidate), "v2_repair");
+      }
+
+      if (pendingMigration) clearMigrationMarker();
+      report.success = true;
+      report.fromVersion = CURRENT_SCHEMA_VERSION;
+      return report;
+    }
+
+    if (schemaVersion !== undefined && schemaVersion !== 1) {
+      report.error = "unknown_schema_version_" + schemaVersion;
+      return report;
+    }
+
+    // The legacy archive is a one-time migration checkpoint, not a rolling
+    // backup. A marker must exist before its contents can ever be used.
+    if (localStorage.getItem(MIGRATION_IN_PROGRESS_KEY) !== "1") {
+      localStorage.setItem(MIGRATION_IN_PROGRESS_KEY, "1");
+      if (localStorage.getItem(MIGRATION_IN_PROGRESS_KEY) !== "1") {
+        report.error = "migration_marker_write_verification_failed";
+        return report;
+      }
+    }
+
+    if (!report.recoveredFromBackup) {
+      if (localStorage.getItem(MIGRATION_ARCHIVE_KEY) !== sourceRaw) {
+        writeAndVerify(MIGRATION_ARCHIVE_KEY, sourceRaw, "migration_archive");
+      }
+    } else if (localStorage.getItem(MIGRATION_ARCHIVE_KEY) !== sourceRaw) {
+      report.error = "migration_archive_changed_during_recovery";
+      return report;
+    }
 
     const rawTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
     report.totalOriginal = rawTasks.length;
@@ -1746,15 +1814,23 @@ function migrateV1ToV2() {
     rawTasks.forEach(function(item, index) {
       if (!isValidTaskObject(item)) {
         report.unrecoverable++;
-        report.unrecoverableItems.push({ index, rawType: item === null ? "null" : typeof item, reason: "not_a_task_object" });
+        report.unrecoverableItems.push({
+          index,
+          rawType: item === null ? "null" : typeof item,
+          reason: "not_a_task_object"
+        });
         return;
       }
       const result = migrateTaskV1toV2(item, existingIds);
       migratedTasks.push(result.task);
       if (result.repairs.length > 0) {
         report.repaired++;
-        result.repairs.forEach(function(r) { repairsAggregate[r] = (repairsAggregate[r] || 0) + 1; });
-      } else report.migratedSuccessfully++;
+        result.repairs.forEach(function(r) {
+          repairsAggregate[r] = (repairsAggregate[r] || 0) + 1;
+        });
+      } else {
+        report.migratedSuccessfully++;
+      }
     });
 
     report.repairsByType = repairsAggregate;
@@ -1763,26 +1839,48 @@ function migrateV1ToV2() {
     if (migratedTasks.length > 0) {
       const minCreatedAt = Math.min.apply(null, migratedTasks.map(function(t) { return t.createdAt; }));
       const d = new Date(minCreatedAt);
-      firstUseDate = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-    } else firstUseDate = todayStr();
+      firstUseDate = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+        + "-" + String(d.getDate()).padStart(2, "0");
+    } else {
+      firstUseDate = todayStr();
+    }
 
     const v2Data = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       createdByVersion: APP_VERSION,
-      settings: { operationalDayStart: 4, firstUseDate, darkMode: false, themeMode: "system", lastRecurringDates: {} },
+      settings: {
+        operationalDayStart: 4,
+        firstUseDate,
+        darkMode: false,
+        themeMode: "system",
+        lastRecurringDates: {}
+      },
       tasks: migratedTasks,
       dailyLogs: []
     };
 
-    if (!validateV2(v2Data)) { report.error = "generated_v2_invalid"; return report; }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(v2Data));
+    if (!validateV2(v2Data)) {
+      report.error = "generated_v2_invalid";
+      return report;
+    }
+
+    const migratedRaw = JSON.stringify(v2Data);
+    writeAndVerify(STORAGE_KEY, migratedRaw, "migrated_main");
+    const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (!validateV2(persisted)) {
+      report.error = "migrated_main_readback_invalid";
+      return report;
+    }
+
+    clearMigrationMarker();
     report.success = true;
     return report;
   } catch (e) {
-    report.error = e.message || "unknown_error";
+    report.error = e && e.message ? e.message : "unknown_error";
     return report;
   }
 }
+
 
 /* ============ Storage ============ */
 
@@ -2040,16 +2138,23 @@ function saveData() {
     showAlertModal("تنبيه الحفظ", "البيانات القديمة لم تُرحَّل بعد. استعدها من نسخة احتياطية، أو احذف كل البيانات من الإعدادات.");
     return false;
   }
-  if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") {
+  if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined"
+      || typeof MIGRATION_IN_PROGRESS_KEY !== "undefined") {
     try {
-      if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY)) {
+      const importPending = typeof IMPORT_IN_PROGRESS_KEY !== "undefined"
+        && !!localStorage.getItem(IMPORT_IN_PROGRESS_KEY);
+      const migrationPending = typeof MIGRATION_IN_PROGRESS_KEY !== "undefined"
+        && !!localStorage.getItem(MIGRATION_IN_PROGRESS_KEY);
+      if (importPending || migrationPending) {
         storageRecoveryRequired = true;
-        showAlertModal("الاستعادة لم تكتمل", "توجد عملية استعادة أو تراجع لم تُغلق بعد. أوقفنا الحفظ حتى يستعيد التطبيق الحالة السابقة ويتحقق منها عند إعادة الفتح.");
+        showAlertModal("الاستعادة أو الترحيل لم يكتمل",
+          "توجد عملية استعادة أو ترحيل لم تُغلق بعد. أوقفنا الحفظ حتى يستعيد التطبيق الحالة السابقة أو يكمل الترحيل ويتحقق منه عند إعادة الفتح.");
         return false;
       }
     } catch (markerReadError) {
       storageRecoveryRequired = true;
-      showAlertModal("تعذر التحقق من حالة الاستعادة", "تعذر قراءة علامة الاسترداد؛ أوقف التطبيق الحفظ حمايةً من الكتابة فوق حالة غير محسومة.");
+      showAlertModal("تعذر التحقق من حالة الاسترداد",
+        "تعذر قراءة علامة الاستعادة أو الترحيل؛ أوقف التطبيق الحفظ حمايةً من الكتابة فوق حالة غير محسومة.");
       return false;
     }
   }
@@ -2169,62 +2274,104 @@ function retryStorageRecovery() {
 }
 
 function resetAll() {
-  showConfirmModal("🗑️ حذف كل البيانات", "سيتم حذف: المهام، سجلات الأيام، جلسات التركيز، الخواطر، المشاريع، والأفكار المفتوحة. تبقى تفضيلاتك (الوضع الليلي، مدد المؤقت، الإشعارات). هل أنت متأكد؟", function() {
-    showConfirmModal("تأكيد نهائي", "هل أنت واثق تمامًا؟", function() {
-      const fresh = buildEmptyV2();
-      fresh.settings.darkMode = appSettings.darkMode;
-      fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
-      fresh.settings.firstUseDate = todayStr();
-      try {
-        var freshRaw = JSON.stringify(fresh);
-        localStorage.setItem(STORAGE_KEY, freshRaw);
-        _setMainStorageBaseline(freshRaw);
-      } catch (e) {
-        showAlertModal("خطأ", "تعذر الحفظ");
-        return;
-      }
-      appSettings = fresh.settings;
-      createdByVersion = fresh.createdByVersion;
-      tasks = [];
-      try {
-        localStorage.removeItem(PRE_IMPORT_KEY);
-        localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
-        localStorage.removeItem(TEST_FLAG_KEY);
-        localStorage.removeItem(BACKUP_KEY);
-        localStorage.removeItem(TEST_BACKUP_KEY);
-        localStorage.removeItem(THOUGHTS_KEY);
-        localStorage.removeItem(PROJECTS_KEY);
-        localStorage.removeItem(FOCUS_TIMER_KEY);
-        localStorage.removeItem(FOCUS_SESSIONS_KEY);
-        localStorage.removeItem(MENTAL_INBOX_KEY);
-        _invalidateProjectsCache();
-      } catch (e) {}
+  showConfirmModal(
+    "🗑️ حذف كل البيانات",
+    "سيتم حذف المهام وسجلات الأيام وجلسات التركيز والخواطر والمشاريع والأفكار المفتوحة، وكذلك النسخ الداخلية للترحيل والتراجع. تبقى تفضيلاتك (الوضع الليلي ومدد المؤقت والإشعارات). لا تُحذف ملفات النسخ الاحتياطية التي صدّرتها خارج التطبيق. هل أنت متأكد؟",
+    function() {
+      showConfirmModal("تأكيد نهائي", "هل أنت واثق تمامًا؟", function() {
+        const fresh = buildEmptyV2();
+        fresh.settings.darkMode = appSettings.darkMode;
+        fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
+        fresh.settings.firstUseDate = todayStr();
 
-      _sessionsCache = null;
-      _stopDisplayTick();
-      _focusTimer.mode = "pomodoro";
-      _focusTimer.phase = "work";
-      _focusTimer.running = false;
-      _focusTimer.baseElapsed = 0;
-      _focusTimer.startedAt = null;
-      _focusTimer.cyclePosition = 0;
-      _focusTimer.taskId = null;
-      _focusTimer.sessionStartAt = null;
-      _focusTimer.awaitingConfirmation = false;
-      _focusTimer.pendingPhaseEndedAt = null;
-      _awaySessionPromptOpen = false;
-      _applyThemePreference();
-      storageRecoveryRequired = false;
-      _queueAllTaskReminderSync();
-      cancelEdit();
-      cancelProjectEdit();
-      renderAll();
-      showToast("✅ تم حذف كل البيانات");
-    });
-  });
+        let freshRaw;
+        try {
+          if (!validateV2(fresh)) throw new Error("سجل البيانات الفارغ غير صالح.");
+          freshRaw = JSON.stringify(fresh);
+          localStorage.setItem(STORAGE_KEY, freshRaw);
+          if (localStorage.getItem(STORAGE_KEY) !== freshRaw) {
+            throw new Error("فشل التحقق من سجل البيانات الفارغ.");
+          }
+          _setMainStorageBaseline(freshRaw);
+        } catch (e) {
+          showAlertModal("تعذر بدء الحذف", "لم يبدأ حذف المجموعات الأخرى لأن حفظ سجل المهام الفارغ أو التحقق منه فشل: " + e.message);
+          return;
+        }
+
+        appSettings = fresh.settings;
+        createdByVersion = fresh.createdByVersion;
+        tasks = [];
+
+        // Each key is attempted and verified independently; a single failure
+        // must not skip the remaining cleanup or produce a false success toast.
+        const removalKeys = [
+          IMPORT_IN_PROGRESS_KEY,
+          PRE_IMPORT_KEY,
+          MIGRATION_IN_PROGRESS_KEY,
+          MIGRATION_ARCHIVE_KEY,
+          TEST_FLAG_KEY,
+          TEST_BACKUP_KEY,
+          THOUGHTS_KEY,
+          PROJECTS_KEY,
+          FOCUS_TIMER_KEY,
+          FOCUS_SESSIONS_KEY,
+          MENTAL_INBOX_KEY
+        ];
+        const failedRemovalKeys = [];
+        for (let i = 0; i < removalKeys.length; i++) {
+          const key = removalKeys[i];
+          try {
+            localStorage.removeItem(key);
+            if (localStorage.getItem(key) !== null) {
+              failedRemovalKeys.push(key);
+            }
+          } catch (removeError) {
+            failedRemovalKeys.push(key);
+            console.error("resetAll: could not remove storage key:", key, removeError);
+          }
+        }
+        try { _invalidateProjectsCache(); } catch (cacheError) {
+          console.error("resetAll: project cache invalidation failed:", cacheError);
+        }
+
+        _sessionsCache = null;
+        _stopDisplayTick();
+        _focusTimer.mode = "pomodoro";
+        _focusTimer.phase = "work";
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 0;
+        _focusTimer.startedAt = null;
+        _focusTimer.cyclePosition = 0;
+        _focusTimer.taskId = null;
+        _focusTimer.sessionStartAt = null;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _awaySessionPromptOpen = false;
+        _applyThemePreference();
+        _queueAllTaskReminderSync();
+        cancelEdit();
+        cancelProjectEdit();
+        renderAll();
+
+        if (failedRemovalKeys.length > 0) {
+          storageRecoveryRequired = true;
+          showAlertModal(
+            "لم يكتمل حذف كل البيانات",
+            "تم حفظ سجل المهام الفارغ، لكن تعذر حذف بعض مفاتيح التخزين الداخلية: "
+              + failedRemovalKeys.join("، ")
+              + ". لم يعلن التطبيق نجاح الحذف. أعد محاولة الحذف بعد معالجة مشكلة التخزين."
+          );
+          return;
+        }
+
+        storageRecoveryRequired = false;
+        showToast("✅ تم حذف كل البيانات");
+      });
+    }
+  );
 }
 
-/* ============ Daily Log ============ */
+
 
 function getTodayLog() {
   try {
@@ -4410,6 +4557,27 @@ function importFromText() {
 }
 
 function _restoreStorageSnapshot(rb) {
+  var snapshotKeys = ["main", "focusSessions", "focusTimer", "mentalInbox",
+    "thoughts", "projects", "focusSettings", "notifications"];
+  function markRecoveryRequired() {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+  }
+
+  // A missing property is not the same as an intentionally empty collection.
+  // Validate the entire rollback record before reading or changing any key.
+  if (!rb || typeof rb !== "object" || Array.isArray(rb)) {
+    markRecoveryRequired();
+    return false;
+  }
+  for (var s = 0; s < snapshotKeys.length; s++) {
+    var name = snapshotKeys[s];
+    if (!Object.prototype.hasOwnProperty.call(rb, name)
+        || (rb[name] !== null && typeof rb[name] !== "string")) {
+      markRecoveryRequired();
+      return false;
+    }
+  }
+
   var entries = [
     [STORAGE_KEY, rb.main],
     [FOCUS_SESSIONS_KEY, rb.focusSessions],
@@ -4421,19 +4589,17 @@ function _restoreStorageSnapshot(rb) {
     [NOTIFICATIONS_KEY, rb.notifications]
   ];
   var before = [];
-  function markRecoveryRequired() {
-    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
-  }
   function writeAndVerify(key, value) {
-    if (value === null || value === undefined) localStorage.removeItem(key);
+    if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
     var actual = localStorage.getItem(key);
-    if ((value === null || value === undefined) ? actual !== null : actual !== value) {
+    if (value === null ? actual !== null : actual !== value) {
       throw new Error("تعذر التحقق من استعادة المفتاح: " + key);
     }
   }
-  // Read every current value before the first write. This prevents a read failure
-  // from leaving an avoidable partially-restored set of collections.
+
+  // Read every current value before the first write. This prevents a read
+  // failure from leaving an avoidable partially-restored set of collections.
   try {
     for (var r = 0; r < entries.length; r++) {
       before.push([entries[r][0], localStorage.getItem(entries[r][0])]);
@@ -4442,12 +4608,13 @@ function _restoreStorageSnapshot(rb) {
     markRecoveryRequired();
     return false;
   }
+
   try {
     for (var i = 0; i < entries.length; i++) {
       writeAndVerify(entries[i][0], entries[i][1]);
     }
     _invalidateProjectsCache();
-    if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(rb.main === undefined ? null : rb.main);
+    if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(rb.main);
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = false;
     return true;
   } catch (restoreError) {
@@ -4471,6 +4638,7 @@ function _restoreStorageSnapshot(rb) {
   }
 }
 
+
 function _rollbackRestore(rb) {
   return _restoreStorageSnapshot(rb);
 }
@@ -4486,29 +4654,37 @@ function _recoverInterruptedImport() {
     var raw = localStorage.getItem(PRE_IMPORT_KEY);
     if (!raw) return false;
     var snapshot = JSON.parse(raw);
-    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
-        || !Object.prototype.hasOwnProperty.call(snapshot, "main")) return false;
-
     var snapshotKeys = ["main", "focusSessions", "focusTimer", "mentalInbox",
       "thoughts", "projects", "focusSettings", "notifications"];
+
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
     for (var i = 0; i < snapshotKeys.length; i++) {
-      var value = snapshot[snapshotKeys[i]];
-      if (value !== null && value !== undefined && typeof value !== "string") return false;
+      var key = snapshotKeys[i];
+      if (!Object.prototype.hasOwnProperty.call(snapshot, key)
+          || (snapshot[key] !== null && typeof snapshot[key] !== "string")) {
+        return false;
+      }
     }
+
     if (snapshot.main !== null) {
       var mainData = JSON.parse(snapshot.main);
       if (!validateV2(mainData)) return false;
     }
     if (!_restoreStorageSnapshot(snapshot)) return false;
 
-    // احذف علامة العملية أولاً؛ إذا تعذر ذلك نحتفظ بنسخة التراجع لإعادة المحاولة.
+    // A remaining marker means startup must keep the recovery path active.
     localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+    if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== null) return false;
+
+    // Failure to delete the now-inert snapshot is cleanup debt, not a failed
+    // data restore: without the marker it cannot be replayed automatically.
     try { localStorage.removeItem(PRE_IMPORT_KEY); } catch (_backupCleanupError) {}
     return true;
   } catch (e) {
     return false;
   }
 }
+
 
 function showImportPreview(obj) {
   const d = obj.data;
@@ -4533,6 +4709,28 @@ function showImportPreview(obj) {
     currentLogs = Array.isArray(cur.dailyLogs) ? cur.dailyLogs.length : 0;
   } catch (e) {}
 
+  const optionalGroups = [
+    ["focusSessions", "جلسات التركيز"],
+    ["focusTimer", "مؤقت التركيز"],
+    ["mentalInbox", "الأفكار المفتوحة"],
+    ["thoughts", "الخواطر"],
+    ["projects", "المشاريع"],
+    ["focusSettings", "إعدادات المؤقت"],
+    ["notifications", "تفضيلات الإشعارات"]
+  ];
+  const replacingGroups = [];
+  const preservingGroups = [];
+  optionalGroups.forEach(function(group) {
+    if (d[group[0]] !== undefined && d[group[0]] !== null) replacingGroups.push(group[1]);
+    else preservingGroups.push(group[1]);
+  });
+  const importBehaviorHtml =
+    "<br><br><b>ستُستبدل المهام وسجلات الأيام وإعدادات التطبيق الرئيسية.</b>" +
+    "<br>المجموعات الموجودة في الملف ستُستبدل على هذا الجهاز: "
+      + (replacingGroups.length ? replacingGroups.join("، ") : "لا توجد") + "." +
+    "<br>المجموعات غير الموجودة في الملف ستبقى كما هي على هذا الجهاز: "
+      + (preservingGroups.length ? preservingGroups.join("، ") : "لا توجد") + ".";
+
   const textHtml =
     "<b>📅 تاريخ التصدير:</b> " + escapeHTML(exportedAt) + "<br>" +
     "<b>🔢 إصدار التطبيق:</b> " + escapeHTML(obj.appVersion || "—") + "<br><br>" +
@@ -4545,7 +4743,7 @@ function showImportPreview(obj) {
       ? "<br><br><b>تنبيه توافق البيانات القديمة:</b> توجد " + legacyPartialCount +
         " مهمة بحالة partial؛ بعد تأكيدك سيحوّلها التطبيق إلى pending ليتوافق مع نموذج البيانات الحالي. يمكنك إلغاء العملية إن لم توافق على هذا التحويل."
       : "") +
-    "<br><br><span style='color:var(--danger);font-weight:bold;'>⚠️ سيتم استبدال كل البيانات الحالية.</span>";
+    importBehaviorHtml;
 
   showConfirmModal("📦 معاينة النسخة الاحتياطية", textHtml, function() {
     showPromptModal(
@@ -4612,6 +4810,32 @@ function showImportPreview(obj) {
         var _expectedFocusTimerRaw = (d.focusTimer !== undefined && d.focusTimer !== null)
           ? JSON.stringify(d.focusTimer)
           : _rollback.focusTimer;
+        if ((d.focusTimer === undefined || d.focusTimer === null) && _rollback.focusTimer) {
+          try {
+            var _previousMainForTimer = _rollback.main ? JSON.parse(_rollback.main) : null;
+            var _previousTasksForTimer = _previousMainForTimer && Array.isArray(_previousMainForTimer.tasks)
+              ? _previousMainForTimer.tasks : [];
+            var _timerForLegacyImport = JSON.parse(_rollback.focusTimer);
+            if (_timerForLegacyImport && typeof _timerForLegacyImport.taskId === "number") {
+              var _previousTimerTask = _previousTasksForTimer.find(function(task) {
+                return task && task.id === _timerForLegacyImport.taskId;
+              });
+              var _importedTimerTask = d.tasks.find(function(task) {
+                return task && task.id === _timerForLegacyImport.taskId;
+              });
+              var _sameTimerTask = !!_previousTimerTask && !!_importedTimerTask
+                && _previousTimerTask.name === _importedTimerTask.name;
+              if (_sameTimerTask
+                  && (_previousTimerTask.createdAt !== undefined || _importedTimerTask.createdAt !== undefined)) {
+                _sameTimerTask = _previousTimerTask.createdAt === _importedTimerTask.createdAt;
+              }
+              if (!_sameTimerTask) {
+                _timerForLegacyImport.taskId = null;
+                _expectedFocusTimerRaw = JSON.stringify(_timerForLegacyImport);
+              }
+            }
+          } catch (_legacyTimerIdentityError) {}
+        }
         try {
           localStorage.setItem(PRE_IMPORT_KEY, JSON.stringify(_rollback));
           localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
@@ -4651,6 +4875,13 @@ function showImportPreview(obj) {
 
         try {
           _restoreFocusTimerSnapshot(d, localStorage, FOCUS_TIMER_KEY);
+          if ((d.focusTimer === undefined || d.focusTimer === null)
+              && _expectedFocusTimerRaw !== _rollback.focusTimer) {
+            localStorage.setItem(FOCUS_TIMER_KEY, _expectedFocusTimerRaw);
+            if (localStorage.getItem(FOCUS_TIMER_KEY) !== _expectedFocusTimerRaw) {
+              throw new Error("فشل التحقق من فصل المؤقت عن المهمة المستوردة.");
+            }
+          }
         } catch (e) {
           var _focusTimerRollbackOk = _rollbackRestore(_rollback);
           if (_focusTimerRollbackOk) {
@@ -4811,38 +5042,98 @@ function undoLastImport() {
     showAlertModal("فشل قراءة نسخة التراجع", "تعذر قراءة النسخة السابقة. لم تُغيّر بياناتك الحالية.");
     return;
   }
-  if (!raw) { showAlertModal("تنبيه", "لا توجد نسخة سابقة للتراجع."); return; }
+  if (!raw) {
+    showAlertModal("تنبيه", "لا توجد نسخة سابقة للتراجع.");
+    return;
+  }
+
   showConfirmModal("التراجع عن الاستعادة", "سيتم استرجاع الحالة السابقة قبل آخر استعادة. متابعة؟", function() {
     try {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && ("main" in parsed)) {
-        if (parsed.main) {
-          const mainParsed = JSON.parse(parsed.main);
-          if (!validateV2(mainParsed)) { showAlertModal("خطأ", "النسخة السابقة تالفة."); return; }
+      const isSnapshot = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        && Object.prototype.hasOwnProperty.call(parsed, "main");
+
+      if (isSnapshot) {
+        const snapshotKeys = ["main", "focusSessions", "focusTimer", "mentalInbox",
+          "thoughts", "projects", "focusSettings", "notifications"];
+        for (let i = 0; i < snapshotKeys.length; i++) {
+          const key = snapshotKeys[i];
+          if (!Object.prototype.hasOwnProperty.call(parsed, key)
+              || (parsed[key] !== null && typeof parsed[key] !== "string")) {
+            showAlertModal("نسخة التراجع غير مكتملة", "تحتوي نسخة التراجع على مجموعة بيانات مفقودة أو غير صالحة. لم نكتب أو نحذف أي بيانات.");
+            return;
+          }
         }
-        // Mark undo as an in-progress restore so a partial failure is retried at next startup.
-        try {
-          localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
-        } catch (e) {
-          showAlertModal("تعذر بدء التراجع", "تعذر حفظ علامة حماية التراجع. لم تبدأ استعادة البيانات.");
-          return;
+        if (parsed.main !== null) {
+          const mainParsed = JSON.parse(parsed.main);
+          if (!validateV2(mainParsed)) {
+            showAlertModal("خطأ", "النسخة السابقة تالفة.");
+            return;
+          }
+        }
+
+        // Mark undo as an in-progress restore and verify the marker before writes.
+        localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
+        if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== "1") {
+          throw new Error("تعذر التحقق من علامة حماية التراجع.");
         }
         if (!_restoreStorageSnapshot(parsed)) {
           showAlertModal("فشل الاسترجاع", "تعذر التحقق من استعادة جميع البيانات. احتُفظ بعلامة الاسترداد ونسخة التراجع؛ سيحاول التطبيق استكمالها عند إعادة فتحه.");
           return;
         }
       } else {
-        if (!validateV2(parsed)) { showAlertModal("خطأ", "النسخة السابقة تالفة."); return; }
+        if (!validateV2(parsed)) {
+          showAlertModal("خطأ", "النسخة السابقة تالفة.");
+          return;
+        }
         localStorage.setItem(STORAGE_KEY, raw);
-        if (localStorage.getItem(STORAGE_KEY) !== raw) throw new Error("فشل التحقق من البيانات الرئيسية");
+        if (localStorage.getItem(STORAGE_KEY) !== raw) {
+          throw new Error("فشل التحقق من البيانات الرئيسية");
+        }
       }
-      localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
-      localStorage.removeItem(PRE_IMPORT_KEY);
-      try { sessionStorage.setItem('_pendingToastAfterReload', '✅ تم الاسترجاع الكامل'); } catch (e) {}
+
+      // Do not report a data-restore failure if only the recovery marker cannot
+      // be removed: keeping it is safer because startup can retry from PRE_IMPORT.
+      try {
+        localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
+        if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== null) {
+          throw new Error("تعذر التحقق من حذف علامة الاسترداد.");
+        }
+      } catch (markerCleanupError) {
+        if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+        showAlertModal("تمت الاستعادة لكن بقيت علامة الاسترداد",
+          "تمت كتابة البيانات السابقة، لكن تعذر إغلاق علامة الاسترداد. احتفظنا بنسخة التراجع لحماية بياناتك؛ أعد فتح التطبيق بعد معالجة التخزين.");
+        return;
+      }
+
+      let backupCleanupFailed = false;
+      try {
+        localStorage.removeItem(PRE_IMPORT_KEY);
+        if (localStorage.getItem(PRE_IMPORT_KEY) !== null) backupCleanupFailed = true;
+      } catch (backupCleanupError) {
+        backupCleanupFailed = true;
+      }
+
+      try {
+        sessionStorage.setItem(
+          "_pendingToastAfterReload",
+          backupCleanupFailed
+            ? "✅ تمت الاستعادة؛ بقيت نسخة تراجع داخلية لم يُكتمل حذفها"
+            : "✅ تم الاسترجاع الكامل"
+        );
+      } catch (e) {}
+
+      if (backupCleanupFailed) {
+        showAlertModal("تم الاسترجاع مع بقاء نسخة التراجع",
+          "تمت استعادة البيانات السابقة والتحقق منها. تعذر حذف نسخة التراجع الداخلية فقط؛ بقيت محفوظة ولم تُستخدم تلقائيًا.");
+      }
       location.reload();
-    } catch (e) { showAlertModal("فشل الاسترجاع", e.message); }
+    } catch (e) {
+      showAlertModal("فشل الاسترجاع", e.message);
+    }
   });
 }
+
 
 /* ============ Test Data ============ */
 
@@ -5291,7 +5582,8 @@ function runMigrationTests() {
   const originalTasks = tasks.slice();
   function reset() {
     localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(BACKUP_KEY);
+    localStorage.removeItem(MIGRATION_ARCHIVE_KEY);
+    localStorage.removeItem(MIGRATION_IN_PROGRESS_KEY);
   }
   function test(name, setup, check) {
     try {
@@ -5311,7 +5603,7 @@ function runMigrationTests() {
     return d.schemaVersion === 2 && Array.isArray(d.tasks) && d.tasks.length === 0;
   });
   test("JSON تالف + لا backup → رفض", function() { localStorage.setItem(STORAGE_KEY, "{invalid"); },
-    function(r) { return r.success === false && r.error === "JSON_parse_failed_no_backup"; });
+    function(r) { return r.success === false && r.error === "JSON_parse_failed_no_migration_marker"; });
   test("كائن فارغ {} → v2 فارغة", function() { localStorage.setItem(STORAGE_KEY, "{}"); },
     function(r) { return r.success === true; });
   test("مهمة كاملة صحيحة", function() {
@@ -5511,16 +5803,18 @@ function runMigrationTests() {
     const d = JSON.parse(localStorage.getItem(STORAGE_KEY));
     return d.tasks[0].completedAt === null;
   });
-  test("JSON تالف + backup صالح", function() {
-    localStorage.setItem(BACKUP_KEY, JSON.stringify({ tasks: [{ id: 77, name: "من_backup", expected: 30 }] }));
+  test("JSON تالف + أرشيف ترحيل صالح وعلامة معلّقة", function() {
+    localStorage.setItem(MIGRATION_IN_PROGRESS_KEY, "1");
+    localStorage.setItem(MIGRATION_ARCHIVE_KEY, JSON.stringify({ tasks: [{ id: 77, name: "من_backup", expected: 30 }] }));
     localStorage.setItem(STORAGE_KEY, "{corrupt json");
   }, function(r) {
     if (!r.recoveredFromBackup) return "not_recovered";
     const d = JSON.parse(localStorage.getItem(STORAGE_KEY));
     return d.tasks.some(function(t) { return t.name === "من_backup"; });
   });
-  test("JSON تالف + backup تالف", function() {
-    localStorage.setItem(BACKUP_KEY, "{also corrupt");
+  test("JSON تالف + أرشيف ترحيل تالف أثناء ترحيل معلّق", function() {
+    localStorage.setItem(MIGRATION_IN_PROGRESS_KEY, "1");
+    localStorage.setItem(MIGRATION_ARCHIVE_KEY, "{also corrupt");
     localStorage.setItem(STORAGE_KEY, "{corrupt json");
   }, function(r) {
     const main = localStorage.getItem(STORAGE_KEY);
