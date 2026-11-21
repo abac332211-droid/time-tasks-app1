@@ -383,7 +383,7 @@ test('normal Pomodoro completion timestamp uses the millisecond remainder at its
     Date: { now: () => 1_500 },
     _getFocusTimerElapsedParts: () => {
       elapsedReads++;
-      return elapsedReads === 1
+      return elapsedReads <= 2
         ? { seconds: 1_500, remainderMs: 600 }
         : { seconds: 0, remainderMs: 600 };
     },
