@@ -1800,6 +1800,10 @@ test('resetAll leaves a persistent marker on partial deletion and startup recove
   assert.equal(harness.values.has(harness.keys.focusTimer), false);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
+  assert.equal(harness.values.get(harness.keys.focusSettings), 'old-value',
+    'reset preserves the focus-duration preference');
+  assert.equal(harness.values.get(harness.keys.notifications), 'old-value',
+    'reset preserves the notification preference');
 });
 
 test('resetAll does not change data when its durable marker cannot be written and verified', () => {
@@ -1825,4 +1829,68 @@ test('interrupted reset recovery rejects an invalid marker without deleting any 
   assert.equal(harness.values.get(harness.keys.resetInProgress), '{broken');
   assert.equal(harness.values.get('projects'), original.get('projects'));
   assert.equal(harness.values.get('focus-timer'), original.get('focus-timer'));
+});
+
+
+test('rolling recovery uses the timestamp to select the newest equal-sequence slot and rotate the older one', () => {
+  const firstState = rollingState('older-collision');
+  const latestState = rollingState('newer-collision');
+  const makeRecord = (state, createdAtMs) => ({
+    formatVersion: 1,
+    sequence: 9,
+    createdAtMs,
+    reason: 'main-save',
+    data: {
+      main: state.main,
+      focusSessions: state['focus-sessions'],
+      focusTimer: state['focus-timer'],
+      mentalInbox: state['mental-inbox'],
+      thoughts: state.thoughts,
+      projects: state.projects,
+      focusSettings: state['focus-settings'],
+      notifications: state.notifications
+    }
+  });
+  const harness = rollingRecoveryHarness({
+    'rolling-backup-a': JSON.stringify(makeRecord(firstState, 100)),
+    'rolling-backup-b': JSON.stringify(makeRecord(latestState, 200)),
+    ...rollingState('current')
+  });
+  const latest = harness.sandbox._getLatestRollingRecoveryBackup();
+  assert.equal(latest.slot, 'b');
+  assert.equal(latest.record.data.main, latestState.main);
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
+  assert.equal(harness.sandbox._getLatestRollingRecoveryBackup().slot, 'a');
+  assert.equal(harness.sandbox._getLatestRollingRecoveryBackup().record.sequence, 10);
+  assert.equal(harness.values.get('rolling-backup-b'), JSON.stringify(makeRecord(latestState, 200)));
+});
+
+test('resetAll keeps its durable marker and original records when writing the empty main record fails', () => {
+  const harness = resetAllHarness({ throwOnSetKey: 'main' });
+  harness.run();
+  assert.equal(harness.values.get('main'), 'old-value');
+  assert.ok(harness.values.get(harness.keys.resetInProgress));
+  assert.equal(harness.values.get('projects'), 'old-value');
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
+});
+
+test('reset recovery retains its marker when marker cleanup fails and can finish on retry', () => {
+  const faults = { throwOnRemoveKey: 'reset-in-progress' };
+  const harness = resetAllHarness(faults);
+  harness.run();
+  assert.ok(harness.values.get(harness.keys.resetInProgress));
+  assert.equal(harness.values.get('main') !== 'old-value', true);
+  assert.equal(harness.values.has('projects'), false);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+
+  faults.throwOnRemoveKey = null;
+  const recover = vm.runInNewContext(
+    extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
+    harness.sandbox
+  );
+  assert.equal(recover(), true);
+  assert.equal(harness.values.has(harness.keys.resetInProgress), false);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
