@@ -1521,7 +1521,9 @@ function _refreshSecondaryStorageView(key) {
     } else if (key === FOCUS_TIMER_KEY) {
       _focusTimerExternalConflict = true;
       if (typeof _focusTimer !== "undefined" && _focusTimer.running) {
-        _focusTimer.baseElapsed = _getElapsedSec();
+        var externalTimerElapsed = _getFocusTimerElapsedParts();
+        _focusTimer.baseElapsed = externalTimerElapsed.seconds;
+        _focusElapsedRemainderMs = externalTimerElapsed.remainderMs;
         _focusTimer.running = false;
         _focusTimer.startedAt = null;
         if (typeof _stopDisplayTick === "function") _stopDisplayTick();
@@ -7836,6 +7838,7 @@ var _focusTimerColdStartWasRunning = false;
 var _focusTimerSavedAtAtLoad = null;
 var _focusMonotonicStart = null;
 var _focusMonotonicLastSample = null;
+var _focusMonotonicLastWallSample = null;
 var _focusMonotonicClockFailed = false;
 var _focusWallClockAnchor = null;
 var _focusFallbackLastWall = null;
@@ -7861,17 +7864,20 @@ function _anchorFocusTimerClock(wallStart, remainderMs, monotonicSample, wallSam
   var monotonicValue = arguments.length >= 3
     ? (Number.isFinite(monotonicSample) ? monotonicSample : null)
     : _readFocusMonotonicNow();
+  var wallValue = Number.isFinite(wallSample) ? wallSample : wall;
   _focusMonotonicStart = monotonicValue;
   _focusMonotonicLastSample = monotonicValue;
+  _focusMonotonicLastWallSample = wallValue;
   _focusMonotonicClockFailed = monotonicValue === null;
-  _focusWallClockAnchor = Number.isFinite(wallSample) ? wallSample : wall;
-  _focusFallbackLastWall = Number.isFinite(wallSample) ? wallSample : Date.now();
+  _focusWallClockAnchor = wallValue;
+  _focusFallbackLastWall = wallValue;
   _focusFallbackElapsedMs = 0;
 }
 
 function _clearFocusTimerClock() {
   _focusMonotonicStart = null;
   _focusMonotonicLastSample = null;
+  _focusMonotonicLastWallSample = null;
   _focusMonotonicClockFailed = false;
   _focusWallClockAnchor = null;
   _focusFallbackLastWall = null;
@@ -8048,6 +8054,7 @@ function _getFocusTimerElapsedParts() {
         if (Math.abs(wallNow - expectedWall) > 120000) _focusTimer.clockAdjusted = true;
       }
       _focusMonotonicLastSample = monoNow;
+      _focusMonotonicLastWallSample = wallNow;
       var totalElapsedMs = remainder + elapsedMs;
       return {
         seconds: base + Math.floor(totalElapsedMs / 1000),
@@ -8057,14 +8064,22 @@ function _getFocusTimerElapsedParts() {
       };
     }
     _focusTimer.clockAdjusted = true;
-    _focusMonotonicClockFailed = true;
-  } else {
-    _focusMonotonicClockFailed = true;
   }
 
-  // Without a trustworthy monotonic source, only accept plausible forward
-  // wall deltas. Large jumps and backwards changes are ambiguous clock corrections.
+  // Once the monotonic source disappears or regresses, carry its last valid
+  // sample into the fallback exactly once, then continue from the last wall
+  // sample rather than counting the whole session again.
   var fallbackNow = Date.now();
+  if (!_focusMonotonicClockFailed) {
+    var monotonicCarry = Number.isFinite(_focusMonotonicStart)
+        && Number.isFinite(_focusMonotonicLastSample)
+        && _focusMonotonicLastSample >= _focusMonotonicStart
+      ? _focusMonotonicLastSample - _focusMonotonicStart : 0;
+    _focusFallbackElapsedMs = monotonicCarry;
+    _focusFallbackLastWall = Number.isFinite(_focusMonotonicLastWallSample)
+      ? _focusMonotonicLastWallSample : fallbackNow;
+    _focusMonotonicClockFailed = true;
+  }
   if (_focusFallbackLastWall === null) _focusFallbackLastWall = fallbackNow;
   var fallbackDelta = fallbackNow - _focusFallbackLastWall;
   if (fallbackDelta < 0 || fallbackDelta > 120000) {
@@ -8100,7 +8115,8 @@ function _catchUp(backgroundReturn) {
     if (backgroundReturn) _showAwaySessionConfirmation();
     return;
   }
-  var elapsedTotal = _getElapsedSec(), targetNow = _phaseTargetSec();
+  var elapsedParts = _getFocusTimerElapsedParts();
+  var elapsedTotal = elapsedParts.seconds, targetNow = _phaseTargetSec();
   if (elapsedTotal > 4 * 3600 || (backgroundReturn && elapsedTotal >= targetNow)) {
     var segmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
     var remainingAtResume = Math.max(0, targetNow - _focusTimer.baseElapsed);
@@ -8108,6 +8124,7 @@ function _catchUp(backgroundReturn) {
     _stopDisplayTick();
     _focusTimer.running = false;
     _focusTimer.baseElapsed = targetNow;
+    _focusElapsedRemainderMs = 0;
     _focusTimer.startedAt = null;
     _focusTimer.awaitingConfirmation = true;
     if (!_saveFocusTimer()) {
@@ -8121,7 +8138,9 @@ function _catchUp(backgroundReturn) {
   }
   var safety = 20, transitions = 0;
   while (safety-- > 0) {
-    var target = _phaseTargetSec(), elapsed = _getElapsedSec();
+    var target = _phaseTargetSec();
+    elapsedParts = _getFocusTimerElapsedParts();
+    var elapsed = elapsedParts.seconds;
     if (elapsed < target) break;
     var completedPhase = _focusTimer.phase;
     var currentSegmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
@@ -8130,6 +8149,7 @@ function _catchUp(backgroundReturn) {
     if (!logged) {
       _focusTimer.running = false;
       _focusTimer.baseElapsed = elapsed;
+      _focusElapsedRemainderMs = elapsedParts.remainderMs;
       _focusTimer.startedAt = null;
       var retrySaved = _saveFocusTimer();
       _renderFocusTimer();
@@ -8144,16 +8164,17 @@ function _catchUp(backgroundReturn) {
       _focusTimer.phase = (_focusTimer.cyclePosition === 0) ? "long-break" : "short-break";
     } else _focusTimer.phase = "work";
     _focusTimer.baseElapsed = elapsed - target;
+    _focusElapsedRemainderMs = elapsedParts.remainderMs;
     _focusTimer.startedAt = Date.now();
-    _anchorFocusTimerClock(_focusTimer.startedAt);
+    _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
     _focusTimer.sessionStartAt = phaseEndAt;
     transitions++;
   }
   if (transitions > 0) {
     if (!_saveFocusTimer()) {
-      // The completed session is already persisted. Pause the next phase and retry
-      // saving that state before rendering it as a durable transition or notifying.
-      _focusTimer.baseElapsed = _getElapsedSec();
+      var pauseParts = _getFocusTimerElapsedParts();
+      _focusTimer.baseElapsed = pauseParts.seconds;
+      _focusElapsedRemainderMs = pauseParts.remainderMs;
       _focusTimer.running = false;
       _focusTimer.startedAt = null;
       _stopDisplayTick();
@@ -9280,12 +9301,20 @@ function _showStopwatchSaveDialog(elapsedSec) {
     return;
   }
   var previousTimerState = Object.assign({}, _focusTimer);
+  var previousRemainderMs = _focusElapsedRemainderMs;
+  var elapsedParts = _focusTimer.running ? _getFocusTimerElapsedParts() : {
+    seconds: Math.max(0, Math.floor(elapsedSec)),
+    remainderMs: previousRemainderMs
+  };
+  elapsedSec = elapsedParts.seconds;
   _stopDisplayTick();
   _focusTimer.baseElapsed = Math.max(0, Math.floor(elapsedSec));
+  _focusElapsedRemainderMs = elapsedParts.remainderMs;
   _focusTimer.running = false;
   _focusTimer.startedAt = null;
   if (!_saveFocusTimer()) {
     Object.assign(_focusTimer, previousTimerState);
+    _focusElapsedRemainderMs = previousRemainderMs;
     if (_focusTimer.running) _startDisplayTick();
     _renderFocusTimer();
     showAlertModal('تعذر حفظ حالة المؤقت', 'تعذر تأكيد تجميد المؤقت. أعدنا الحالة السابقة بدل عرض قرار حفظ على حالة غير مؤكدة.');
@@ -9434,14 +9463,15 @@ function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
   }
 }
 function finishTimer() {
-  // FIX TI3 (E1a): إيقاف tick + تجميد الوقت + لقطة الطور — يمنع انتقال الطور أثناء المودال
+  // Freeze the timer from a single monotonic sample before displaying any decision UI.
   _stopDisplayTick();
   if (_focusTimer.running) {
-    _focusTimer.baseElapsed = _getElapsedSec();
+    var elapsedParts = _getFocusTimerElapsedParts();
+    _focusTimer.baseElapsed = elapsedParts.seconds;
+    _focusElapsedRemainderMs = elapsedParts.remainderMs;
     _focusTimer.running = false;
     _focusTimer.startedAt = null;
   }
-  // Persist the frozen state before opening a modal; a reload must not resume stale time.
   if (!_saveFocusTimer()) {
     showAlertModal('تعذر حفظ حالة المؤقت', 'توقف المؤقت في الذاكرة، لكن تعذر حفظ الحالة المتوقفة. لم نتابع الإنهاء لتجنب تسجيل غير موثوق. لا تغلق الصفحة؛ صدّر بياناتك وتحقق من مساحة التخزين.');
     _renderFocusTimer();
@@ -9656,14 +9686,15 @@ function linkTimerToTask(taskId) {
 }
 
 function _showSessionTransitionDialog(newTaskId, onSwitch) {
-  var elapsed = _getElapsedSec();
+  var elapsedParts = _getFocusTimerElapsedParts();
+  var elapsed = elapsedParts.seconds;
   var phaseSnapshot = _focusTimer.phase;
   var modeSnapshot = _focusTimer.mode;
   var currentTaskId = _focusTimer.taskId;
-  // Freeze elapsed time while the decision dialog is open; closeModal must not catch up this session.
   _stopDisplayTick();
   _focusTimer.running = false;
   _focusTimer.baseElapsed = elapsed;
+  _focusElapsedRemainderMs = elapsedParts.remainderMs;
   _focusTimer.startedAt = null;
   if (!_saveFocusTimer()) {
     showAlertModal("تعذر حفظ حالة المؤقت", "جُمّدت الجلسة في الذاكرة، لكن التخزين لم يؤكد حفظها. لم نتابع الانتقال. لا تغلق التطبيق؛ تحقّق من مساحة التخزين ثم أعد المحاولة.");
@@ -9697,7 +9728,7 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
       _focusTimer.baseElapsed = elapsed;
       _focusTimer.startedAt = Date.now();
       _focusTimer.running = true;
-      _anchorFocusTimerClock(_focusTimer.startedAt);
+      _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
       if (!_saveFocusTimer()) {
         _focusTimer.running = false;
         _focusTimer.startedAt = null;
