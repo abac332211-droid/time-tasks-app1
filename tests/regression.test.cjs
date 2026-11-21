@@ -1378,6 +1378,7 @@ function migrationHarness(mainRaw, archiveRaw = null, markerRaw = null, faults =
         values.delete(key);
       }
     },
+    isValidTaskObject(task) { return !!task && typeof task === 'object' && !Array.isArray(task); },
     validateV2(data) {
       return !!data
         && data.schemaVersion === 2
@@ -1474,7 +1475,7 @@ test('migration archive write failure leaves the original V1 record unchanged an
   assert.equal(report.success, false);
   assert.equal(harness.values.get('main'), original);
   assert.equal(harness.values.get('migration-in-progress'), '1');
-  assert.equal(harness.values.get('migration-archive'), null);
+  assert.equal(harness.values.get('migration-archive') ?? null, null);
 });
 
 function resetAllHarness(faults = {}) {
@@ -1516,6 +1517,7 @@ function resetAllHarness(faults = {}) {
       schemaVersion: 2, createdByVersion: 'test',
       settings: {}, tasks: [], dailyLogs: []
     }),
+    validateV2: () => true,
     todayStr: () => '2026-11-21',
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
