@@ -3619,6 +3619,7 @@ function resetAll() {
         _focusTimer.phase = "work";
         _focusTimer.running = false;
         _focusTimer.baseElapsed = 0;
+        _focusElapsedRemainderMs = 0;
         _focusTimer.startedAt = null;
         _focusTimer.cyclePosition = 0;
         _focusTimer.taskId = null;
@@ -9220,14 +9221,23 @@ function setTimerMode(mode) {
   if (mode === _focusTimer.mode) return;
   if (_focusTimer.running) { showToast('⚠️ أوقف المؤقت قبل تغيير الوضع'); return; }
   function _applyModeChange() {
+    var previousState = Object.assign({}, _focusTimer);
+    var previousRemainderMs = _focusElapsedRemainderMs;
     _focusTimer.mode = mode;
     _focusTimer.baseElapsed = 0;
+    _focusElapsedRemainderMs = 0;
     _focusTimer.phase = 'work';
     _focusTimer.startedAt = null;
     _focusTimer.sessionStartAt = null;
     _focusTimer.awaitingConfirmation = false;
     _focusTimer.pendingPhaseEndedAt = null;
-    _saveFocusTimer();
+    if (!_saveFocusTimer()) {
+      Object.assign(_focusTimer, previousState);
+      _focusElapsedRemainderMs = previousRemainderMs;
+      _renderFocusTimer();
+      showAlertModal('تعذر تغيير وضع المؤقت', 'لم يُحفظ تغيير الوضع؛ أُعيدت الحالة السابقة للمؤقت.');
+      return;
+    }
     _renderFocusTimer();
   }
   if (_getElapsedSec() > 0) {
@@ -9870,6 +9880,8 @@ function startTimerForTask(taskId) {
     _focusTimer.mode = 'pomodoro';
     _focusTimer.phase = 'work';
     _focusTimer.baseElapsed = 0;
+    var previousRemainderMs = _focusElapsedRemainderMs;
+    _focusElapsedRemainderMs = 0;
     var previousSessionState = Object.assign({}, _focusTimer);
     var now = Date.now();
     _focusTimer.startedAt = now;
@@ -9879,6 +9891,7 @@ function startTimerForTask(taskId) {
     _anchorFocusTimerClock(now);
     if (!_saveFocusTimer()) {
       Object.assign(_focusTimer, previousSessionState);
+      _focusElapsedRemainderMs = previousRemainderMs;
       _clearFocusTimerClock();
       _stopDisplayTick();
       _renderFocusTimer();
