@@ -7958,6 +7958,7 @@ function _finalizeFocusTimerColdStartRestore() {
     if (Number.isFinite(target) && _focusTimer.baseElapsed >= target) {
       var overflowSec = Math.max(0, _focusTimer.baseElapsed - target);
       _focusTimer.baseElapsed = target;
+      _focusElapsedRemainderMs = 0;
       if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
         _focusTimer.sessionStartAt = Date.now() - target * 1000;
         _focusTimer.clockAdjusted = true;
@@ -8119,8 +8120,11 @@ function _catchUp(backgroundReturn) {
   var elapsedTotal = elapsedParts.seconds, targetNow = _phaseTargetSec();
   if (elapsedTotal > 4 * 3600 || (backgroundReturn && elapsedTotal >= targetNow)) {
     var segmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
-    var remainingAtResume = Math.max(0, targetNow - _focusTimer.baseElapsed);
-    _focusTimer.pendingPhaseEndedAt = segmentStart + remainingAtResume * 1000;
+    var remainingAtResumeMs = Math.max(
+      0,
+      (targetNow - _focusTimer.baseElapsed) * 1000 - _focusElapsedRemainderMs
+    );
+    _focusTimer.pendingPhaseEndedAt = segmentStart + remainingAtResumeMs;
     _stopDisplayTick();
     _focusTimer.running = false;
     _focusTimer.baseElapsed = targetNow;
@@ -8144,7 +8148,11 @@ function _catchUp(backgroundReturn) {
     if (elapsed < target) break;
     var completedPhase = _focusTimer.phase;
     var currentSegmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
-    var phaseEndAt = currentSegmentStart + Math.max(0, target - _focusTimer.baseElapsed) * 1000;
+    var phaseRemainingMs = Math.max(
+      0,
+      (target - _focusTimer.baseElapsed) * 1000 - _focusElapsedRemainderMs
+    );
+    var phaseEndAt = currentSegmentStart + phaseRemainingMs;
     var logged = _logSession(completedPhase, target, true, phaseEndAt);
     if (!logged) {
       _focusTimer.running = false;
@@ -8219,6 +8227,7 @@ function _showAwaySessionConfirmation() {
       } else _focusTimer.phase = "work";
       _focusTimer.running = false;
       _focusTimer.baseElapsed = 0;
+      _focusElapsedRemainderMs = 0;
       _focusTimer.startedAt = null;
       _focusTimer.sessionStartAt = null;
       _focusTimer.awaitingConfirmation = false;
@@ -8234,6 +8243,7 @@ function _showAwaySessionConfirmation() {
       if (!_focusTimer.awaitingConfirmation) return;
       _focusTimer.running = false;
       _focusTimer.baseElapsed = 0;
+      _focusElapsedRemainderMs = 0;
       _focusTimer.phase = "work";
       _focusTimer.startedAt = null;
       _focusTimer.sessionStartAt = null;
