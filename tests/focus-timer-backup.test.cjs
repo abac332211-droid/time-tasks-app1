@@ -977,9 +977,9 @@ test('timer rehydration removes a reference to a task absent from restored tasks
 });
 
 
-function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}) {
+function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, existingMainData = { schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }) {
   const storage = memoryStorage({
-    [STORAGE_KEYS.MAIN]: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
+    [STORAGE_KEYS.MAIN]: JSON.stringify(existingMainData),
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'previous-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: existingTimerRaw,
     [STORAGE_KEYS.MENTAL_INBOX]: 'previous-inbox',
@@ -1758,4 +1758,32 @@ test('legacy import preview distinguishes replaced primary data from preserved o
   assert.match(preview, /المجموعات غير الموجودة في الملف ستبقى كما هي على هذا الجهاز/);
   assert.match(preview, /مؤقت التركيز/);
   assert.doesNotMatch(preview, /سيتم استبدال كل البيانات الحالية/);
+});
+
+
+test('legacy import detaches a preserved device timer from a reused task ID with a different identity', () => {
+  const previousMain = {
+    schemaVersion: 2,
+    settings: {},
+    tasks: [{ id: 5, name: 'المهمة القديمة', createdAt: 1000 }],
+    dailyLogs: []
+  };
+  const importedTask = {
+    id: 5, name: 'المهمة الجديدة', status: 'pending', type: 'معرفية',
+    expected: 25, actual: null, plannedDate: '2026-11-21', plannedTime: '',
+    completedAt: null, createdAt: 2000
+  };
+  const legacyBackup = integrationBackup({ tasks: [importedTask], dailyLogs: [] });
+  const previousTimer = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 120,
+    startedAt: null, cyclePosition: 0, taskId: 5, sessionStartAt: 1000,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null
+  };
+  const harness = runImportPreviewIntegration(
+    legacyBackup, JSON.stringify(previousTimer), {}, previousMain
+  );
+
+  const restoredTimer = JSON.parse(harness.values.get(STORAGE_KEYS.FOCUS_TIMER));
+  assert.equal(restoredTimer.taskId, null);
+  assert.equal(restoredTimer.baseElapsed, 120, 'timer progress itself is preserved');
 });
