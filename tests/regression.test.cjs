@@ -255,6 +255,179 @@ test('saveData refuses a stale tab when the main record changed after its baseli
   assert.match(alerts[0][0], /تعارض بين النوافذ/);
 });
 
+function createSaveDataHarness({ transformWrite, rollingFailure } = {}) {
+  const original = JSON.stringify({
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { operationalDayStart: 4, firstUseDate: '2026-11-21', darkMode: false },
+    tasks: [],
+    dailyLogs: []
+  });
+  let stored = original;
+  let setCalls = 0, checkpointCalls = 0;
+  const baselineUpdates = [], reminderSyncs = [], alerts = [], toasts = [];
+  const sandbox = {
+    storageRecoveryRequired: false,
+    STORAGE_KEY: 'main',
+    CURRENT_SCHEMA_VERSION: 2,
+    APP_VERSION: '2.9.0',
+    _mainStorageBaselineReady: true,
+    _mainStorageBaselineRaw: original,
+    _mainStorageExternalChangeObserved: false,
+    _rollingRecoveryBackupLastFailure: null,
+    appSettings: { firstUseDate: '2026-11-21', lastRecurringDates: {} },
+    tasks: [],
+    localStorage: {
+      getItem(key) { return key === 'main' ? stored : null; },
+      setItem(key, value) {
+        setCalls++;
+        const raw = String(value);
+        stored = typeof transformWrite === 'function' ? transformWrite(raw) : raw;
+      }
+    },
+    _pruneLastRecurringDates() {},
+    todayStr: () => '2026-11-21',
+    validateV2(data) {
+      return !!data && data.schemaVersion === 2
+        && Array.isArray(data.tasks) && Array.isArray(data.dailyLogs);
+    },
+    _setMainStorageBaseline(raw) {
+      sandbox._mainStorageBaselineRaw = raw;
+      baselineUpdates.push(raw);
+    },
+    _queueAllTaskReminderSync() { reminderSyncs.push(true); },
+    _storeRollingRecoveryBackup() {
+      checkpointCalls++;
+      if (rollingFailure) {
+        sandbox._rollingRecoveryBackupLastFailure = rollingFailure;
+        return false;
+      }
+      return true;
+    },
+    _isOptionalRollingRecoveryBackupFailure() {
+      return sandbox._rollingRecoveryBackupLastFailure === 'backup_write_failed'
+        || sandbox._rollingRecoveryBackupLastFailure === 'backup_verification_failed';
+    },
+    showAlertModal: (...args) => alerts.push(args),
+    showToast: (message) => toasts.push(message),
+    console
+  };
+  vm.runInNewContext(extractFunction('saveData'), sandbox);
+  return {
+    sandbox, original,
+    get stored() { return stored; },
+    get setCalls() { return setCalls; },
+    get checkpointCalls() { return checkpointCalls; },
+    baselineUpdates, reminderSyncs, alerts, toasts
+  };
+}
+
+test('saveData refuses an unverified primary write and does not advance the baseline', () => {
+  const harness = createSaveDataHarness({
+    transformWrite(raw) {
+      const data = JSON.parse(raw);
+      data.tasks = [{ id: 91, name: 'unexpected read-back value' }];
+      return JSON.stringify(data);
+    }
+  });
+
+  assert.equal(harness.sandbox.saveData(), false);
+  assert.notEqual(harness.stored, harness.original);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.sandbox._mainStorageBaselineReady, false);
+  assert.equal(harness.sandbox._mainStorageBaselineRaw, harness.original);
+  assert.deepEqual(harness.baselineUpdates, []);
+  assert.deepEqual(harness.reminderSyncs, []);
+  assert.equal(harness.checkpointCalls, 0);
+  assert.match(harness.alerts[0][0], /تعذر التحقق من الحفظ/);
+});
+
+test('saveData keeps a verified primary commit when only the rolling slot write fails', () => {
+  const harness = createSaveDataHarness({ rollingFailure: 'backup_write_failed' });
+
+  assert.equal(harness.sandbox.saveData(), true);
+  assert.equal(harness.stored, harness.sandbox._mainStorageBaselineRaw);
+  assert.notEqual(harness.stored, harness.original);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+  assert.deepEqual(harness.baselineUpdates, [harness.stored]);
+  assert.deepEqual(harness.reminderSyncs, [true]);
+  assert.equal(harness.checkpointCalls, 1);
+  assert.equal(harness.alerts.length, 0);
+  assert.ok(harness.toasts.some((message) => /النسخة الاحتياطية الدوّارة لم تُحدّث/.test(message)));
+});
+
+test('saveData locks later writes when a rolling snapshot conflict prevents a consistent backup', () => {
+  const harness = createSaveDataHarness({ rollingFailure: 'snapshot_conflict' });
+
+  assert.equal(harness.sandbox.saveData(), true,
+    'the verified primary record remains committed even when the supplemental snapshot cannot be trusted');
+  assert.equal(harness.stored, harness.sandbox._mainStorageBaselineRaw);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.deepEqual(harness.baselineUpdates, [harness.stored]);
+  assert.deepEqual(harness.reminderSyncs, [true]);
+  assert.match(harness.alerts[0][0], /تحذير اتساق التخزين/);
+});
+
+test('mental-item conversion locks storage if its committed main record cannot be read for compensation', () => {
+  const originalMain = JSON.stringify({ schemaVersion: 2, settings: {}, tasks: [], dailyLogs: [] });
+  const committedMain = JSON.stringify({ schemaVersion: 2, settings: {}, tasks: [{ id: 1 }], dailyLogs: [] });
+  const originalInbox = JSON.stringify([{ id: 7, text: 'فكرة', createdAt: '2026-11-21' }]);
+  const values = new Map([['main', originalMain], ['inbox', originalInbox]]);
+  let mainReads = 0, hold = 0, secondarySaves = 0;
+  const alerts = [];
+  const tasks = [];
+  const sandbox = {
+    STORAGE_KEY: 'main',
+    MENTAL_INBOX_KEY: 'inbox',
+    storageRecoveryRequired: false,
+    appSettings: { lastTaskId: 0 },
+    tasks,
+    Date,
+    _loadMentalInbox: () => [{ id: 7, text: 'فكرة', createdAt: '2026-11-21' }],
+    _acquireRollingRecoveryCheckpointHold(enabled) {
+      if (enabled) hold++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (enabled) hold = Math.max(0, hold - 1);
+      };
+    },
+    localStorage: {
+      getItem(key) {
+        if (key === 'main') {
+          mainReads++;
+          if (mainReads > 1) throw new Error('simulated post-commit read failure');
+        }
+        return values.has(key) ? values.get(key) : null;
+      },
+      setItem(key, value) { values.set(key, String(value)); },
+      removeItem(key) { values.delete(key); }
+    },
+    saveData() {
+      values.set('main', committedMain);
+      return true;
+    },
+    getNextTaskId: () => 1,
+    todayStr: () => '2026-11-21',
+    _saveMentalInbox() { secondarySaves++; return true; },
+    showToast() {},
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('convertMentalItemToTask'), sandbox);
+  sandbox.convertMentalItemToTask(7);
+
+  assert.equal(values.get('main'), committedMain,
+    'the test simulates a primary commit that cannot safely be compensated without a readable baseline');
+  assert.equal(sandbox.tasks.length, 0, 'in-memory task state is restored');
+  assert.equal(secondarySaves, 0, 'the second store must not be written after the compensation baseline read fails');
+  assert.equal(sandbox.storageRecoveryRequired, true,
+    'a partial multi-store commit must block subsequent writes');
+  assert.equal(hold, 0, 'the checkpoint hold must always be released');
+  assert.match(alerts[0][1], /حاجز الحماية/);
+});
+
 test('legacy partial task status is healed to pending before strict stored validation', () => {
   const sandbox = {};
   vm.runInNewContext(extractFunction('_healTaskArray'), sandbox);
