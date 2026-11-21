@@ -2131,11 +2131,14 @@ test('mental-item conversion rollback refreshes rolling checkpoint to the restor
       removeItem(key) { values.delete(key); }
     },
     _loadMentalInbox: () => inbox,
+    _rollingRecoveryCheckpointHold: 0,
     saveData() {
       values.set('main', JSON.stringify({
         schemaVersion: 2, settings: {}, tasks: sandbox.tasks, dailyLogs: []
       }));
-      checkpoints.push({ reason: 'main-save', main: values.get('main') });
+      if (sandbox._rollingRecoveryCheckpointHold === 0) {
+        checkpoints.push({ reason: 'main-save', main: values.get('main') });
+      }
       return true;
     },
     _saveMentalInbox: () => false,
@@ -2234,11 +2237,14 @@ test('project deletion rollback refreshes rolling checkpoint only after both sto
     },
     _loadProjects: () => projects,
     showConfirmModal(_title, _body, accept) { accept(); },
+    _rollingRecoveryCheckpointHold: 0,
     saveData() {
       values.set('main', JSON.stringify({
         schemaVersion: 2, settings: {}, tasks: sandbox.tasks, dailyLogs: []
       }));
-      checkpoints.push({ reason: 'main-save', main: values.get('main') });
+      if (sandbox._rollingRecoveryCheckpointHold === 0) {
+        checkpoints.push({ reason: 'main-save', main: values.get('main') });
+      }
       return true;
     },
     _saveProjects: () => false,
@@ -2323,4 +2329,25 @@ test('project deletion enters recovery-required state if compensating writes fai
   assert.equal(sandbox.storageRecoveryRequired, true);
   assert.equal(checkpoints.includes('transaction-rollback'), false);
   assert.ok(alerts.length > 0);
+});
+
+
+test('rolling recovery checkpoint hold skips every intermediate snapshot and resumes after commit', () => {
+  const initial = rollingState('before-transaction');
+  const harness = rollingRecoveryHarness(initial);
+  harness.sandbox._rollingRecoveryCheckpointHold = 1;
+
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('intermediate-main-write'), true);
+  assert.equal(harness.values.has(harness.keys.backupA), false);
+  assert.equal(harness.values.has(harness.keys.backupB), false);
+
+  harness.values.set('main', rollingState('committed').main);
+  harness.values.set('projects', rollingState('committed').projects);
+  harness.sandbox._rollingRecoveryCheckpointHold = 0;
+  assert.equal(harness.sandbox._storeRollingRecoveryBackup('transaction-commit'), true);
+
+  const latest = harness.sandbox._getLatestRollingRecoveryBackup();
+  assert.equal(latest.record.data.main, rollingState('committed').main);
+  assert.equal(latest.record.data.projects, rollingState('committed').projects);
+  assert.equal(latest.record.reason, 'transaction-commit');
 });
