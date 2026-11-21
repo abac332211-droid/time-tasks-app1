@@ -978,37 +978,37 @@ test('weekly recurrence stays on the original anchor weekday', () => {
 });
 
 
-test('task completion and undo synchronize reminders after successful persistence', () => {
+test('task completion and undo rely on one centralized full reminder sync per save', () => {
   const task = {
     id: 19, name: 'مهمة موعدها قادم', expected: 25,
     actual: null, status: 'pending', completedAt: null
   };
-  const queued = [];
+  const singleSyncs = [];
+  let fullSyncs = 0;
   const sandbox = {
     tasks: [task],
     _focusTimer: { taskId: null },
     isTaskCancelled: () => false,
     showPromptModal: (_title, _body, _value, _placeholder, callback) => callback('30'),
     localDateTimeString: () => '2026-11-19T09:00:00',
-    saveData: () => true,
+    saveData: () => { fullSyncs++; return true; },
     renderAll: () => {},
     showToast: () => {},
     showAlertModal: () => {},
-    _queueTaskReminderSync: (value) => { queued.push({ id: value.id, status: value.status }); }
+    _queueTaskReminderSync: (value) => { singleSyncs.push({ id: value.id, status: value.status }); }
   };
   vm.runInNewContext(extractFunction('toggleTask'), sandbox);
 
   sandbox.toggleTask(19);
   assert.equal(task.status, 'done');
-  assert.deepEqual(queued, [{ id: 19, status: 'done' }]);
+  assert.equal(fullSyncs, 1);
+  assert.deepEqual(singleSyncs, []);
 
   sandbox.toggleTask(19);
   assert.equal(task.status, 'pending');
   assert.equal(task.actual, null);
-  assert.deepEqual(queued, [
-    { id: 19, status: 'done' },
-    { id: 19, status: 'pending' }
-  ]);
+  assert.equal(fullSyncs, 2);
+  assert.deepEqual(singleSyncs, []);
 });
 
 test('task deletion does not cancel a derived reminder ID directly', () => {
