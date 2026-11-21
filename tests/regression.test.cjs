@@ -1248,8 +1248,11 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: true, baseElapsed: 0, startedAt: 1, sessionStartAt: 1 };
   const alerts = [];
   const toasts = [];
+  const checkpoints = [];
   let saveCalls = 0, resetCalls = 0, switchCalls = 0, renderCalls = 0;
   const sandbox = {
+    _rollingRecoveryCheckpointHold: 0,
+    storageRecoveryRequired: false,
     document,
     tasks: [task, { id: 2, name: 'المهمة التالية' }],
     _focusTimer: timer,
@@ -1263,8 +1266,19 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
     showToast: (value) => toasts.push(value),
     _setupModalFocusTrap: () => () => {},
     _sessionAlreadyLogged: () => false,
-    saveData: () => saveResults[Math.min(saveCalls++, saveResults.length - 1)],
-    _logSession: () => logResult,
+    saveData() {
+      const result = saveResults[Math.min(saveCalls++, saveResults.length - 1)];
+      if (result && sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('main-save');
+      return result;
+    },
+    _logSession() {
+      if (sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('session-save');
+      return logResult;
+    },
+    _storeRollingRecoveryBackup(reason) {
+      checkpoints.push(reason);
+      return checkpointResult;
+    },
     _resetAfterSession: () => { resetCalls++; return true; },
     closeModal: () => {},
     renderAll: () => { renderCalls++; },
@@ -1277,7 +1291,7 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   sandbox._showSessionTransitionDialog(2, () => { switchCalls++; });
   const footer = elements.modalFooter;
   return {
-    sandbox, task, timer, alerts, toasts, footer,
+    sandbox, task, timer, alerts, toasts, footer, checkpoints,
     counts: () => ({ saveCalls, resetCalls, switchCalls, renderCalls })
   };
 }
@@ -1301,6 +1315,10 @@ test('failed session logging reports inconsistency if rollback persistence also 
   assert.equal(harness.task.actual, null, 'the in-memory value is still restored');
   assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
   assert.match(harness.alerts[0][0], /فشل تسجيل الجلسة والتراجع/);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true,
+    'normal writes must be blocked when task compensation failed');
+  assert.deepEqual(harness.checkpoints, [],
+    'the intermediate task write must not become a rolling recovery checkpoint');
 });
 
 test('transition dialog is not opened when the initial paused-timer checkpoint fails', () => {
@@ -2450,4 +2468,14 @@ test('interrupted import treats only PRE_IMPORT cleanup failure as retained clea
   assert.equal(values.has(markerKey), false, 'recovery marker must be cleared');
   assert.equal(values.get(backupKey), JSON.stringify(previous),
     'the inert snapshot is retained for manual cleanup rather than replayed');
+});
+
+
+test('successful focus-session transaction checkpoints only after task and session writes complete', () => {
+  const harness = transitionDialogHarness({ saveResults: [true], logResult: true });
+  harness.footer.children[2].onclick();
+
+  assert.deepEqual(harness.checkpoints, ['focus-session-transition-commit']);
+  assert.equal(harness.sandbox._rollingRecoveryCheckpointHold, 0);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
