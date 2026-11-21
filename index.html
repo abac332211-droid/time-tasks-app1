@@ -2385,7 +2385,7 @@ function _restoreLatestRollingRecoveryBackup() {
 }
 
 function _resetStorageRemovalKeys() {
-  return [
+  var keys = [
     IMPORT_IN_PROGRESS_KEY,
     PRE_IMPORT_KEY,
     MIGRATION_IN_PROGRESS_KEY,
@@ -2401,6 +2401,29 @@ function _resetStorageRemovalKeys() {
     ROLLING_BACKUP_B_KEY,
     ROLLING_RESTORE_IN_PROGRESS_KEY
   ];
+
+  // Loaders retain timestamped raw corruption snapshots for forensic recovery.
+  // A full user-requested reset must remove these too, not just the live keys.
+  var corruptPrefixes = [
+    MENTAL_INBOX_KEY + "_corrupt_",
+    THOUGHTS_KEY + "_corrupt_",
+    PROJECTS_KEY + "_corrupt_"
+  ];
+  var storageLength = localStorage.length;
+  if (!Number.isInteger(storageLength) || storageLength < 0) {
+    throw new Error("تعذر تعداد مفاتيح التخزين أثناء إعادة الضبط.");
+  }
+  for (var i = 0; i < storageLength; i++) {
+    var candidateKey = localStorage.key(i);
+    if (typeof candidateKey !== "string") continue;
+    var isCorruptSnapshot = corruptPrefixes.some(function(prefix) {
+      return candidateKey.indexOf(prefix) === 0;
+    });
+    if (isCorruptSnapshot && keys.indexOf(candidateKey) === -1) {
+      keys.push(candidateKey);
+    }
+  }
+  return keys;
 }
 
 function _recoverInterruptedReset() {
