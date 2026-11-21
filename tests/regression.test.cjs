@@ -262,6 +262,73 @@ test('legacy partial task status is healed to pending before strict stored valid
   assert.match(appScript, /const VALID_STATUS = \["pending", "done", "cancelled"\]/);
 });
 
+test('storage record copies discard prototype-sensitive property names', () => {
+  const source = JSON.parse('{"name":"safe","__proto__":{"polluted":true},"constructor":"bad","hasOwnProperty":null,"toString":null}');
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_copyStorageRecord'), sandbox);
+  const copied = sandbox._copyStorageRecord(source);
+
+  assert.equal(copied.name, 'safe');
+  assert.equal(copied.polluted, undefined);
+  assert.equal(copied.constructor, Object.getPrototypeOf(copied).constructor);
+  assert.equal(typeof copied.hasOwnProperty, 'function');
+  assert.equal(copied.hasOwnProperty('name'), true);
+  assert.equal(copied.toString(), '[object Object]');
+});
+
+test('V2 and backup recurring-date metadata share strict bounds and key validation', () => {
+  const sandbox = {
+    isValidCalendarDate: (value) => /^\\d{4}-\\d{2}-\\d{2}$/.test(value)
+  };
+  vm.runInNewContext(extractFunction('_validateLastRecurringDates'), sandbox);
+  const validate = sandbox._validateLastRecurringDates;
+
+  assert.equal(validate(undefined), true);
+  assert.equal(validate(null), true);
+  assert.equal(validate({ 'series:12': '2026-11-21' }), true);
+  assert.equal(validate({ 'series:12': 'yesterday' }), false);
+  assert.equal(validate([]), false);
+  assert.equal(validate(JSON.parse('{"constructor":"2026-11-21"}')), false);
+  assert.equal(validate(JSON.parse('{"__proto__":"2026-11-21"}')), false);
+
+  const tooMany = {};
+  for (let i = 0; i < 501; i++) tooMany['series:' + i] = '2026-11-21';
+  assert.equal(validate(tooMany), false);
+});
+
+test('recurring task refresh uses an app-lifetime interval independent of the focus timer', () => {
+  let callback = null, delay = null, generated = 0, rendered = 0, notified = 0;
+  const sandbox = {
+    _recurringTaskRefreshInterval: null,
+    setInterval: (fn, ms) => { callback = fn; delay = ms; return 42; },
+    storageRecoveryRequired: false,
+    document: { visibilityState: 'visible' },
+    _generateAndPersistRecurringTasks: () => { generated++; return 1; },
+    renderAll: () => { rendered++; },
+    showToast: () => { notified++; }
+  };
+  vm.runInNewContext(extractFunction('_setupRecurringTaskRefresh'), sandbox);
+  sandbox._setupRecurringTaskRefresh();
+
+  assert.equal(delay, 60 * 1000);
+  assert.equal(typeof callback, 'function');
+  callback();
+  assert.equal(generated, 1);
+  assert.equal(rendered, 1);
+  assert.equal(notified, 1);
+
+  sandbox.document.visibilityState = 'hidden';
+  callback();
+  assert.equal(generated, 1, 'hidden tabs do not run recurring generation');
+});
+
+test('SOS and shutdown modals replace the previous shared key handler', () => {
+  for (const name of ['openSOSModal', 'openShutdownModal']) {
+    const body = extractFunction(name);
+    assert.match(body, /if \\(_modalKeyHandler\\) \\{ document\\.removeEventListener\\(['"]keydown['"], _modalKeyHandler\\); \\}/);
+  }
+});
+
 test('recurring date pruning preserves valid historical dates and removes invalid values', () => {
   const sandbox = {
     appSettings: { lastRecurringDates: { 'series:1': '2026-10-01', 'series:2': '2026-11-04', 'series:3': 'yesterday', constructor: '2026-10-01' } },
