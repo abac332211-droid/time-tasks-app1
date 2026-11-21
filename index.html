@@ -522,6 +522,7 @@ body.dark-mode .card.accent-info::before { opacity: .65; }
     <label for="taskProject" class="field-label">🎯 المشروع <span class="optional-hint">(اختياري)</span></label>
     <select id="taskProject" aria-label="المشروع"></select>
     <button class="btn-primary" id="taskSaveBtn" onclick="saveTask()">إضافة المهمة</button>
+    <button type="button" class="btn-danger hidden" id="taskStopSeriesBtn" onclick="stopRecurringSeries(editingId)" style="width:100%;margin-top:6px;">⛔ إيقاف سلسلة التكرار بالكامل</button>
     <button class="btn-ghost hidden" id="taskCancelBtn" onclick="cancelEdit()" style="width:100%;margin-top:6px;">إلغاء التعديل</button>
     <p class="small" style="margin-top:8px;">💡 لإنجاز مهمة، اضغط زر <b>✓ إنجاز</b> في بطاقة المهمة.</p>
   </div>
@@ -807,6 +808,36 @@ let _timerIntervalId = null;
 let _timerSecondsLeft = 0;
 let storageRecoveryRequired = false;
 let _pendingUncompleteConfirm = false;
+var _mainStorageBaselineRaw = null;
+var _mainStorageBaselineReady = false;
+var _mainStorageExternalChangeObserved = false;
+var _mainStorageConflictListenerInstalled = false;
+
+function _setMainStorageBaseline(raw) {
+  _mainStorageBaselineRaw = raw;
+  _mainStorageBaselineReady = true;
+  _mainStorageExternalChangeObserved = false;
+}
+
+function _captureMainStorageBaseline() {
+  try {
+    _setMainStorageBaseline(localStorage.getItem(STORAGE_KEY));
+    return true;
+  } catch (e) {
+    _mainStorageBaselineReady = false;
+    return false;
+  }
+}
+
+function _setupMainStorageConflictListener() {
+  if (_mainStorageConflictListenerInstalled || !window || typeof window.addEventListener !== "function") return;
+  window.addEventListener("storage", function(event) {
+    if (!event || event.key === null || event.key === STORAGE_KEY) {
+      _mainStorageExternalChangeObserved = true;
+    }
+  });
+  _mainStorageConflictListenerInstalled = true;
+}
 
 /* ============ Toast & Modals ============ */
 
@@ -1185,6 +1216,40 @@ function priorityRank(p) {
 }
 
 /* ============ المهام المتكررة المحمية ============ */
+
+function stopRecurringSeries(taskId) {
+  var selected = tasks.find(function(task) { return task && task.id === taskId; });
+  if (!selected) return false;
+
+  function resolveRoot(task) {
+    var current = task;
+    var seen = new Set();
+    while (current && current._recurringGenerated) {
+      if (seen.has(String(current.id)) || current._sourceTaskId == null) return null;
+      seen.add(String(current.id));
+      current = tasks.find(function(candidate) { return candidate && candidate.id === current._sourceTaskId; });
+    }
+    return current || null;
+  }
+
+  var root = resolveRoot(selected);
+  if (!root || !root.recurrence) {
+    showToast("ℹ️ سلسلة التكرار متوقفة بالفعل أو غير موجودة");
+    return false;
+  }
+  var members = tasks.filter(function(task) { return resolveRoot(task) === root; });
+  var previous = members.map(function(task) { return { task: task, recurrence: task.recurrence }; });
+  members.forEach(function(entry) { entry.recurrence = null; });
+  if (!saveData()) {
+    previous.forEach(function(entry) { entry.task.recurrence = entry.recurrence; });
+    showToast("⚠️ تعذر إيقاف سلسلة التكرار — لم يُحفظ التغيير");
+    return false;
+  }
+  if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
+  renderAll();
+  showToast("⛔ أُوقفت سلسلة التكرار بالكامل؛ لم تُحذف المهام السابقة");
+  return true;
+}
 
 function _shouldGenerateToday(template, todayStrVal) {
   var rec = template.recurrence;
@@ -1941,12 +2006,38 @@ function saveData() {
     return false;
   }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    let existing = {};
+    let raw;
     try {
-      existing = raw ? JSON.parse(raw) : {};
-      if (!existing || typeof existing !== "object" || Array.isArray(existing)) existing = {};
-    } catch (e) { existing = {}; }
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch (readError) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر قراءة البيانات", "فشل الوصول إلى سجل البيانات الحالي. أوقفنا الحفظ حمايةً من استبدال بيانات غير مقروءة. لا تُغلق التطبيق قبل تصدير ما تستطيع واستعادة البيانات.");
+      return false;
+    }
+    if (_mainStorageBaselineReady
+        && (_mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw)) {
+      showAlertModal("تعارض بين النوافذ", "اكتشف التطبيق أن البيانات تغيّرت في نافذة أخرى منذ تحميل هذه الصفحة. أوقفنا الحفظ لمنع الكتابة فوق التعديلات الأحدث. أعد تحميل التطبيق قبل متابعة التعديل.");
+      return false;
+    }
+
+    let existing = {};
+    if (raw !== null) {
+      try {
+        existing = JSON.parse(raw);
+      } catch (parseError) {
+        storageRecoveryRequired = true;
+        console.error("saveData: refusing to overwrite unreadable main storage", parseError);
+        showAlertModal("بيانات غير قابلة للقراءة", "تعذر تحليل سجل البيانات الحالي. رفض التطبيق الحفظ حتى لا يستبدل المهام وسجلات الأيام ببيانات فارغة. احتفظ بنسخة من التخزين واستعد نسخة احتياطية سليمة.");
+        return false;
+      }
+      if (!existing || typeof existing !== "object" || Array.isArray(existing)
+          || existing.schemaVersion !== CURRENT_SCHEMA_VERSION || !validateV2(existing)) {
+        storageRecoveryRequired = true;
+        console.error("saveData: refusing to overwrite invalid main storage");
+        showAlertModal("بنية بيانات غير صالحة", "سجل البيانات الحالي لا يجتاز التحقق. رفض التطبيق الحفظ لحماية السجلات الأصلية. استخدم مسار استعادة البيانات قبل أي تعديل آخر.");
+        return false;
+      }
+    }
 
     const createdVer = existing.createdByVersion || APP_VERSION;
 
@@ -1982,7 +2073,9 @@ function saveData() {
       return false;
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(v2));
+    var serializedV2 = JSON.stringify(v2);
+    localStorage.setItem(STORAGE_KEY, serializedV2);
+    _setMainStorageBaseline(serializedV2);
     _queueAllTaskReminderSync();
     return true;
   } catch (e) {
@@ -2035,7 +2128,9 @@ function resetAll() {
       fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
       fresh.settings.firstUseDate = todayStr();
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+        var freshRaw = JSON.stringify(fresh);
+        localStorage.setItem(STORAGE_KEY, freshRaw);
+        _setMainStorageBaseline(freshRaw);
       } catch (e) {
         showAlertModal("خطأ", "تعذر الحفظ");
         return;
@@ -2115,6 +2210,11 @@ function persistDailyLog(log) {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
+    if (_mainStorageBaselineReady
+        && (_mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw)) {
+      showToast("⚠️ تغيّرت البيانات في نافذة أخرى؛ أعد تحميل التطبيق قبل الحفظ");
+      return;
+    }
     const data = JSON.parse(raw);
     if (!data || !Array.isArray(data.dailyLogs)) return;
     const idx = data.dailyLogs.findIndex(function(l) { return l.date === log.date; });
@@ -2124,7 +2224,9 @@ function persistDailyLog(log) {
       console.error("persistDailyLog: refusing to write invalid data");
       return;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    var serializedDailyLogData = JSON.stringify(data);
+    localStorage.setItem(STORAGE_KEY, serializedDailyLogData);
+    _setMainStorageBaseline(serializedDailyLogData);
   } catch (e) {
     console.error("Failed to persist daily log:", e);
     showToast("⚠️ تعذر حفظ تقييم اليوم — تحقق من مساحة التخزين");
@@ -2469,6 +2571,7 @@ function convertMentalItemToTask(id) {
     try {
       if (_mainRawBefore === null) localStorage.removeItem(STORAGE_KEY);
       else localStorage.setItem(STORAGE_KEY, _mainRawBefore);
+      _setMainStorageBaseline(_mainRawBefore);
       _rbConvertOk = true;
     } catch (e) {}
     if (_rbConvertOk) {
@@ -3212,6 +3315,8 @@ function clearForm() {
   if (prioritySelect) prioritySelect.value = "";
   const recurrenceSelect = document.getElementById("taskRecurrence");
   if (recurrenceSelect) recurrenceSelect.value = "";
+  const stopSeriesBtn = document.getElementById("taskStopSeriesBtn");
+  if (stopSeriesBtn && stopSeriesBtn.classList) stopSeriesBtn.classList.add("hidden");
   updateEstimatorHint();
 }
 
@@ -3234,6 +3339,11 @@ function editTask(id) {
   document.getElementById("taskFormTitle").textContent = "✏️ تعديل المهمة";
   document.getElementById("taskSaveBtn").textContent = "حفظ التعديل";
   document.getElementById("taskCancelBtn").classList.remove("hidden");
+  const stopSeriesBtn = document.getElementById("taskStopSeriesBtn");
+  if (stopSeriesBtn && stopSeriesBtn.classList) {
+    if (t.recurrence || t._recurringGenerated) stopSeriesBtn.classList.remove("hidden");
+    else stopSeriesBtn.classList.add("hidden");
+  }
   const navTaskBtn = document.querySelector('nav button[data-page="tasks"]');
   showPage("tasks", navTaskBtn);
   _scrollToTop();
@@ -3331,7 +3441,7 @@ function deleteTask(id) {
       _wasLinked = true;
     }
     if (saveData()) {
-      _queueTaskReminderCancellation(id);
+      _queueAllTaskReminderSync();
       renderAll();
       showToast("🗑️ تم حذف المهمة" + (_wasLinked ? " — فُصل المؤقت" : ""));
     } else {
@@ -4084,6 +4194,10 @@ function validateBackup(obj) {
         return { valid: false, reason: "نص فكرة فارغ (" + (i+1) + ")." };
       if (typeof m.createdAt !== "string")
         return { valid: false, reason: "تاريخ فكرة غير صالح (" + (i+1) + ")." };
+      // A valid ID may refer to a task deleted later; the archive intentionally preserves that history.
+      if (m.convertedTaskId !== undefined && m.convertedTaskId !== null
+          && (!Number.isSafeInteger(m.convertedTaskId) || m.convertedTaskId <= 0))
+        return { valid: false, reason: "مرجع المهمة المحوّلة غير صالح (" + (i+1) + ")." };
     }
   }
 
@@ -4242,27 +4356,55 @@ function importFromText() {
 function _restoreStorageSnapshot(rb) {
   var entries = [
     [STORAGE_KEY, rb.main],
-    ["timeTasksApp_focusSessions", rb.focusSessions],
-    ["timeTasksApp_focusTimer", rb.focusTimer],
-    ["timeTasksApp_mentalInbox", rb.mentalInbox],
+    [FOCUS_SESSIONS_KEY, rb.focusSessions],
+    [FOCUS_TIMER_KEY, rb.focusTimer],
+    [MENTAL_INBOX_KEY, rb.mentalInbox],
     [THOUGHTS_KEY, rb.thoughts],
     [PROJECTS_KEY, rb.projects],
     [FOCUS_SETTINGS_KEY, rb.focusSettings],
     [NOTIFICATIONS_KEY, rb.notifications]
   ];
+  var before = [];
+  function writeAndVerify(key, value) {
+    if (value === null || value === undefined) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+    var actual = localStorage.getItem(key);
+    if ((value === null || value === undefined) ? actual !== null : actual !== value) {
+      throw new Error("تعذر التحقق من استعادة المفتاح: " + key);
+    }
+  }
+  // Read every current value before the first write. This prevents a read failure
+  // from leaving an avoidable partially-restored set of collections.
+  try {
+    for (var r = 0; r < entries.length; r++) {
+      before.push([entries[r][0], localStorage.getItem(entries[r][0])]);
+    }
+  } catch (readError) {
+    return false;
+  }
   try {
     for (var i = 0; i < entries.length; i++) {
-      var key = entries[i][0], value = entries[i][1];
-      if (value === null || value === undefined) localStorage.removeItem(key);
-      else localStorage.setItem(key, value);
-      var actual = localStorage.getItem(key);
-      if ((value === null || value === undefined) ? actual !== null : actual !== value) {
-        throw new Error("تعذر التحقق من استعادة المفتاح: " + key);
+      writeAndVerify(entries[i][0], entries[i][1]);
+    }
+    _invalidateProjectsCache();
+    if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(rb.main === undefined ? null : rb.main);
+    return true;
+  } catch (restoreError) {
+    // Compensate to the exact pre-call state. If compensation also fails, the
+    // caller must keep the import marker/snapshot so startup recovery can retry.
+    var compensationVerified = true;
+    for (var c = 0; c < before.length; c++) {
+      try {
+        writeAndVerify(before[c][0], before[c][1]);
+      } catch (compensationError) {
+        compensationVerified = false;
+        console.error("Storage restore compensation failed:", before[c][0], compensationError);
       }
     }
     _invalidateProjectsCache();
-    return true;
-  } catch (e) {
+    if (compensationVerified && typeof _setMainStorageBaseline === "function") {
+      _setMainStorageBaseline(before[0][1]);
+    }
     return false;
   }
 }
@@ -4393,9 +4535,9 @@ function showImportPreview(obj) {
         try {
           _rollback = {
             main: currentRaw || null,
-            focusSessions: localStorage.getItem("timeTasksApp_focusSessions"),
-            focusTimer: localStorage.getItem("timeTasksApp_focusTimer"),
-            mentalInbox: localStorage.getItem("timeTasksApp_mentalInbox"),
+            focusSessions: localStorage.getItem(FOCUS_SESSIONS_KEY),
+            focusTimer: localStorage.getItem(FOCUS_TIMER_KEY),
+            mentalInbox: localStorage.getItem(MENTAL_INBOX_KEY),
             thoughts: localStorage.getItem(THOUGHTS_KEY),
             projects: localStorage.getItem(PROJECTS_KEY),
             focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
@@ -4433,7 +4575,7 @@ function showImportPreview(obj) {
         try {
           if (d.focusSessions !== undefined && d.focusSessions !== null) {
             if (Array.isArray(d.focusSessions)) {
-              localStorage.setItem("timeTasksApp_focusSessions", JSON.stringify(d.focusSessions));
+              localStorage.setItem(FOCUS_SESSIONS_KEY, JSON.stringify(d.focusSessions));
             }
           }
         } catch (e) {
@@ -4460,7 +4602,7 @@ function showImportPreview(obj) {
         try {
           if (d.mentalInbox !== undefined && d.mentalInbox !== null) {
             if (Array.isArray(d.mentalInbox)) {
-              localStorage.setItem("timeTasksApp_mentalInbox", JSON.stringify(d.mentalInbox));
+              localStorage.setItem(MENTAL_INBOX_KEY, JSON.stringify(d.mentalInbox));
             }
           }
         } catch (e) {
@@ -4539,10 +4681,10 @@ function showImportPreview(obj) {
         // Verify every restored value by reading it back before declaring success.
         var _expectedImportValues = [
           [STORAGE_KEY, JSON.stringify(newData)],
-          ["timeTasksApp_focusSessions",
+          [FOCUS_SESSIONS_KEY,
             Array.isArray(d.focusSessions) ? JSON.stringify(d.focusSessions) : _rollback.focusSessions],
           [FOCUS_TIMER_KEY, _expectedFocusTimerRaw],
-          ["timeTasksApp_mentalInbox",
+          [MENTAL_INBOX_KEY,
             Array.isArray(d.mentalInbox) ? JSON.stringify(d.mentalInbox) : _rollback.mentalInbox],
           [THOUGHTS_KEY, Array.isArray(d.thoughts) ? JSON.stringify(d.thoughts) : _rollback.thoughts],
           [PROJECTS_KEY, Array.isArray(d.projects) ? JSON.stringify(d.projects) : _rollback.projects],
@@ -5998,35 +6140,76 @@ async function _cancelTaskNotification(taskId) {
   }
 }
 
-async function _syncTaskNotification(task, notificationId, permissionAlreadyGranted) {
+async function _syncTaskNotification(task, notificationId, permissionAlreadyGranted, previousNotification) {
   if (!_hasCapacitorLocalNotifications() || !task) return false;
   var id = Number.isSafeInteger(notificationId) ? notificationId : _taskNotificationId(task.id);
   if (id === null) return false;
   var LN = window.Capacitor.Plugins.LocalNotifications;
+  var previous = previousNotification || null;
+
   try {
-    // Replacing an existing reminder is deliberate and idempotent.
-    await LN.cancel({ notifications: [{ id: id }] });
-    if (!_getNotificationsPref().enabled) return true;
+    if (typeof previousNotification === "undefined") {
+      var pendingResult = await LN.getPending();
+      var pending = pendingResult && Array.isArray(pendingResult.notifications)
+        ? pendingResult.notifications : [];
+      previous = pending.find(function(item) { return item && item.id === id; }) || null;
+    }
+
+    if (!_getNotificationsPref().enabled) {
+      await LN.cancel({ notifications: [{ id: id }] });
+      return true;
+    }
     var at = _taskReminderAt(task);
-    if (!at) return true;
+    if (!at) {
+      await LN.cancel({ notifications: [{ id: id }] });
+      return true;
+    }
+
+    // Do not destroy the currently scheduled reminder merely because permission
+    // is missing or has been revoked.
     if (!permissionAlreadyGranted) {
       var permission = await LN.checkPermissions();
       if (!permission || permission.display !== "granted") return false;
     }
-    await LN.schedule({
-      notifications: [{
-        id: id,
-        title: "تذكير بمهمة",
-        body: String(task.name || "لديك مهمة مستحقة").slice(0, 180),
-        schedule: { at: at },
-        sound: null,
-        autoCancel: true,
-        extra: { kind: "task-reminder", taskId: String(task.id) }
-      }]
-    });
-    return true;
+
+    await LN.cancel({ notifications: [{ id: id }] });
+    try {
+      await LN.schedule({
+        notifications: [{
+          id: id,
+          title: "تذكير بمهمة",
+          body: String(task.name || "لديك مهمة مستحقة").slice(0, 180),
+          schedule: { at: at },
+          sound: null,
+          autoCancel: true,
+          extra: { kind: "task-reminder", taskId: String(task.id) }
+        }]
+      });
+      return true;
+    } catch (scheduleError) {
+      // Best-effort restoration of the previous app-owned reminder.
+      if (previous && previous.extra && previous.extra.kind === "task-reminder"
+          && previous.schedule && previous.schedule.at) {
+        try {
+          await LN.schedule({
+            notifications: [{
+              id: id,
+              title: previous.title || "تذكير بمهمة",
+              body: previous.body || "لديك مهمة مستحقة",
+              schedule: { at: new Date(previous.schedule.at) },
+              sound: previous.sound === undefined ? null : previous.sound,
+              autoCancel: previous.autoCancel !== false,
+              extra: previous.extra
+            }]
+          });
+        } catch (restoreError) {
+          console.error("Previous task reminder could not be restored:", restoreError);
+        }
+      }
+      throw scheduleError;
+    }
   } catch (e) {
-    console.warn("Task notification scheduling failed:", e);
+    console.warn("Task notification replacement failed:", e);
     return false;
   }
 }
@@ -6092,7 +6275,7 @@ async function _syncAllTaskNotifications() {
         && existing.extra && existing.extra.kind === "task-reminder"
         && existing.extra.taskId === String(entry.task.id);
       if (matches) continue;
-      if (!await _syncTaskNotification(entry.task, entry.id, true)) allOk = false;
+      if (!await _syncTaskNotification(entry.task, entry.id, true, existing || null)) allOk = false;
     }
     return allOk;
   } catch (e) {
@@ -7186,7 +7369,11 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
   _focusTimer.running = false;
   _focusTimer.baseElapsed = elapsed;
   _focusTimer.startedAt = null;
-  _saveFocusTimer();
+  if (!_saveFocusTimer()) {
+    showAlertModal("تعذر حفظ حالة المؤقت", "جُمّدت الجلسة في الذاكرة، لكن التخزين لم يؤكد حفظها. لم نتابع الانتقال. لا تغلق التطبيق؛ تحقّق من مساحة التخزين ثم أعد المحاولة.");
+    _renderFocusTimer();
+    return;
+  }
   var currentTask = currentTaskId ? tasks.find(function(x) { return x.id === currentTaskId; }) : null;
   var newTask = tasks.find(function(x) { return x.id === newTaskId; });
 
@@ -7235,31 +7422,47 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
   saveBtn.textContent = 'حفظ';
   saveBtn.onclick = function() {
     closeModal();
+    var _oldActual = currentTask ? currentTask.actual : null;
+    var _actualWasIncremented = false;
     if (currentTask && elapsed >= 60
-        && (_focusTimer.mode === 'stopwatch' || _focusTimer.phase === 'work')) {
+        && (modeSnapshot === 'stopwatch' || phaseSnapshot === 'work')) {
       var minutes = Math.max(1, Math.round(elapsed / 60));
       var _alreadyLoggedTransition = _sessionAlreadyLogged(phaseSnapshot, elapsed);
-      var _oldActual = currentTask.actual;
-      if (!_alreadyLoggedTransition) currentTask.actual = (_oldActual || 0) + minutes;
-      if (!_alreadyLoggedTransition && !saveData()) {
-        currentTask.actual = _oldActual;
-        showToast('⚠️ تعذر الحفظ — لم يتم الانتقال');
-        return;
+      if (!_alreadyLoggedTransition) {
+        currentTask.actual = (_oldActual || 0) + minutes;
+        _actualWasIncremented = true;
+        if (!saveData()) {
+          currentTask.actual = _oldActual;
+          showToast('⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة ولم يتم الانتقال');
+          return;
+        }
       }
     }
-    var _logged = true;
-    if (elapsed >= 60) _logged = _logSession(phaseSnapshot, elapsed, true);
+
+    var _logged = elapsed < 60 || _logSession(phaseSnapshot, elapsed, true);
+    if (!_logged) {
+      var _rollbackOk = true;
+      if (_actualWasIncremented && currentTask) {
+        currentTask.actual = _oldActual;
+        _rollbackOk = saveData();
+      }
+      renderAll();
+      _renderFocusTimer();
+      if (_rollbackOk) {
+        showAlertModal("تعذر تسجيل الجلسة", "فشل حفظ جلسة التركيز. تراجعنا عن إضافة المدة الفعلية، وبقي المؤقت متوقفاً بالمدة الأصلية للمحاولة مجدداً. لم يتم الانتقال إلى المهمة الجديدة.");
+      } else {
+        showAlertModal("فشل تسجيل الجلسة والتراجع", "فشل تسجيل الجلسة وتعذر حفظ التراجع عن المدة الفعلية. قد تكون البيانات غير متسقة؛ صدّر نسخة احتياطية فوراً، ولا تُعد تسجيل المدة قبل مراجعة سجل الجلسات.");
+      }
+      return;
+    }
+
     if (!_resetAfterSession()) {
-      showToast('⚠️ حُفظت الجلسة، لكن تعذر حفظ تصفير المؤقت؛ لم يتم الانتقال. لا تُعد تسجيلها.');
+      showToast('⚠️ سُجّلت الجلسة، لكن تعذر حفظ تصفير المؤقت؛ لم يتم الانتقال. لا تُعد تسجيلها.');
       return;
     }
     onSwitch();
     renderAll();
-    if (_logged) {
-      showToast('✅ حُفظت الجلسة');
-    } else {
-      showToast('⚠️ حُفظت المهمة، لكن لم تُسجّل الجلسة');
-    }
+    showToast('✅ حُفظت الجلسة');
   };
 
   footerEl.appendChild(cancelBtn);
@@ -7384,6 +7587,7 @@ function _loadThoughts() {
       var _tx = arr[_ti];
       if (_tx && typeof _tx === "object" && typeof _tx.id === "number" && Number.isInteger(_tx.id) && _tx.id > _tMaxId) _tMaxId = _tx.id;
     }
+    // Repairs remain in memory during reads/renders; the next explicit _saveThoughts call persists them.
     var _tOut = [];
     for (var _tj = 0; _tj < arr.length; _tj++) {
       var _t = arr[_tj];
@@ -7580,6 +7784,7 @@ function _loadProjects() {
       var _px = arr[_pi];
       if (_px && typeof _px === "object" && typeof _px.id === "number" && Number.isInteger(_px.id) && _px.id > _pMaxId) _pMaxId = _px.id;
     }
+    // Repairs remain in memory during reads/renders; the next explicit _saveProjects call persists them.
     var _pOut = [];
     for (var _pj = 0; _pj < arr.length; _pj++) {
       var _p = arr[_pj];
@@ -7723,6 +7928,7 @@ function deleteProject(id) {
       try {
         if (oldMainRaw === null) localStorage.removeItem(STORAGE_KEY);
         else localStorage.setItem(STORAGE_KEY, oldMainRaw);
+        _setMainStorageBaseline(oldMainRaw);
         if (oldProjectRaw === null) localStorage.removeItem(PROJECTS_KEY);
         else localStorage.setItem(PROJECTS_KEY, oldProjectRaw);
         _invalidateProjectsCache();
@@ -7894,7 +8100,9 @@ function renderNotebook() {
 
 /* ============ Init ============ */
 
+_setupMainStorageConflictListener();
 loadData();
+if (!storageRecoveryRequired) _captureMainStorageBaseline();
 _setupSystemThemeListener();
 if (!storageRecoveryRequired) {
   try {
