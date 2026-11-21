@@ -1468,6 +1468,14 @@ test('extra settings survive import, app settings load, and the next ordinary sa
     appSettings: {},
     tasks: restoredMain.tasks,
     storageRecoveryRequired: false,
+    _mainStorageBaselineReady: false,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: null,
+    _setMainStorageBaseline(raw) {
+      context._mainStorageBaselineRaw = raw;
+      context._mainStorageBaselineReady = true;
+      context._mainStorageExternalChangeObserved = false;
+    },
     todayStr: () => '2026-11-21',
     _applyThemePreference: () => {},
     _pruneLastRecurringDates: () => {},
