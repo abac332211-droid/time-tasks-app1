@@ -2110,3 +2110,217 @@ test('failed corruption-snapshot deletion keeps reset marker and startup retry r
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
+
+
+test('mental-item conversion rollback refreshes rolling checkpoint to the restored pre-transaction state', () => {
+  const originalMain = JSON.stringify({
+    schemaVersion: 2, settings: {}, tasks: [], dailyLogs: []
+  });
+  const values = new Map([['main', originalMain]]);
+  const tasks = [];
+  const inbox = [{ id: 7, text: 'فكرة', next: 'خطوة', createdAt: '2026-11-21' }];
+  const checkpoints = [];
+  const toasts = [];
+  const sandbox = {
+    tasks,
+    STORAGE_KEY: 'main',
+    Date,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(key, String(value)); },
+      removeItem(key) { values.delete(key); }
+    },
+    _loadMentalInbox: () => inbox,
+    saveData() {
+      values.set('main', JSON.stringify({
+        schemaVersion: 2, settings: {}, tasks: sandbox.tasks, dailyLogs: []
+      }));
+      checkpoints.push({ reason: 'main-save', main: values.get('main') });
+      return true;
+    },
+    _saveMentalInbox: () => false,
+    getNextTaskId: () => 1,
+    todayStr: () => '2026-11-21',
+    _setMainStorageBaseline: () => {},
+    _storeRollingRecoveryBackup(reason) {
+      checkpoints.push({ reason, main: values.get('main'), inbox: JSON.stringify(inbox) });
+      return true;
+    },
+    renderAll: () => {},
+    showToast: (message) => toasts.push(message),
+    showAlertModal: () => {},
+    console
+  };
+  vm.runInNewContext(extractFunction('convertMentalItemToTask'), sandbox);
+  sandbox.convertMentalItemToTask(7);
+
+  assert.equal(values.get('main'), originalMain, 'failed second collection write must restore the main data');
+  assert.deepEqual(sandbox.tasks, []);
+  assert.equal(inbox[0].convertedTaskId, undefined);
+  assert.equal(checkpoints.at(-1).reason, 'transaction-rollback');
+  assert.equal(checkpoints.at(-1).main, originalMain);
+  assert.ok(toasts.some((message) => /لم تُحوّل/.test(message)));
+});
+
+test('mental-item conversion blocks further writes when its main-data compensation fails', () => {
+  const originalMain = JSON.stringify({
+    schemaVersion: 2, settings: {}, tasks: [], dailyLogs: []
+  });
+  const values = new Map([['main', originalMain]]);
+  const inbox = [{ id: 8, text: 'فكرة', createdAt: '2026-11-21' }];
+  let failRollback = false;
+  const checkpoints = [];
+  const alerts = [];
+  const sandbox = {
+    tasks: [],
+    STORAGE_KEY: 'main',
+    storageRecoveryRequired: false,
+    Date,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) {
+        if (failRollback) throw new Error('simulated compensation failure');
+        values.set(key, String(value));
+      },
+      removeItem(key) { values.delete(key); }
+    },
+    _loadMentalInbox: () => inbox,
+    saveData() {
+      values.set('main', JSON.stringify({
+        schemaVersion: 2, settings: {}, tasks: sandbox.tasks, dailyLogs: []
+      }));
+      return true;
+    },
+    _saveMentalInbox: () => { failRollback = true; return false; },
+    getNextTaskId: () => 1,
+    todayStr: () => '2026-11-21',
+    _setMainStorageBaseline: () => {},
+    _storeRollingRecoveryBackup(reason) { checkpoints.push(reason); return true; },
+    renderAll: () => {},
+    showToast: () => {},
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('convertMentalItemToTask'), sandbox);
+  sandbox.convertMentalItemToTask(8);
+
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.equal(checkpoints.includes('transaction-rollback'), false);
+  assert.ok(alerts.length > 0);
+});
+
+test('project deletion rollback refreshes rolling checkpoint only after both stores are restored', () => {
+  const originalMain = JSON.stringify({
+    schemaVersion: 2, settings: {}, tasks: [
+      { id: 1, name: 'مهمة', projectId: 5 }
+    ], dailyLogs: []
+  });
+  const originalProjects = JSON.stringify([{ id: 5, name: 'مشروع' }]);
+  const values = new Map([['main', originalMain], ['projects', originalProjects]]);
+  const tasks = [{ id: 1, name: 'مهمة', projectId: 5 }];
+  const projects = [{ id: 5, name: 'مشروع' }];
+  const checkpoints = [];
+  const toasts = [];
+  const sandbox = {
+    tasks,
+    STORAGE_KEY: 'main',
+    PROJECTS_KEY: 'projects',
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
+    _editingProjectId: null,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(key, String(value)); },
+      removeItem(key) { values.delete(key); }
+    },
+    _loadProjects: () => projects,
+    showConfirmModal(_title, _body, accept) { accept(); },
+    saveData() {
+      values.set('main', JSON.stringify({
+        schemaVersion: 2, settings: {}, tasks: sandbox.tasks, dailyLogs: []
+      }));
+      checkpoints.push({ reason: 'main-save', main: values.get('main') });
+      return true;
+    },
+    _saveProjects: () => false,
+    _setMainStorageBaseline: () => {},
+    _invalidateProjectsCache: () => {},
+    _storeRollingRecoveryBackup(reason) {
+      checkpoints.push({
+        reason, main: values.get('main'), projects: values.get('projects')
+      });
+      return true;
+    },
+    renderProjects: () => {},
+    renderTasks: () => {},
+    _renderProjectSelect: () => {},
+    cancelProjectEdit: () => {},
+    showToast: (message) => toasts.push(message),
+    showAlertModal: () => {},
+    console
+  };
+  vm.runInNewContext(extractFunction('deleteProject'), sandbox);
+  sandbox.deleteProject(5);
+
+  assert.equal(values.get('main'), originalMain);
+  assert.equal(values.get('projects'), originalProjects);
+  assert.equal(tasks[0].projectId, 5);
+  assert.equal(checkpoints.at(-1).reason, 'transaction-rollback');
+  assert.equal(checkpoints.at(-1).main, originalMain);
+  assert.equal(checkpoints.at(-1).projects, originalProjects);
+});
+
+test('project deletion enters recovery-required state if compensating writes fail', () => {
+  const originalMain = JSON.stringify({
+    schemaVersion: 2, settings: {}, tasks: [
+      { id: 1, name: 'مهمة', projectId: 5 }
+    ], dailyLogs: []
+  });
+  const originalProjects = JSON.stringify([{ id: 5, name: 'مشروع' }]);
+  const values = new Map([['main', originalMain], ['projects', originalProjects]]);
+  const tasks = [{ id: 1, name: 'مهمة', projectId: 5 }];
+  const projects = [{ id: 5, name: 'مشروع' }];
+  let failCompensation = false;
+  const alerts = [];
+  const checkpoints = [];
+  const sandbox = {
+    tasks,
+    STORAGE_KEY: 'main',
+    PROJECTS_KEY: 'projects',
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
+    _editingProjectId: null,
+    storageRecoveryRequired: false,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) {
+        if (failCompensation) throw new Error('simulated compensation failure');
+        values.set(key, String(value));
+      },
+      removeItem(key) { values.delete(key); }
+    },
+    _loadProjects: () => projects,
+    showConfirmModal(_title, _body, accept) { accept(); },
+    saveData() {
+      values.set('main', JSON.stringify({
+        schemaVersion: 2, settings: {}, tasks: sandbox.tasks, dailyLogs: []
+      }));
+      return true;
+    },
+    _saveProjects: () => { failCompensation = true; return false; },
+    _setMainStorageBaseline: () => {},
+    _invalidateProjectsCache: () => {},
+    _storeRollingRecoveryBackup(reason) { checkpoints.push(reason); return true; },
+    renderProjects: () => {},
+    renderTasks: () => {},
+    _renderProjectSelect: () => {},
+    cancelProjectEdit: () => {},
+    showToast: () => {},
+    showAlertModal: (...args) => alerts.push(args),
+    console
+  };
+  vm.runInNewContext(extractFunction('deleteProject'), sandbox);
+  sandbox.deleteProject(5);
+
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.equal(checkpoints.includes('transaction-rollback'), false);
+  assert.ok(alerts.length > 0);
+});
