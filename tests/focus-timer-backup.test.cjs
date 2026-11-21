@@ -1066,7 +1066,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
       setItem(key, value) { sessionValues.set(key, String(value)); }
     },
     location: { reload() { reloads++; } },
-    _reloadAfterVerifiedOperation() { this.location.reload(); },
+    _reloadAfterVerifiedOperation: () => { reloads++; },
     todayStr: () => '2026-11-20',
     isValidCalendarDate: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
     validateV2: () => true,
