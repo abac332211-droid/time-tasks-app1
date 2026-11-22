@@ -3189,7 +3189,7 @@ test('plain-text modal path renders storage-derived migration errors through tex
   assert.equal(body.children[0].style.whiteSpace, 'pre-line');
   assert.equal(body._textContent, '');
   const migration = extractFunction('loadData');
-  const migrationAlert = migration.split('\\n').find((line) => line.includes('showAlertModal("تعذر ترقية البيانات"'));
+  const migrationAlert = migration.split(/\r?\n/).find((line) => line.includes('showAlertModal("تعذر ترقية البيانات"'));
   assert.ok(migrationAlert, 'the migration failure alert is present');
   assert.ok(migrationAlert.includes('report.error') && migrationAlert.endsWith(', true);'),
     'the stored schema value is passed to the explicit plain-text rendering path');

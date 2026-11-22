@@ -23,7 +23,7 @@ async function main() {
 
     const sanitizer = await page.evaluate(() => {
       window.__p0Executed = 0;
-      const payload = '<span style="background-image:u\\\\72l(javascript:window.__p0Executed++)" onclick="window.__p0Executed++">آمن ظاهريًا</span>'
+      const payload = '<span style="background-image:u\\72l(javascript:window.__p0Executed++)" onclick="window.__p0Executed++">آمن ظاهريًا</span>'
         + '<img src="x" onerror="window.__p0Executed++">'
         + '<svg onload="window.__p0Executed++"><script>window.__p0Executed++</script></svg>'
         + '<a href="javascript:window.__p0Executed++">رابط</a>';
@@ -42,7 +42,7 @@ async function main() {
     assert.equal(sanitizer.attributes.length, 0, 'allowed formatting elements must have no attributes');
 
     const migration = await page.evaluate(() => {
-      const payload = '<img src=x onerror="window.__p0Executed++">\\\\72l(javascript:window.__p0Executed++)';
+      const payload = '<img src=x onerror="window.__p0Executed++">\\72l(javascript:window.__p0Executed++)';
       window.showAlertModal('اختبار أمني', payload, true);
       return {
         text: document.getElementById('modalBody').textContent,
