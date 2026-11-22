@@ -220,6 +220,7 @@ test('saveData refuses writes while an import recovery marker remains', () => {
   const sandbox = {
     storageRecoveryRequired: false,
     STORAGE_KEY: 'main',
+    PROJECTS_KEY: 'projects',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
     localStorage: {
       getItem: (key) => key === 'import-in-progress' ? '1' : original,
@@ -2261,7 +2262,7 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
   const original = JSON.stringify({
     schemaVersion: 2, settings: {}, tasks: [], dailyLogs: []
   });
-  const values = new Map([['main', original]]);
+  const values = new Map([['main', original], ['projects', '[]']]);
   let checkpointRaw = null;
   let checkpointReason = null;
   const sandbox = {
@@ -2279,6 +2280,15 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
       setItem(key, value) { values.set(key, String(value)); }
     },
     _setMainStorageBaseline(raw) { sandbox._mainStorageBaselineRaw = raw; },
+    _verifyStoredTaskProjectReferences() {
+      return {
+        valid: true,
+        mainRaw: values.get('main'),
+        projectsRaw: values.get('projects'),
+        projects: []
+      };
+    },
+    validateTaskProjectReferences: () => ({ valid: true, reason: null }),
     validateV2: () => true,
     showToast: () => {},
     console,

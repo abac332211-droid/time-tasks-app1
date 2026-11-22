@@ -51,6 +51,7 @@ const FOCUS_SETTINGS_KEY = 'timeTasksApp_focusSettings';
 const NOTIFICATIONS_KEY = 'timeTasksApp_notifications';
 const IMPORT_IN_PROGRESS_KEY = 'timeTasksApp_importInProgress';
 const PRE_IMPORT_KEY = 'timeTasksApp_preImportBackup';
+const MIGRATION_IN_PROGRESS_KEY = 'timeTasksApp_migrationInProgress';
 
 const validMain = (tasks = []) => JSON.stringify({
   schemaVersion: 2,
@@ -781,6 +782,7 @@ function dailyLogHarness({ tasks, projects, readbackMismatch = false }) {
     STORAGE_KEY,
     PROJECTS_KEY,
     CURRENT_SCHEMA_VERSION: 2,
+    validateV2: () => true,
     storageRecoveryRequired: false,
     _mainStorageBaselineReady: true,
     _mainStorageBaselineRaw: initialMain,
