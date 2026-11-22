@@ -592,9 +592,10 @@ test('successful project deletion survives a real backup build and import round 
   });
 
   const backup = exportSandbox.buildBackupObject();
-  assert.deepEqual(backup.data.tasks.map((item) => item.status), ['pending', 'done', 'cancelled']);
-  assert.deepEqual(backup.data.tasks.map((item) => item.projectId), [null, null, null]);
-  assert.deepEqual(backup.data.projects, []);
+  const exportedData = JSON.parse(JSON.stringify(backup.data));
+  assert.deepEqual(exportedData.tasks.map((item) => item.status), ['pending', 'done', 'cancelled']);
+  assert.deepEqual(exportedData.tasks.map((item) => item.projectId), [null, null, null]);
+  assert.deepEqual(exportedData.projects, []);
 
   const restored = importHarness(backup);
   const restoredMain = JSON.parse(restored.storage.getItem(STORAGE_KEY));
