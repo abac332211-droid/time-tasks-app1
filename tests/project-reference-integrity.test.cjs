@@ -544,6 +544,6 @@ test('addTaskToProject persists repaired legacy project IDs before writing the l
   assert.equal(taskWrites, 1, 'the new linked task is saved after project repair');
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].projectId, 101);
-  assert.equal(projects.find((item) => item.id === 105)._healed, true,
-    'healing metadata is retained according to the existing loader contract');
+  assert.equal(projects.find((item) => item.id === 105)._healed, undefined,
+    'internal healing metadata is not persisted as project data');
 });

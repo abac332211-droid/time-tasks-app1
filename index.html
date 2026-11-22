@@ -2671,6 +2671,58 @@ function _readStoredTasksForProjectReferenceValidation() {
   }
 }
 
+
+function _normalizeStoredProjectIdsForRelationshipValidation() {
+  var current = _readStoredProjectsForTaskReferenceValidation();
+  if (current.valid) return current;
+
+  var raw;
+  try {
+    raw = localStorage.getItem(PROJECTS_KEY);
+    var decoded = raw === null || raw === "" ? [] : JSON.parse(raw);
+    if (!Array.isArray(decoded) || typeof _loadProjects !== "function") return current;
+
+    // Reuse the app's established project-ID reconciliation; do not rewrite task references.
+    if (typeof _invalidateProjectsCache === "function") _invalidateProjectsCache();
+    var reconciled = _loadProjects();
+    if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return current;
+    if (!Array.isArray(reconciled)
+        || !reconciled.some(function(project) { return project && project._healed === true; })) {
+      return current;
+    }
+
+    var persistedProjects = reconciled.map(function(project) {
+      var copy = typeof _copyStorageRecord === "function"
+        ? _copyStorageRecord(project)
+        : Object.assign({}, project);
+      if (copy && Object.prototype.hasOwnProperty.call(copy, "_healed")) delete copy._healed;
+      return copy;
+    });
+    var normalizedRaw = JSON.stringify(persistedProjects);
+    localStorage.setItem(PROJECTS_KEY, normalizedRaw);
+    if (localStorage.getItem(PROJECTS_KEY) !== normalizedRaw) {
+      throw new Error("project reconciliation read-back mismatch");
+    }
+    if (typeof _secondaryStorageBaselines !== "undefined" && _secondaryStorageBaselines) {
+      _secondaryStorageBaselines[PROJECTS_KEY] = normalizedRaw;
+    }
+    if (typeof _secondaryStorageConflicts !== "undefined" && _secondaryStorageConflicts) {
+      delete _secondaryStorageConflicts[PROJECTS_KEY];
+    }
+    if (typeof _invalidateProjectsCache === "function") _invalidateProjectsCache();
+    return _readStoredProjectsForTaskReferenceValidation();
+  } catch (e) {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    return {
+      valid: false,
+      reason: "تعذر حفظ إصلاحات معرّفات المشاريع القديمة والتحقق منها.",
+      projects: null,
+      raw: typeof raw === "string" ? raw : null,
+      error: e
+    };
+  }
+}
+
 function _verifyStoredTaskProjectReferences() {
   var storedTasks = _readStoredTasksForProjectReferenceValidation();
   if (!storedTasks.valid) return storedTasks;
@@ -2718,7 +2770,9 @@ function migrateV1ToV2() {
         return report;
       }
       if (typeof _readStoredProjectsForTaskReferenceValidation === "function") {
-        var emptyProjects = _readStoredProjectsForTaskReferenceValidation();
+        var emptyProjects = typeof _normalizeStoredProjectIdsForRelationshipValidation === "function"
+          ? _normalizeStoredProjectIdsForRelationshipValidation()
+          : _readStoredProjectsForTaskReferenceValidation();
         if (!emptyProjects.valid) { report.error = "project_store_invalid: " + emptyProjects.reason; return report; }
         var emptyLinks = validateTaskProjectReferences(empty.tasks, emptyProjects.projects);
         if (!emptyLinks.valid) { report.error = "project_reference_integrity_failed: " + emptyLinks.reason; return report; }
@@ -2791,7 +2845,9 @@ function migrateV1ToV2() {
       }
       if (!validateV2(candidate)) { report.error = "v2_invalid_no_recovery"; return report; }
       if (typeof _readStoredProjectsForTaskReferenceValidation === "function") {
-        var candidateProjects = _readStoredProjectsForTaskReferenceValidation();
+        var candidateProjects = typeof _normalizeStoredProjectIdsForRelationshipValidation === "function"
+          ? _normalizeStoredProjectIdsForRelationshipValidation()
+          : _readStoredProjectsForTaskReferenceValidation();
         if (!candidateProjects.valid) { report.error = "project_store_invalid: " + candidateProjects.reason; return report; }
         var candidateLinks = validateTaskProjectReferences(candidate.tasks, candidateProjects.projects);
         if (!candidateLinks.valid) { report.error = "project_reference_integrity_failed: " + candidateLinks.reason; return report; }
@@ -2890,7 +2946,9 @@ function migrateV1ToV2() {
     };
     if (!validateV2(v2Data)) { report.error = "generated_v2_invalid"; return report; }
     if (typeof _readStoredProjectsForTaskReferenceValidation === "function") {
-      const migrationProjects = _readStoredProjectsForTaskReferenceValidation();
+      const migrationProjects = typeof _normalizeStoredProjectIdsForRelationshipValidation === "function"
+        ? _normalizeStoredProjectIdsForRelationshipValidation()
+        : _readStoredProjectsForTaskReferenceValidation();
       if (!migrationProjects.valid) { report.error = "project_store_invalid: " + migrationProjects.reason; return report; }
       const migratedLinks = validateTaskProjectReferences(v2Data.tasks, migrationProjects.projects);
       if (!migratedLinks.valid) { report.error = "project_reference_integrity_failed: " + migratedLinks.reason; return report; }
@@ -11087,9 +11145,16 @@ function addTaskToProject(projectId) {
   var p = arr.find(function(x) { return x.id === projectId; });
   if (!p) return;
   // Persist any already-healed project IDs before linking a new task to the store.
-  if (arr.some(function(item) { return item && item._healed === true; }) && !_saveProjects(arr)) {
-    showToast("⚠️ تعذر حفظ إصلاحات قائمة المشاريع — لم تُضف المهمة");
-    return;
+  if (arr.some(function(item) { return item && item._healed === true; })) {
+    var repairedProjectsToPersist = arr.map(function(item) {
+      var copy = Object.assign({}, item);
+      if (Object.prototype.hasOwnProperty.call(copy, "_healed")) delete copy._healed;
+      return copy;
+    });
+    if (!_saveProjects(repairedProjectsToPersist)) {
+      showToast("⚠️ تعذر حفظ إصلاحات قائمة المشاريع — لم تُضف المهمة");
+      return;
+    }
   }
   // FIX N7 (G3): تحذير عند المشروع غير النشط
   if (p.status !== 'active') {
