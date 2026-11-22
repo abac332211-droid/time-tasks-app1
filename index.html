@@ -2584,7 +2584,6 @@ function _healTaskFieldsAfterLoad() {
   return _healTaskArray(tasks);
 }
 
-function migrateV1ToV2() {
 function validateTaskProjectReferences(taskList, projectList) {
   if (!Array.isArray(taskList) || !Array.isArray(projectList)) {
     return { valid: false, reason: "قوائم المهام أو المشاريع غير صالحة." };
@@ -2683,6 +2682,7 @@ function _verifyStoredTaskProjectReferences() {
     projects: storedProjects.projects, mainRaw: storedTasks.raw, projectsRaw: storedProjects.raw
   };
 }
+function migrateV1ToV2() {
 
   const report = {
     date: new Date().toISOString(),
