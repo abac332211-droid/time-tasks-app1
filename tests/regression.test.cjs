@@ -3049,3 +3049,162 @@ test('recurring task refresh is page-lifetime, visible-only, minute-based, and i
   tick();
   assert.equal(generated, 1, 'recovery-required mode blocks recurring writes');
 });
+
+
+test('modal sanitizer strips every attribute from allowed tags and unwraps active or unsupported elements', () => {
+  const source = extractFunction('sanitizeModalHtml');
+  const attack = '<span class="notice" style="background-image:u\\\\72l(javascript:alert(1))" onclick="alert(2)">تنبيه</span>'
+    + '<a href="javascript:alert(3)" onmouseover="alert(4)">رابط</a>'
+    + '<img src="x" onerror="alert(5)">'
+    + '<script>alert(6)</script>';
+  let parsedInput = null;
+
+  function escapeText(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function textNode(value) {
+    return { nodeType: 3, textContent: String(value) };
+  }
+  function element(tagName, attributes, childNodes) {
+    const node = {
+      nodeType: 1,
+      tagName,
+      attributes: attributes.map(([name, value]) => ({ name, value })),
+      childNodes,
+      removeAttribute(name) {
+        const index = this.attributes.findIndex((attribute) => attribute.name === name);
+        if (index !== -1) this.attributes.splice(index, 1);
+      },
+      replaceChild(replacement, current) {
+        const index = this.childNodes.indexOf(current);
+        assert.notEqual(index, -1);
+        this.childNodes.splice(index, 1, replacement);
+      },
+      get textContent() {
+        return this.childNodes.map((child) => child.textContent).join('');
+      },
+      get innerHTML() {
+        return this.childNodes.map((child) => child.nodeType === 3
+          ? escapeText(child.textContent)
+          : '<' + child.tagName.toLowerCase() + '>' + child.innerHTML + '</' + child.tagName.toLowerCase() + '>').join('');
+      }
+    };
+    return node;
+  }
+
+  const span = element('SPAN', [
+    ['class', 'notice'],
+    ['style', 'background-image:u\\\\72l(javascript:alert(1))'],
+    ['onclick', 'alert(2)'],
+    ['onmouseover', 'alert(4)'],
+    ['data-extra', 'unneeded']
+  ], [textNode('تنبيه')]);
+  const body = element('BODY', [], [
+    span,
+    element('A', [['href', 'javascript:alert(3)'], ['onmouseover', 'alert(4)']], [textNode('رابط')]),
+    element('IMG', [['src', 'x'], ['onerror', 'alert(5)']], []),
+    element('SCRIPT', [], [textNode('alert(6)')])
+  ]);
+  const parser = {
+    parseFromString(value, mimeType) {
+      parsedInput = value;
+      assert.equal(mimeType, 'text/html');
+      return { body };
+    }
+  };
+  const sandbox = {
+    DOMParser: function DOMParser() { return parser; },
+    document: { createTextNode: textNode },
+    escapeHTML: escapeText
+  };
+
+  vm.runInNewContext(source, sandbox);
+  const sanitized = sandbox.sanitizeModalHtml(attack);
+
+  assert.equal(parsedInput, attack);
+  assert.equal(span.attributes.length, 0, 'class, style (including CSS escapes), and event attributes are all removed');
+  assert.equal(sanitized, '<span>تنبيه</span>رابطalert(6)');
+  assert.doesNotMatch(sanitized, /<\/?(?:a|img|script)\b|\b(?:class|style|onerror|onclick|onmouseover|href)=/i);
+});
+
+test('modal sanitizer falls back to escaped text if DOM parsing fails', () => {
+  const sandbox = {
+    DOMParser: function DOMParser() {
+      this.parseFromString = () => { throw new Error('parser unavailable'); };
+    },
+    escapeHTML(value) {
+      return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  };
+  vm.runInNewContext(extractFunction('sanitizeModalHtml'), sandbox);
+  assert.equal(
+    sandbox.sanitizeModalHtml('<img src=x onerror=alert(1)>'),
+    '&lt;img src=x onerror=alert(1)&gt;'
+  );
+});
+
+test('plain-text modal path renders storage-derived migration errors through textContent', () => {
+  const elements = Object.create(null);
+  function makeElement() {
+    return {
+      children: [],
+      style: {},
+      classList: { remove() {} },
+      appendChild(child) { this.children.push(child); },
+      focus() {}
+    };
+  }
+  const body = makeElement();
+  Object.defineProperty(body, 'textContent', {
+    get() { return this.children.map((child) => child.textContent || '').join(''); },
+    set(value) { this.children = []; this._textContent = String(value); }
+  });
+  const document = {
+    getElementById(id) {
+      if (id === 'modalBody') return body;
+      if (!elements[id]) elements[id] = makeElement();
+      return elements[id];
+    },
+    createElement: makeElement,
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  const sandbox = {
+    document,
+    _modalKeyHandler: null,
+    _setupModalFocusTrap: () => () => {},
+    closeModal() {},
+    setTimeout(callback) { callback(); }
+  };
+  const storageValue = '<img src=x onerror="alert(1)">\\\\72l(javascript:alert(2))';
+  const message = 'السبب: unknown_schema_version_' + storageValue + '\\nبياناتك الأصلية محفوظة ولم تُلمس.';
+
+  vm.runInNewContext(extractFunction('showAlertModal'), sandbox);
+  sandbox.showAlertModal('تعذر ترقية البيانات', message, true);
+
+  assert.equal(body.children.length, 1);
+  assert.equal(body.children[0].textContent, message);
+  assert.equal(body.children[0].style.whiteSpace, 'pre-line');
+  assert.equal(body._textContent, '');
+  assert.match(
+    extractFunction('loadData'),
+    /showAlertModal\\("تعذر ترقية البيانات", "السبب: " \\+ report\\.error \\+ "\\\\nبياناتك الأصلية محفوظة ولم تُلمس\\.", true\\)/
+  );
+});
+
+test('remaining HTML render sinks escape persisted free text and validate interpolated identifiers and enums', () => {
+  assert.match(extractFunction('renderTasks'), /escapeHTML\\(t\\.name\\)/);
+  assert.match(extractFunction('renderTasks'), /escapeHTML\\(t\\.type \\|\\| "—"\\)/);
+  assert.match(extractFunction('renderProjects'), /escapeHTML\\(p\\.name\\)/);
+  assert.match(extractFunction('renderProjects'), /escapeHTML\\(p\\.description\\)/);
+  assert.match(extractFunction('renderFocusSessionsCard'), /escapeHTML\\(s\\.taskName\\.slice/);
+  assert.match(extractFunction('renderHomeSchedule'), /escapeHTML\\(task\\.name\\)/);
+  assert.match(extractFunction('renderHomeSchedule'), /escapeHTML\\(task\\.plannedTime\\)/);
+  assert.match(appScript, /var text = escapeHTML\\(m\\.text\\)/);
+  assert.match(appScript, /escapeHTML\\(m\\.next\\)/);
+  assert.match(extractFunction('updateEstimatorHint'), /escapeHTML\\(type\\)/);
+  assert.match(extractFunction('validateV2'), /Number\\.isInteger\\(t\\.id\\)[\\s\\S]*?isValidLocalTime\\(t\\.plannedTime\\)/);
+  assert.match(extractFunction('_loadMentalInbox'), /typeof _m2\\.id !== "number"/);
+  assert.match(extractFunction('_loadThoughts'), /typeof _t2\\.id !== "number"/);
+  assert.match(extractFunction('_loadProjects'), /VALID_PROJECT_STATUS\\.indexOf\\(_p2\\.status\\) === -1/);
+});
