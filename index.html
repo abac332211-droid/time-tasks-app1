@@ -1785,7 +1785,7 @@ function closeModal() {
   _focusReturnTarget = null;
 }
 
-/* DOM-based HTML Sanitizer — آمن ومانع للحقن */
+/* DOM-based modal markup sanitizer: formatting tags only, with no attributes. */
 function sanitizeModalHtml(html) {
   try {
     const parser = new DOMParser();
@@ -1796,28 +1796,22 @@ function sanitizeModalHtml(html) {
       const children = Array.from(node.childNodes);
       for (let i = 0; i < children.length; i++) {
         const child = children[i];
-        if (child.nodeType === 1) { // Element
+        if (child.nodeType === 1) {
           if (!allowedTags.includes(child.tagName)) {
             const textNode = document.createTextNode(child.textContent);
             node.replaceChild(textNode, child);
           } else {
-            for (let j = child.attributes.length - 1; j >= 0; j--) {
-              const attrName = child.attributes[j].name.toLowerCase();
-              if (attrName !== 'class' && attrName !== 'style') {
-                child.removeAttribute(attrName);
-              }
-            }
-            if (child.hasAttribute('style')) {
-              const s = child.getAttribute('style');
-              if (/url|expression|javascript|position|z-index/i.test(s)) {
-                child.removeAttribute('style');
-              }
+            // No attributes are needed for modal message formatting. Removing all of
+            // them avoids CSS parsing, CSS escapes, event handlers, URLs and classes.
+            while (child.attributes.length > 0) {
+              child.removeAttribute(child.attributes[0].name);
             }
             cleanNode(child);
           }
         }
       }
     }
+
     cleanNode(doc.body);
     return doc.body.innerHTML;
   } catch (e) {
@@ -1846,14 +1840,25 @@ function _setupModalFocusTrap(cardElement) {
   };
 }
 
-function showAlertModal(title, htmlText) {
+function showAlertModal(title, htmlText, plainText) {
   const overlay = document.getElementById('customModalOverlay');
   const card = document.getElementById('modalCardElement');
   document.getElementById('modalTitle').textContent = title;
-  document.getElementById('modalBody').innerHTML = '<p style="margin:0;line-height:1.6;">' + sanitizeModalHtml(htmlText) + '</p>';
+  const body = document.getElementById('modalBody');
+  if (plainText === true) {
+    const p = document.createElement('p');
+    p.style.margin = '0';
+    p.style.lineHeight = '1.6';
+    p.style.whiteSpace = 'pre-line';
+    p.textContent = String(htmlText);
+    body.textContent = '';
+    body.appendChild(p);
+  } else {
+    body.innerHTML = '<p style="margin:0;line-height:1.6;">' + sanitizeModalHtml(htmlText) + '</p>';
+  }
   document.getElementById('modalFooter').innerHTML = '<button class="btn-primary" id="modalOkBtn" onclick="closeModal()">حسنًا</button>';
   overlay.classList.remove('hidden');
-  
+
   const trapFocus = _setupModalFocusTrap(card);
   if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler = function(e) {
@@ -2875,7 +2880,7 @@ function loadData() {
       } else tasks = [];
     } catch (e) { tasks = []; }
     setTimeout(function() {
-      showAlertModal("تعذر ترقية البيانات", "السبب: " + report.error + "<br>بياناتك الأصلية محفوظة ولم تُلمس.");
+      showAlertModal("تعذر ترقية البيانات", "السبب: " + report.error + "\nبياناتك الأصلية محفوظة ولم تُلمس.", true);
     }, 400);
     return;
   }
