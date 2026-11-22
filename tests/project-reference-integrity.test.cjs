@@ -547,3 +547,61 @@ test('addTaskToProject persists repaired legacy project IDs before writing the l
   assert.equal(projects.find((item) => item.id === 105)._healed, undefined,
     'internal healing metadata is not persisted as project data');
 });
+
+test('successful project deletion survives a real backup build and import round trip', () => {
+  const deleted = projectDeleteHarness({
+    rows: [task(1, 70, 'pending'), task(2, 70, 'done'), task(3, 70, 'cancelled')]
+  });
+  deleted.sandbox.deleteProject(70);
+
+  const timerSnapshot = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 0,
+    startedAt: null, cyclePosition: 1, taskId: null, sessionStartAt: 0,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null
+  };
+  const exportSandbox = runFunctions([
+    'validateTaskProjectReferences',
+    '_readStoredProjectsForTaskReferenceValidation',
+    '_readStoredTasksForProjectReferenceValidation',
+    '_verifyStoredTaskProjectReferences',
+    'buildBackupObject'
+  ], {
+    localStorage: deleted.storage,
+    STORAGE_KEY,
+    PROJECTS_KEY,
+    FOCUS_SESSIONS_KEY,
+    FOCUS_TIMER_KEY,
+    MENTAL_INBOX_KEY,
+    THOUGHTS_KEY,
+    FOCUS_SETTINGS_KEY,
+    NOTIFICATIONS_KEY,
+    BACKUP_FORMAT_VERSION: 2,
+    CURRENT_SCHEMA_VERSION: 2,
+    APP_VERSION: '2.9.0',
+    _trackSecondaryStorageRead: () => {},
+    _getFocusTimerElapsedParts: () => ({ seconds: 0, remainderMs: 0 }),
+    _buildFocusTimerBackupSnapshot: () => timerSnapshot,
+    _phaseTargetSec: () => 1500,
+    _focusElapsedRemainderMs: 0,
+    _focusTimer: {},
+    _getFocusSettingsSnapshot: () => ({}),
+    _getNotificationsPref: () => ({}),
+    localDateTimeString: () => '2026-11-22T12:00:00',
+    buildEmptyV2: () => ({ schemaVersion: 2, settings: {}, tasks: [], dailyLogs: [] }),
+    validateBackup: () => ({ valid: true, reason: null })
+  });
+
+  const backup = exportSandbox.buildBackupObject();
+  assert.deepEqual(backup.data.tasks.map((item) => item.status), ['pending', 'done', 'cancelled']);
+  assert.deepEqual(backup.data.tasks.map((item) => item.projectId), [null, null, null]);
+  assert.deepEqual(backup.data.projects, []);
+
+  const restored = importHarness(backup);
+  const restoredMain = JSON.parse(restored.storage.getItem(STORAGE_KEY));
+  assert.deepEqual(restoredMain.tasks.map((item) => item.status), ['pending', 'done', 'cancelled']);
+  assert.deepEqual(restoredMain.tasks.map((item) => item.projectId), [null, null, null]);
+  assert.deepEqual(JSON.parse(restored.storage.getItem(PROJECTS_KEY)), []);
+  assert.equal(restored.sandbox._verifyStoredTaskProjectReferences().valid, true);
+  assert.equal(restored.storage.getItem(IMPORT_IN_PROGRESS_KEY), null);
+  assert.equal(restored.reloads(), 1);
+});
