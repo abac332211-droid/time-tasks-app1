@@ -2676,19 +2676,121 @@ function _normalizeStoredProjectIdsForRelationshipValidation() {
   var current = _readStoredProjectsForTaskReferenceValidation();
   if (current.valid) return current;
 
-  var raw;
+  var raw = null;
+  var snapshotPreserved = false;
+  function fail(reason, error) {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    if (typeof _invalidateProjectsCache === "function") _invalidateProjectsCache();
+    return {
+      valid: false,
+      reason: reason,
+      projects: null,
+      raw: typeof raw === "string" ? raw : null,
+      error: error || null
+    };
+  }
+
+  function writeRepairedProjects(serializedProjects) {
+    var migrationMarkerActive = typeof MIGRATION_IN_PROGRESS_KEY !== "undefined"
+      && localStorage.getItem(MIGRATION_IN_PROGRESS_KEY) === "1";
+
+    if (!migrationMarkerActive) {
+      return typeof _writeSecondaryStorageVerified === "function"
+        && _writeSecondaryStorageVerified(PROJECTS_KEY, serializedProjects);
+    }
+
+    // V1 migration deliberately holds its marker while repairing legacy stores.
+    // Permit only this narrowly scoped secondary write; all other recovery
+    // markers and secondary-storage concurrency checks remain enforced.
+    if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
+    var blockingKeys = [];
+    if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
+    if (typeof RESET_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(RESET_IN_PROGRESS_KEY);
+    if (typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(ROLLING_RESTORE_IN_PROGRESS_KEY);
+    for (var bi = 0; bi < blockingKeys.length; bi++) {
+      if (localStorage.getItem(blockingKeys[bi]) !== null) return false;
+    }
+    if (typeof _secondaryStorageWriteAllowed !== "function"
+        || !_secondaryStorageWriteAllowed(PROJECTS_KEY)) return false;
+
+    localStorage.setItem(PROJECTS_KEY, serializedProjects);
+    var migrationReadback = localStorage.getItem(PROJECTS_KEY);
+    if (migrationReadback !== serializedProjects) {
+      if (typeof _secondaryStorageConflicts !== "undefined") _secondaryStorageConflicts[PROJECTS_KEY] = true;
+      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof _secondaryStorageBaselines !== "undefined" && _secondaryStorageBaselines) {
+      _secondaryStorageBaselines[PROJECTS_KEY] = migrationReadback;
+    }
+    if (typeof _secondaryStorageConflicts !== "undefined" && _secondaryStorageConflicts) {
+      delete _secondaryStorageConflicts[PROJECTS_KEY];
+    }
+    return true;
+  }
+
   try {
     raw = localStorage.getItem(PROJECTS_KEY);
-    var decoded = raw === null || raw === "" ? [] : JSON.parse(raw);
-    if (!Array.isArray(decoded) || typeof _loadProjects !== "function") return current;
+    if (current.raw !== null && raw !== current.raw) {
+      return fail("تغير مخزن المشاريع أثناء فحص إصلاح المعرّفات؛ أُوقف الإصلاح لحماية البيانات.");
+    }
 
-    // Reuse the app's established project-ID reconciliation; do not rewrite task references.
+    // Preserve the exact source bytes before parsing, reconciling or writing.
+    if (typeof raw === "string" && raw !== "") {
+      if (typeof _preserveCorruptStorageSnapshot !== "function"
+          || !_preserveCorruptStorageSnapshot(PROJECTS_KEY, raw)) {
+        return fail("تعذر حفظ نسخة خام من المشاريع القديمة؛ لم تُغيّر البيانات.");
+      }
+      snapshotPreserved = true;
+    }
+
+    var decoded = raw === null || raw === "" ? [] : JSON.parse(raw);
+    if (!Array.isArray(decoded) || typeof _loadProjects !== "function") {
+      return fail("مخزن المشاريع تالف ولا يمكن إصلاح بنيته بأمان.");
+    }
+
+    var storedTasks = _readStoredTasksForProjectReferenceValidation();
+    if (!storedTasks.valid) {
+      return fail("تعذر قراءة المهام للتحقق من علاقاتها قبل إصلاح المشاريع.");
+    }
+    if (typeof normalizeLegacyTaskProjectReferences !== "function") {
+      return fail("مسار تطبيع مراجع المهام القديمة غير متاح.");
+    }
+    var normalizedStoredTasks = normalizeLegacyTaskProjectReferences(storedTasks.tasks);
+    if (!normalizedStoredTasks.valid) {
+      return fail("تعذر تطبيع مراجع المهام القديمة قبل إصلاح المشاريع.");
+    }
+    if (localStorage.getItem(STORAGE_KEY) !== storedTasks.raw) {
+      return fail("تغير مخزن المهام أثناء فحص إصلاح المشاريع؛ أُوقف الإصلاح لحماية البيانات.");
+    }
+
+    // A task pointing at a duplicated numeric ID is ambiguous: never guess
+    // which of the duplicate project records it originally meant.
+    var seenProjectIds = new Set();
+    var duplicateProjectIds = new Set();
+    decoded.forEach(function(project) {
+      if (!project || typeof project !== "object" || Array.isArray(project)
+          || !Number.isSafeInteger(project.id) || project.id <= 0) return;
+      if (seenProjectIds.has(project.id)) duplicateProjectIds.add(project.id);
+      else seenProjectIds.add(project.id);
+    });
+    if (duplicateProjectIds.size) {
+      var ambiguousTaskReference = normalizedStoredTasks.tasks.some(function(task) {
+        return task && duplicateProjectIds.has(task.projectId);
+      });
+      if (ambiguousTaskReference) {
+        return fail("توجد معرّفات مشاريع مكررة تشير إليها مهام؛ تعذر تحديد المشروع المقصود دون تخمين، وحُفظت البيانات الأصلية للاسترداد.");
+      }
+    }
+
     if (typeof _invalidateProjectsCache === "function") _invalidateProjectsCache();
     var reconciled = _loadProjects();
-    if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return current;
+    if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) {
+      return fail("تعذر تحميل قائمة المشاريع القديمة لإصلاحها بأمان.");
+    }
     if (!Array.isArray(reconciled)
         || !reconciled.some(function(project) { return project && project._healed === true; })) {
-      return current;
+      return fail("لم ينتج عن إصلاح المشاريع مرشح صالح للحفظ.");
     }
 
     var persistedProjects = reconciled.map(function(project) {
@@ -2698,28 +2800,51 @@ function _normalizeStoredProjectIdsForRelationshipValidation() {
       if (copy && Object.prototype.hasOwnProperty.call(copy, "_healed")) delete copy._healed;
       return copy;
     });
+
+    // Validate the proposed repair against a normalized view of every task
+    // before replacing the raw project store.
+    var candidateLinks = validateTaskProjectReferences(normalizedStoredTasks.tasks, persistedProjects);
+    if (!candidateLinks.valid) {
+      return fail("إصلاح معرّفات المشاريع سيترك مرجعًا غير محسوم: " + candidateLinks.reason);
+    }
+
+    if (localStorage.getItem(PROJECTS_KEY) !== raw
+        || localStorage.getItem(STORAGE_KEY) !== storedTasks.raw) {
+      return fail("تغيرت البيانات أثناء تجهيز إصلاح المشاريع؛ لم تُحفظ الحالة المرشحة.");
+    }
+
     var normalizedRaw = JSON.stringify(persistedProjects);
-    localStorage.setItem(PROJECTS_KEY, normalizedRaw);
-    if (localStorage.getItem(PROJECTS_KEY) !== normalizedRaw) {
-      throw new Error("project reconciliation read-back mismatch");
+    if (!writeRepairedProjects(normalizedRaw)) {
+      return fail("تعذر حفظ إصلاحات المشاريع عبر مسار التخزين المحمي.");
     }
-    if (typeof _secondaryStorageBaselines !== "undefined" && _secondaryStorageBaselines) {
-      _secondaryStorageBaselines[PROJECTS_KEY] = normalizedRaw;
+
+    var projectsReadback = _readStoredProjectsForTaskReferenceValidation();
+    var tasksReadback = _readStoredTasksForProjectReferenceValidation();
+    var normalizedReadbackTasks = tasksReadback.valid
+      ? normalizeLegacyTaskProjectReferences(tasksReadback.tasks)
+      : { valid: false, tasks: null };
+    var readbackLinks = projectsReadback.valid && normalizedReadbackTasks.valid
+      ? validateTaskProjectReferences(normalizedReadbackTasks.tasks, projectsReadback.projects)
+      : { valid: false, reason: projectsReadback.reason || tasksReadback.reason || "تعذر إعادة قراءة الحالة." };
+
+    if (!projectsReadback.valid || projectsReadback.raw !== normalizedRaw
+        || !tasksReadback.valid || tasksReadback.raw !== storedTasks.raw
+        || !normalizedReadbackTasks.valid || !readbackLinks.valid) {
+      var rollbackOk = typeof _restoreStorageValueIfUnchanged === "function"
+        && _restoreStorageValueIfUnchanged(PROJECTS_KEY, normalizedRaw, raw);
+      return fail("فشل التحقق من علاقة المهام بالمشاريع بعد الإصلاح؛ أُوقفت العملية"
+        + (rollbackOk ? " وأُعيد مخزن المشاريع إلى بايتاته الأصلية." : " وتعذر تأكيد التراجع الكامل.")
+        + (readbackLinks.reason ? " " + readbackLinks.reason : ""));
     }
-    if (typeof _secondaryStorageConflicts !== "undefined" && _secondaryStorageConflicts) {
-      delete _secondaryStorageConflicts[PROJECTS_KEY];
-    }
+
     if (typeof _invalidateProjectsCache === "function") _invalidateProjectsCache();
-    return _readStoredProjectsForTaskReferenceValidation();
+    return projectsReadback;
   } catch (e) {
-    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
-    return {
-      valid: false,
-      reason: "تعذر حفظ إصلاحات معرّفات المشاريع القديمة والتحقق منها.",
-      projects: null,
-      raw: typeof raw === "string" ? raw : null,
-      error: e
-    };
+    if (!snapshotPreserved && typeof raw === "string" && raw !== ""
+        && typeof _preserveCorruptStorageSnapshot === "function") {
+      snapshotPreserved = _preserveCorruptStorageSnapshot(PROJECTS_KEY, raw);
+    }
+    return fail("تعذر حفظ إصلاحات معرّفات المشاريع القديمة والتحقق من علاقاتها.", e);
   }
 }
 
@@ -4036,39 +4161,117 @@ function persistDailyLog(log) {
   if (storageRecoveryRequired) {
     console.error("persistDailyLog: refusing write — data recovery required");
     showToast("⚠️ تعذر الحفظ — البيانات القديمة لم تُرحَّل");
-    return;
+    return false;
   }
+
+  var previousMainRaw = null;
+  var serializedDailyLogData = null;
+  var writeAttempted = false;
   try {
-    if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
+    if (typeof _storageWriteAllowed !== "function" || !_storageWriteAllowed()) {
       showToast("⚠️ توجد عملية استعادة أو ترحيل أو إعادة ضبط؛ أوقفنا حفظ سجل اليوم");
-      return;
+      return false;
     }
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+
+    previousMainRaw = localStorage.getItem(STORAGE_KEY);
+    if (!previousMainRaw) return false;
     if (_mainStorageBaselineReady
-        && (_mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw)) {
+        && (_mainStorageExternalChangeObserved || previousMainRaw !== _mainStorageBaselineRaw)) {
       showToast("⚠️ تغيّرت البيانات في نافذة أخرى؛ أعد تحميل التطبيق قبل الحفظ");
-      return;
+      return false;
     }
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.dailyLogs)) return;
-    const idx = data.dailyLogs.findIndex(function(l) { return l.date === log.date; });
+
+    if (typeof _verifyStoredTaskProjectReferences !== "function"
+        || typeof validateTaskProjectReferences !== "function") {
+      storageRecoveryRequired = true;
+      showToast("⚠️ تعذر التحقق من ارتباط المهام بالمشاريع؛ أوقفنا الحفظ");
+      return false;
+    }
+    var relationshipState = _verifyStoredTaskProjectReferences();
+    if (!relationshipState.valid) {
+      storageRecoveryRequired = true;
+      showToast("⚠️ توجد مشكلة في ارتباط مهمة بمشروع؛ أوقفنا حفظ سجل اليوم لحماية البيانات");
+      return false;
+    }
+    if (relationshipState.mainRaw !== previousMainRaw) {
+      showToast("⚠️ تغيّرت المهام أثناء التحقق؛ أعد تحميل التطبيق قبل الحفظ");
+      return false;
+    }
+
+    var data = JSON.parse(previousMainRaw);
+    if (!data || !Array.isArray(data.dailyLogs)) return false;
+    var idx = data.dailyLogs.findIndex(function(l) { return l.date === log.date; });
     if (idx >= 0) data.dailyLogs[idx] = log;
     else data.dailyLogs.push(log);
-    if (!validateV2(data)) {
-      console.error("persistDailyLog: refusing to write invalid data");
-      return;
+
+    var candidateLinks = validateTaskProjectReferences(data.tasks, relationshipState.projects);
+    if (!validateV2(data) || !candidateLinks.valid) {
+      console.error("persistDailyLog: refusing to write invalid data or project references");
+      return false;
     }
-    var serializedDailyLogData = JSON.stringify(data);
-    localStorage.setItem(STORAGE_KEY, serializedDailyLogData);
-    _setMainStorageBaseline(serializedDailyLogData);
+
+    serializedDailyLogData = JSON.stringify(data);
+    // Re-check both stores immediately before the write; a changed secondary
+    // store must not be masked by a valid cache or an earlier read.
+    if (localStorage.getItem(STORAGE_KEY) !== previousMainRaw
+        || localStorage.getItem(PROJECTS_KEY) !== relationshipState.projectsRaw
+        || !_storageWriteAllowed()) {
+      showToast("⚠️ تغيّرت البيانات أثناء الحفظ؛ لم يُحفظ سجل اليوم");
+      return false;
+    }
+
+    writeAttempted = true;
+    try {
+      localStorage.setItem(STORAGE_KEY, serializedDailyLogData);
+    } catch (writeError) {
+      var afterFailedWrite = localStorage.getItem(STORAGE_KEY);
+      if (afterFailedWrite !== previousMainRaw) storageRecoveryRequired = true;
+      throw writeError;
+    }
+
+    var verifiedMainRaw = localStorage.getItem(STORAGE_KEY);
+    var verifiedRelationships = _verifyStoredTaskProjectReferences();
+    if (verifiedMainRaw !== serializedDailyLogData
+        || !verifiedRelationships.valid
+        || verifiedRelationships.mainRaw !== serializedDailyLogData
+        || verifiedRelationships.projectsRaw !== relationshipState.projectsRaw) {
+      var rollbackOk = typeof _restoreStorageValueIfUnchanged === "function"
+        && _restoreStorageValueIfUnchanged(STORAGE_KEY, serializedDailyLogData, previousMainRaw);
+      storageRecoveryRequired = !rollbackOk;
+      if (rollbackOk) {
+        var restoredRelationships = _verifyStoredTaskProjectReferences();
+        if (!restoredRelationships.valid || restoredRelationships.mainRaw !== previousMainRaw) {
+          storageRecoveryRequired = true;
+        }
+      }
+      showToast("⚠️ تعذر التحقق من حفظ سجل اليوم وعلاقات المشاريع؛ أوقفنا العملية");
+      return false;
+    }
+
+    _setMainStorageBaseline(verifiedMainRaw);
     if (typeof _storeRollingRecoveryBackup === "function"
         && !_storeRollingRecoveryBackup("daily-log-save", 0)) {
       console.warn("Daily log saved, but its rolling recovery checkpoint could not be refreshed.");
     }
+    return true;
   } catch (e) {
+    if (writeAttempted && serializedDailyLogData !== null) {
+      try {
+        var currentMainRaw = localStorage.getItem(STORAGE_KEY);
+        if (currentMainRaw === serializedDailyLogData) {
+          var rollbackAfterException = typeof _restoreStorageValueIfUnchanged === "function"
+            && _restoreStorageValueIfUnchanged(STORAGE_KEY, serializedDailyLogData, previousMainRaw);
+          if (!rollbackAfterException) storageRecoveryRequired = true;
+        } else if (currentMainRaw !== previousMainRaw) {
+          storageRecoveryRequired = true;
+        }
+      } catch (rollbackReadError) {
+        storageRecoveryRequired = true;
+      }
+    }
     console.error("Failed to persist daily log:", e);
-    showToast("⚠️ تعذر حفظ تقييم اليوم — تحقق من مساحة التخزين");
+    showToast("⚠️ تعذر حفظ تقييم اليوم — تحقق من سلامة التخزين");
+    return false;
   }
 }
 
@@ -10819,9 +11022,17 @@ function _loadProjects() {
 
 function _saveProjects(arr) {
   if (!Array.isArray(arr)) return false;
+  // _healed is transient UI metadata. Never persist it through any project-save path.
+  var _projectsToPersist = arr.map(function(record) {
+    var copy = typeof _copyStorageRecord === "function"
+      ? _copyStorageRecord(record)
+      : Object.assign({}, record);
+    if (copy && Object.prototype.hasOwnProperty.call(copy, "_healed")) delete copy._healed;
+    return copy;
+  });
   var _projectIdsToSave = new Set();
-  for (var _si = 0; _si < arr.length; _si++) {
-    var _recordToSave = arr[_si];
+  for (var _si = 0; _si < _projectsToPersist.length; _si++) {
+    var _recordToSave = _projectsToPersist[_si];
     if (!_recordToSave || typeof _recordToSave !== "object" || Array.isArray(_recordToSave)
         || !_isValidProjectId(_recordToSave.id) || _projectIdsToSave.has(_recordToSave.id)) return false;
     _projectIdsToSave.add(_recordToSave.id);
@@ -10830,12 +11041,12 @@ function _saveProjects(arr) {
       && typeof validateTaskProjectReferences === "function") {
     var storedTasksForProjectSave = _readStoredTasksForProjectReferenceValidation();
     if (!storedTasksForProjectSave.valid) { storageRecoveryRequired = true; return false; }
-    var projectSaveLinks = validateTaskProjectReferences(storedTasksForProjectSave.tasks, arr);
+    var projectSaveLinks = validateTaskProjectReferences(storedTasksForProjectSave.tasks, _projectsToPersist);
     if (!projectSaveLinks.valid) { storageRecoveryRequired = true; return false; }
   }
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    if (!_writeSecondaryStorageVerified(PROJECTS_KEY, JSON.stringify(arr))) return false;
+    if (!_writeSecondaryStorageVerified(PROJECTS_KEY, JSON.stringify(_projectsToPersist))) return false;
     _invalidateProjectsCache();
     if (typeof _verifyStoredTaskProjectReferences === "function") {
       var projectSaveReadback = _verifyStoredTaskProjectReferences();

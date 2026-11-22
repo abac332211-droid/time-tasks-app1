@@ -606,3 +606,294 @@ test('successful project deletion survives a real backup build and import round 
   assert.equal(restored.storage.getItem(IMPORT_IN_PROGRESS_KEY), null);
   assert.equal(restored.reloads(), 1);
 });
+
+
+function projectNormalizationHarness({ projectRaw, tasks, reconciledProjects, migrationInProgress = false }) {
+  const seed = {
+    [STORAGE_KEY]: validMain(tasks),
+    [PROJECTS_KEY]: projectRaw
+  };
+  if (migrationInProgress) seed[MIGRATION_IN_PROGRESS_KEY] = "1";
+  const storage = memoryStorage(seed);
+  const preserved = [];
+  let projectLoads = 0;
+  let projectWrites = 0;
+  const sandbox = {
+    localStorage: storage,
+    STORAGE_KEY,
+    PROJECTS_KEY,
+    MIGRATION_IN_PROGRESS_KEY,
+    CURRENT_SCHEMA_VERSION: 2,
+    storageRecoveryRequired: false,
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _trackSecondaryStorageRead(key, raw) {
+      if (!Object.prototype.hasOwnProperty.call(sandbox._secondaryStorageBaselines, key)) {
+        sandbox._secondaryStorageBaselines[key] = raw;
+      }
+    },
+    _preserveCorruptStorageSnapshot(key, raw) {
+      preserved.push({ key, raw });
+      storage.setItem(key + '_corrupt_original', raw);
+      return storage.getItem(key + '_corrupt_original') === raw;
+    },
+    _invalidateProjectsCache() {},
+    _loadProjects() {
+      projectLoads++;
+      return reconciledProjects.map((item) => ({ ...item }));
+    },
+    _copyStorageRecord: (record) => Object.assign({}, record),
+    _writeSecondaryStorageVerified(key, value) {
+      projectWrites++;
+      storage.setItem(key, value);
+      sandbox._secondaryStorageBaselines[key] = value;
+      return storage.getItem(key) === value;
+    },
+    _secondaryStorageWriteAllowed: () => true,
+    _restoreStorageValueIfUnchanged(key, expected, previous) {
+      if (storage.getItem(key) !== expected) return false;
+      if (previous === null) storage.removeItem(key);
+      else storage.setItem(key, previous);
+      sandbox._secondaryStorageBaselines[key] = previous;
+      return storage.getItem(key) === previous;
+    },
+    validateV2: () => true
+  };
+  runFunctions([
+    'validateTaskProjectReferences',
+    'normalizeLegacyTaskProjectReferences',
+    '_readStoredProjectsForTaskReferenceValidation',
+    '_readStoredTasksForProjectReferenceValidation',
+    '_normalizeStoredProjectIdsForRelationshipValidation'
+  ], sandbox);
+  return { sandbox, storage, preserved, get projectLoads() { return projectLoads; }, get projectWrites() { return projectWrites; } };
+}
+
+test('project-ID reconciliation refuses ambiguous duplicate IDs referenced by tasks and preserves the raw project store', () => {
+  const rawProjects = JSON.stringify([project(12, 'الأول'), project(12, 'الثاني')]);
+  const harness = projectNormalizationHarness({
+    projectRaw: rawProjects,
+    tasks: [task(1, 12)],
+    reconciledProjects: [project(12), { ...project(13), _healed: true }]
+  });
+
+  const result = harness.sandbox._normalizeStoredProjectIdsForRelationshipValidation();
+
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /مكررة.*تشير إليها مهام/);
+  assert.equal(harness.projectLoads, 0, 'ambiguous records are rejected before the UI loader can renumber them');
+  assert.equal(harness.projectWrites, 0, 'the ambiguous project store is never overwritten');
+  assert.equal(harness.storage.getItem(PROJECTS_KEY), rawProjects);
+  assert.equal(harness.storage.getItem(PROJECTS_KEY + '_corrupt_original'), rawProjects);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+});
+
+test('project-ID reconciliation repairs unreferenced duplicates only after preserving, validating and verifying the candidate', () => {
+  const rawProjects = JSON.stringify([project(12, 'الأول'), project(12, 'غير مرتبط')]);
+  const harness = projectNormalizationHarness({
+    projectRaw: rawProjects,
+    tasks: [task(1, null)],
+    reconciledProjects: [project(12, 'الأول'), { ...project(13, 'غير مرتبط'), _healed: true }]
+  });
+
+  const result = harness.sandbox._normalizeStoredProjectIdsForRelationshipValidation();
+  const persisted = JSON.parse(harness.storage.getItem(PROJECTS_KEY));
+
+  assert.equal(result.valid, true);
+  assert.equal(harness.preserved.length, 1, 'the raw project collection is preserved before repair');
+  assert.equal(harness.preserved[0].raw, rawProjects);
+  assert.equal(harness.projectLoads, 1);
+  assert.equal(harness.projectWrites, 1, 'repair uses the protected secondary-storage writer');
+  assert.deepEqual(persisted.map((item) => item.id), [12, 13]);
+  assert.equal(persisted.some((item) => Object.prototype.hasOwnProperty.call(item, '_healed')), false);
+  assert.equal(harness.storage.getItem(STORAGE_KEY), validMain([task(1, null)]));
+});
+
+test('project-ID reconciliation uses the guarded migration writer while the V1 migration marker is active', () => {
+  const rawProjects = JSON.stringify([{ id: 'invalid', name: 'مشروع قديم' }]);
+  const harness = projectNormalizationHarness({
+    projectRaw: rawProjects,
+    tasks: [task(1, null)],
+    reconciledProjects: [{ ...project(8), _healed: true }],
+    migrationInProgress: true
+  });
+
+  const result = harness.sandbox._normalizeStoredProjectIdsForRelationshipValidation();
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(JSON.parse(harness.storage.getItem(PROJECTS_KEY)), [project(8)]);
+  assert.equal(harness.sandbox._secondaryStorageBaselines[PROJECTS_KEY], harness.storage.getItem(PROJECTS_KEY));
+});
+
+test('project-ID reconciliation refuses to persist a repair that would orphan an existing task reference', () => {
+  const rawProjects = JSON.stringify([{ id: 'invalid', name: 'مشروع قديم' }]);
+  const originalMain = validMain([task(1, 7)]);
+  const harness = projectNormalizationHarness({
+    projectRaw: rawProjects,
+    tasks: [task(1, 7)],
+    reconciledProjects: [{ ...project(8), _healed: true }]
+  });
+  assert.equal(harness.storage.getItem(STORAGE_KEY), originalMain);
+
+  const result = harness.sandbox._normalizeStoredProjectIdsForRelationshipValidation();
+
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /مرجعًا غير محسوم/);
+  assert.equal(harness.projectWrites, 0);
+  assert.equal(harness.storage.getItem(PROJECTS_KEY), rawProjects);
+  assert.equal(harness.storage.getItem(PROJECTS_KEY + '_corrupt_original'), rawProjects);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+});
+
+function dailyLogHarness({ tasks, projects, readbackMismatch = false }) {
+  const initialMain = JSON.stringify({
+    schemaVersion: 2,
+    settings: {},
+    tasks,
+    dailyLogs: []
+  });
+  const storage = memoryStorage({
+    [STORAGE_KEY]: initialMain,
+    [PROJECTS_KEY]: JSON.stringify(projects)
+  });
+  const toasts = [];
+  let baselineWrites = 0;
+  let mainWrites = 0;
+  const originalGet = storage.getItem.bind(storage);
+  const originalSet = storage.setItem.bind(storage);
+  let returnStaleReadOnce = false;
+  storage.setItem = (key, value) => {
+    originalSet(key, value);
+    if (key === STORAGE_KEY) {
+      mainWrites++;
+      if (readbackMismatch) returnStaleReadOnce = true;
+    }
+  };
+  storage.getItem = (key) => {
+    if (key === STORAGE_KEY && returnStaleReadOnce) {
+      returnStaleReadOnce = false;
+      return initialMain;
+    }
+    return originalGet(key);
+  };
+  const sandbox = {
+    localStorage: storage,
+    STORAGE_KEY,
+    PROJECTS_KEY,
+    CURRENT_SCHEMA_VERSION: 2,
+    storageRecoveryRequired: false,
+    _mainStorageBaselineReady: true,
+    _mainStorageBaselineRaw: initialMain,
+    _mainStorageExternalChangeObserved: false,
+    _trackSecondaryStorageRead: () => {},
+    _storageWriteAllowed: () => true,
+    _setMainStorageBaseline(raw) {
+      baselineWrites++;
+      sandbox._mainStorageBaselineRaw = raw;
+    },
+    _storeRollingRecoveryBackup: () => true,
+    _restoreStorageValueIfUnchanged(key, expected, previous) {
+      if (originalGet(key) !== expected) return false;
+      if (previous === null) storage.removeItem(key);
+      else originalSet(key, previous);
+      sandbox._mainStorageBaselineRaw = previous;
+      return originalGet(key) === previous;
+    },
+    showToast: (message) => toasts.push(message),
+    console
+  };
+  runFunctions([
+    'validateTaskProjectReferences',
+    '_readStoredProjectsForTaskReferenceValidation',
+    '_readStoredTasksForProjectReferenceValidation',
+    '_verifyStoredTaskProjectReferences',
+    'persistDailyLog'
+  ], sandbox);
+  return { sandbox, storage, initialMain, toasts, get baselineWrites() { return baselineWrites; }, get mainWrites() { return mainWrites; } };
+}
+
+test('persistDailyLog refuses to write when stored tasks contain an orphan project reference', () => {
+  const harness = dailyLogHarness({ tasks: [task(1, 70)], projects: [] });
+  const log = { date: '2026-11-22', control: 4, execution: null, wellbeing: null };
+
+  const saved = harness.sandbox.persistDailyLog(log);
+
+  assert.equal(saved, false);
+  assert.equal(harness.storage.getItem(STORAGE_KEY), harness.initialMain);
+  assert.equal(harness.mainWrites, 0);
+  assert.equal(harness.baselineWrites, 0);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+});
+
+test('persistDailyLog writes only after validating and rereading both stores', () => {
+  const harness = dailyLogHarness({ tasks: [task(1, 70)], projects: [project(70)] });
+  const log = { date: '2026-11-22', control: 4, execution: 3, wellbeing: null };
+
+  const saved = harness.sandbox.persistDailyLog(log);
+  const persisted = JSON.parse(harness.storage.getItem(STORAGE_KEY));
+
+  assert.equal(saved, true);
+  assert.equal(persisted.dailyLogs.length, 1);
+  assert.equal(persisted.dailyLogs[0].control, 4);
+  assert.equal(harness.mainWrites, 1);
+  assert.equal(harness.baselineWrites, 1, 'baseline advances only after read-back and relationship verification');
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+});
+
+test('persistDailyLog does not advance the baseline when its write read-back is stale', () => {
+  const harness = dailyLogHarness({
+    tasks: [task(1, 70)],
+    projects: [project(70)],
+    readbackMismatch: true
+  });
+  const log = { date: '2026-11-22', control: 5, execution: null, wellbeing: null };
+
+  const saved = harness.sandbox.persistDailyLog(log);
+
+  assert.equal(saved, false);
+  assert.equal(harness.storage.getItem(STORAGE_KEY), harness.initialMain,
+    'the previous main record is restored when the read-back cannot verify the write');
+  assert.equal(harness.baselineWrites, 0);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false,
+    'a verified rollback to the prior coherent state does not force recovery mode');
+});
+
+test('_saveProjects strips transient _healed metadata for every project mutation path', () => {
+  const storage = memoryStorage({
+    [STORAGE_KEY]: validMain([]),
+    [PROJECTS_KEY]: JSON.stringify([])
+  });
+  const input = [{ ...project(33), _healed: true }];
+  const sandbox = {
+    localStorage: storage,
+    STORAGE_KEY,
+    PROJECTS_KEY,
+    CURRENT_SCHEMA_VERSION: 2,
+    storageRecoveryRequired: false,
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _trackSecondaryStorageRead: () => {},
+    _copyStorageRecord: (record) => Object.assign({}, record),
+    _isValidProjectId: (id) => Number.isSafeInteger(id) && id > 0,
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified(key, value) {
+      storage.setItem(key, value);
+      return storage.getItem(key) === value;
+    },
+    _invalidateProjectsCache: () => {},
+    _storeRollingRecoveryBackup: () => true,
+    validateV2: () => true
+  };
+  runFunctions([
+    'validateTaskProjectReferences',
+    '_readStoredProjectsForTaskReferenceValidation',
+    '_readStoredTasksForProjectReferenceValidation',
+    '_verifyStoredTaskProjectReferences',
+    '_saveProjects'
+  ], sandbox);
+
+  assert.equal(sandbox._saveProjects(input), true);
+  const persisted = JSON.parse(storage.getItem(PROJECTS_KEY));
+  assert.equal(Object.prototype.hasOwnProperty.call(persisted[0], '_healed'), false);
+  assert.equal(input[0]._healed, true, 'the save path does not mutate the caller-owned project object');
+});
