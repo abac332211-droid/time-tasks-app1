@@ -237,7 +237,7 @@ function projectDeleteHarness({ rows, failProjectWrite = false, failMainWrite = 
     '_saveProjects',
     'deleteProject'
   ], sandbox);
-  return { sandbox, storage, tasks, alerts, toasts, saveCalls, originalMain, originalProjects };
+  return { sandbox, storage, tasks, alerts, toasts, get saveCalls() { return saveCalls; }, originalMain, originalProjects };
 }
 
 test('successful project deletion preserves pending, completed and cancelled tasks and detaches every reference', () => {
