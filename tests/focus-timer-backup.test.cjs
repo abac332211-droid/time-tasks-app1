@@ -1951,3 +1951,17 @@ test('import refuses to proceed when rollback snapshot or marker readback cannot
     assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_TIMER), 'previous-timer');
   }
 });
+
+
+test('backup validator rejects unsafe task project references even when no projects array is supplied', () => {
+  const validate = vm.runInNewContext(
+    '(' + extractTopLevelSource('validateBackup') + ')',
+    backupValidationContext()
+  );
+  const result = validate(integrationBackup({
+    tasks: [validationTask({ projectId: Number.MAX_SAFE_INTEGER + 1 })],
+    dailyLogs: []
+  }));
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /معرّف المشروع غير صالح/);
+});
