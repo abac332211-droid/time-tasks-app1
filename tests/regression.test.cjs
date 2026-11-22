@@ -3179,7 +3179,7 @@ test('plain-text modal path renders storage-derived migration errors through tex
     setTimeout(callback) { callback(); }
   };
   const storageValue = '<img src=x onerror="alert(1)">\\\\72l(javascript:alert(2))';
-  const message = 'السبب: unknown_schema_version_' + storageValue + '\\nبياناتك الأصلية محفوظة ولم تُلمس.';
+  const message = 'السبب: unknown_schema_version_' + storageValue + String.fromCharCode(10) + 'بياناتك الأصلية محفوظة ولم تُلمس.';
 
   vm.runInNewContext(extractFunction('showAlertModal'), sandbox);
   sandbox.showAlertModal('تعذر ترقية البيانات', message, true);
@@ -3189,9 +3189,10 @@ test('plain-text modal path renders storage-derived migration errors through tex
   assert.equal(body.children[0].style.whiteSpace, 'pre-line');
   assert.equal(body._textContent, '');
   const migration = extractFunction('loadData');
-  assert.ok(migration.includes('showAlertModal("تعذر ترقية البيانات"'));
-  assert.ok(migration.includes('report.error'));
-  assert.ok(migration.includes('true);'));
+  const migrationAlert = migration.split('\\n').find((line) => line.includes('showAlertModal("تعذر ترقية البيانات"'));
+  assert.ok(migrationAlert, 'the migration failure alert is present');
+  assert.ok(migrationAlert.includes('report.error') && migrationAlert.endsWith(', true);'),
+    'the stored schema value is passed to the explicit plain-text rendering path');
 });
 
 test('remaining HTML render sinks escape persisted free text and validate interpolated identifiers and enums', () => {
