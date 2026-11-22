@@ -514,3 +514,36 @@ test('backup export refuses to serialize a persisted orphan project reference', 
 
   assert.throws(() => sandbox.buildBackupObject(), /تعذر تصدير النسخة/);
 });
+
+test('addTaskToProject persists repaired legacy project IDs before writing the linked task', () => {
+  let projectWrites = 0;
+  let taskWrites = 0;
+  const tasks = [];
+  let projects = [project(101), { ...project(105), _healed: true }];
+  const sandbox = {
+    tasks,
+    _loadProjects: () => projects.map((item) => ({ ...item })),
+    _saveProjects(candidate) {
+      projectWrites++;
+      projects = candidate.map((item) => ({ ...item }));
+      return true;
+    },
+    showPromptModal: (_title, _body, _initial, _placeholder, accept) => accept('مهمة مرتبطة'),
+    getNextTaskId: () => 9,
+    todayStr: () => '2026-11-22',
+    saveData() { taskWrites++; return true; },
+    renderProjects: () => {},
+    renderTasks: () => {},
+    showToast: () => {}
+  };
+  runFunctions(['addTaskToProject'], sandbox);
+
+  sandbox.addTaskToProject(101);
+
+  assert.equal(projectWrites, 1, 'the repaired project collection is persisted first');
+  assert.equal(taskWrites, 1, 'the new linked task is saved after project repair');
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].projectId, 101);
+  assert.equal(projects.find((item) => item.id === 105)._healed, true,
+    'healing metadata is retained according to the existing loader contract');
+});

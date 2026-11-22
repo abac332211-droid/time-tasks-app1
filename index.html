@@ -11086,6 +11086,11 @@ function addTaskToProject(projectId) {
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === projectId; });
   if (!p) return;
+  // Persist any already-healed project IDs before linking a new task to the store.
+  if (arr.some(function(item) { return item && item._healed === true; }) && !_saveProjects(arr)) {
+    showToast("⚠️ تعذر حفظ إصلاحات قائمة المشاريع — لم تُضف المهمة");
+    return;
+  }
   // FIX N7 (G3): تحذير عند المشروع غير النشط
   if (p.status !== 'active') {
     showToast('⚠️ المشروع "' + p.name + '" غير نشط (' + (p.status === 'completed' ? 'مكتمل' : 'موقوف') + ')');
