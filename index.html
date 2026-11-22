@@ -2437,7 +2437,7 @@ function validateV2(data) {
     if (typeof t.createdAt !== "number" || !Number.isFinite(t.createdAt) || t.createdAt <= 0) return false;
     if (t.status !== "done" && t.completedAt !== null) return false;
     if (t.projectId !== undefined && t.projectId !== null) {
-      if (typeof t.projectId !== "number" || !Number.isInteger(t.projectId) || t.projectId <= 0) return false;
+      if (!Number.isSafeInteger(t.projectId) || t.projectId <= 0) return false;
     }
     if (t.priority !== undefined && t.priority !== null && !["urgent","high","low"].includes(t.priority)) return false;
     if (t.recurrence !== undefined && t.recurrence !== null && !["daily","weekdays","weekly","monthly"].includes(t.recurrence)) return false;
@@ -5897,7 +5897,7 @@ function validateBackup(obj) {
     if (t.status !== "done" && t.completedAt !== null)
       return { valid: false, reason: "وقت الإنجاز موجود لمهمة غير مكتملة (" + (i+1) + ")." };
     if (t.projectId !== undefined && t.projectId !== null
-        && (typeof t.projectId !== "number" || !Number.isInteger(t.projectId) || t.projectId <= 0))
+        && (!Number.isSafeInteger(t.projectId) || t.projectId <= 0))
       return { valid: false, reason: "معرّف المشروع غير صالح (" + (i+1) + ")." };
     if (t.priority !== undefined && t.priority !== null && !["urgent", "high", "low"].includes(t.priority))
       return { valid: false, reason: "أولوية المهمة غير صالحة (" + (i+1) + ")." };
