@@ -3054,7 +3054,7 @@ test('recurring task refresh is page-lifetime, visible-only, minute-based, and i
 
 test('modal sanitizer strips every attribute from allowed tags and unwraps active or unsupported elements', () => {
   const source = extractFunction('sanitizeModalHtml');
-  const attack = '<span class="notice" style="background-image:u\\\\72l(javascript:alert(1))" onclick="alert(2)">تنبيه</span>'
+  const attack = '<span class="notice" style="background-image:u\\72l(javascript:alert(1))" onclick="alert(2)">تنبيه</span>'
     + '<a href="javascript:alert(3)" onmouseover="alert(4)">رابط</a>'
     + '<img src="x" onerror="alert(5)">'
     + '<script>alert(6)</script>';
@@ -3094,7 +3094,7 @@ test('modal sanitizer strips every attribute from allowed tags and unwraps activ
 
   const span = element('SPAN', [
     ['class', 'notice'],
-    ['style', 'background-image:u\\\\72l(javascript:alert(1))'],
+    ['style', 'background-image:u\\72l(javascript:alert(1))'],
     ['onclick', 'alert(2)'],
     ['onmouseover', 'alert(4)'],
     ['data-extra', 'unneeded']
@@ -3178,7 +3178,7 @@ test('plain-text modal path renders storage-derived migration errors through tex
     closeModal() {},
     setTimeout(callback) { callback(); }
   };
-  const storageValue = '<img src=x onerror="alert(1)">\\\\72l(javascript:alert(2))';
+  const storageValue = '<img src=x onerror="alert(1)">\\72l(javascript:alert(2))';
   const message = 'السبب: unknown_schema_version_' + storageValue + String.fromCharCode(10) + 'بياناتك الأصلية محفوظة ولم تُلمس.';
 
   vm.runInNewContext(extractFunction('showAlertModal'), sandbox);
