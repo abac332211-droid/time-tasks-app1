@@ -3364,3 +3364,32 @@ test('project cards bind action IDs through data attributes and never interpolat
   assert.match(renderer, /addEventListener\("click"/);
   assert.match(extractFunction('validateBackup'), /Number\.isSafeInteger\(project\.id\)/);
 });
+
+
+test('stored task project references reject values outside the positive safe-integer range', () => {
+  const sandbox = {
+    CURRENT_SCHEMA_VERSION: 2,
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'إدارية', 'إبداعية', 'اجتماعية'],
+    isValidCalendarDate: () => true,
+    isValidLocalTime: () => true,
+    isValidLocalDateTime: () => true,
+    validateDailyLog: () => true
+  };
+  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  const task = {
+    id: 1, name: 'مهمة', status: 'pending', type: 'معرفية',
+    expected: 30, actual: null, plannedDate: '2026-11-22',
+    plannedTime: '', completedAt: null, createdAt: 1
+  };
+  const validateReference = (projectId) => sandbox.validateV2({
+    schemaVersion: 2, tasks: [{ ...task, projectId }], dailyLogs: []
+  });
+
+  for (const id of [1, 9, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(validateReference(id), true, 'valid safe reference ' + id + ' remains accepted');
+  }
+  for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '9', '9);globalThis.__p0Injected=1;//']) {
+    assert.equal(validateReference(id), false, 'invalid project reference is rejected: ' + String(id));
+  }
+});
