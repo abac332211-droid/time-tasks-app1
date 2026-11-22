@@ -86,7 +86,9 @@ async function main() {
       const button = document.querySelector('#projectsList [data-project-action="add-task"][data-project-id="101"]');
       button.setAttribute('data-project-id', '101);window.__p0ProjectExecuted=1;//');
       button.click();
-      return window.__p0ProjectExecuted;
+      const executed = window.__p0ProjectExecuted;
+      button.setAttribute('data-project-id', '101');
+      return executed;
     });
     assert.equal(rejectedProjectAction, 0, 'a fabricated DOM ID is rejected without executing code');
 
