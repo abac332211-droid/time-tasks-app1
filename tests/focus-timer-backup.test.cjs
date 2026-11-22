@@ -1196,7 +1196,8 @@ test('backup validator rejects duplicate or invalid stable identifiers in though
     { thoughts: [validThought, { ...validThought, text: 'أخرى' }], reason: 'معرّف خاطرة مكرر' },
     { thoughts: [{ ...validThought, id: 0 }], reason: 'معرّف خاطرة غير صالح' },
     { projects: [validProject, { ...validProject, name: 'مشروع آخر' }], reason: 'معرّف مشروع مكرر' },
-    { projects: [{ ...validProject, id: -1 }], reason: 'معرّف مشروع غير صالح' }
+    { projects: [{ ...validProject, id: -1 }], reason: 'معرّف مشروع غير صالح' },
+    { projects: [{ ...validProject, id: Number.MAX_SAFE_INTEGER + 1 }], reason: 'معرّف مشروع غير صالح' }
   ];
 
   for (const item of cases) {
