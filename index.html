@@ -7062,7 +7062,7 @@ return da - db;
       info += " | ⏱️ فعلي: " + t.actual + " د";
       info += ' | <span class="' + gapClass(gap) + '">📊 ' + gapText(gap) + "</span>";
     }
-    info += "<br>📅 " + formatDate(t.plannedDate) + (t.plannedTime ? " — ⏰ " + t.plannedTime : "");
+    info += "<br>📅 " + formatDate(t.plannedDate) + (t.plannedTime ? " — ⏰ " + escapeHTML(t.plannedTime) : "");
     const testTag = t._test ? '<span class="test-badge">تجريبي</span>' : '';
     return '' +
       '<div class="task ' + cls + '">' +

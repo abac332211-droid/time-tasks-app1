@@ -3202,6 +3202,7 @@ test('remaining HTML render sinks escape persisted free text and validate interp
   const home = extractFunction('renderHomeSchedule');
   assert.ok(tasks.includes('escapeHTML(t.name)'));
   assert.ok(tasks.includes('escapeHTML(t.type || "—")'));
+  assert.ok(tasks.includes('escapeHTML(t.plannedTime)'), 'task planned time is escaped before HTML insertion');
   assert.ok(projects.includes('escapeHTML(p.name)'));
   assert.ok(projects.includes('escapeHTML(p.description)'));
   assert.ok(sessions.includes('escapeHTML(s.taskName.slice'));

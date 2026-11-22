@@ -7,6 +7,7 @@ on:
       - codex/final-audit-fixes
       - codex/v2.9.0-stability
       - codex/v2.9.1-stability
+      - codex/v2.9.1-release-hardening
   pull_request:
     branches:
       - main
@@ -29,6 +30,12 @@ jobs:
           package-manager-cache: false
       - name: Run regression tests
         run: npm test
+
+      - name: Run browser security regressions
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tests/browser-security.cjs
 
       - name: Prepare 2.9.1 candidate web ZIP
         if: github.event_name == 'push' && github.ref == 'refs/heads/codex/v2.9.1-stability'
