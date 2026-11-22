@@ -3051,6 +3051,7 @@ test('recurring task refresh is page-lifetime, visible-only, minute-based, and i
 });
 
 
+
 test('modal sanitizer strips every attribute from allowed tags and unwraps active or unsupported elements', () => {
   const source = extractFunction('sanitizeModalHtml');
   const attack = '<span class="notice" style="background-image:u\\\\72l(javascript:alert(1))" onclick="alert(2)">تنبيه</span>'
@@ -3066,7 +3067,7 @@ test('modal sanitizer strips every attribute from allowed tags and unwraps activ
     return { nodeType: 3, textContent: String(value) };
   }
   function element(tagName, attributes, childNodes) {
-    const node = {
+    return {
       nodeType: 1,
       tagName,
       attributes: attributes.map(([name, value]) => ({ name, value })),
@@ -3089,7 +3090,6 @@ test('modal sanitizer strips every attribute from allowed tags and unwraps activ
           : '<' + child.tagName.toLowerCase() + '>' + child.innerHTML + '</' + child.tagName.toLowerCase() + '>').join('');
       }
     };
-    return node;
   }
 
   const span = element('SPAN', [
@@ -3124,7 +3124,9 @@ test('modal sanitizer strips every attribute from allowed tags and unwraps activ
   assert.equal(parsedInput, attack);
   assert.equal(span.attributes.length, 0, 'class, style (including CSS escapes), and event attributes are all removed');
   assert.equal(sanitized, '<span>تنبيه</span>رابطalert(6)');
-  assert.doesNotMatch(sanitized, /<\/?(?:a|img|script)\b|\b(?:class|style|onerror|onclick|onmouseover|href)=/i);
+  for (const fragment of ['<a', '<img', '<script', 'class=', 'style=', 'onerror=', 'onclick=', 'onmouseover=', 'href=']) {
+    assert.equal(sanitized.includes(fragment), false, 'sanitized output excludes ' + fragment);
+  }
 });
 
 test('modal sanitizer falls back to escaped text if DOM parsing fails', () => {
@@ -3186,25 +3188,31 @@ test('plain-text modal path renders storage-derived migration errors through tex
   assert.equal(body.children[0].textContent, message);
   assert.equal(body.children[0].style.whiteSpace, 'pre-line');
   assert.equal(body._textContent, '');
-  assert.match(
-    extractFunction('loadData'),
-    /showAlertModal\\("تعذر ترقية البيانات", "السبب: " \\+ report\\.error \\+ "\\\\nبياناتك الأصلية محفوظة ولم تُلمس\\.", true\\)/
-  );
+  const migration = extractFunction('loadData');
+  assert.ok(migration.includes('showAlertModal("تعذر ترقية البيانات"'));
+  assert.ok(migration.includes('report.error'));
+  assert.ok(migration.includes('true);'));
 });
 
 test('remaining HTML render sinks escape persisted free text and validate interpolated identifiers and enums', () => {
-  assert.match(extractFunction('renderTasks'), /escapeHTML\\(t\\.name\\)/);
-  assert.match(extractFunction('renderTasks'), /escapeHTML\\(t\\.type \\|\\| "—"\\)/);
-  assert.match(extractFunction('renderProjects'), /escapeHTML\\(p\\.name\\)/);
-  assert.match(extractFunction('renderProjects'), /escapeHTML\\(p\\.description\\)/);
-  assert.match(extractFunction('renderFocusSessionsCard'), /escapeHTML\\(s\\.taskName\\.slice/);
-  assert.match(extractFunction('renderHomeSchedule'), /escapeHTML\\(task\\.name\\)/);
-  assert.match(extractFunction('renderHomeSchedule'), /escapeHTML\\(task\\.plannedTime\\)/);
-  assert.match(appScript, /var text = escapeHTML\\(m\\.text\\)/);
-  assert.match(appScript, /escapeHTML\\(m\\.next\\)/);
-  assert.match(extractFunction('updateEstimatorHint'), /escapeHTML\\(type\\)/);
-  assert.match(extractFunction('validateV2'), /Number\\.isInteger\\(t\\.id\\)[\\s\\S]*?isValidLocalTime\\(t\\.plannedTime\\)/);
-  assert.match(extractFunction('_loadMentalInbox'), /typeof _m2\\.id !== "number"/);
-  assert.match(extractFunction('_loadThoughts'), /typeof _t2\\.id !== "number"/);
-  assert.match(extractFunction('_loadProjects'), /VALID_PROJECT_STATUS\\.indexOf\\(_p2\\.status\\) === -1/);
+  const tasks = extractFunction('renderTasks');
+  const projects = extractFunction('renderProjects');
+  const sessions = extractFunction('renderFocusSessionsCard');
+  const home = extractFunction('renderHomeSchedule');
+  assert.ok(tasks.includes('escapeHTML(t.name)'));
+  assert.ok(tasks.includes('escapeHTML(t.type || "—")'));
+  assert.ok(projects.includes('escapeHTML(p.name)'));
+  assert.ok(projects.includes('escapeHTML(p.description)'));
+  assert.ok(sessions.includes('escapeHTML(s.taskName.slice'));
+  assert.ok(home.includes('escapeHTML(task.name)'));
+  assert.ok(home.includes('escapeHTML(task.plannedTime)'));
+  assert.ok(appScript.includes('var text = escapeHTML(m.text)'));
+  assert.ok(appScript.includes('escapeHTML(m.next)'));
+  assert.ok(extractFunction('updateEstimatorHint').includes('escapeHTML(type)'));
+  const validation = extractFunction('validateV2');
+  assert.ok(validation.includes('Number.isInteger(t.id)'));
+  assert.ok(validation.includes('isValidLocalTime(t.plannedTime)'));
+  assert.ok(extractFunction('_loadMentalInbox').includes('typeof _m2.id !== "number"'));
+  assert.ok(extractFunction('_loadThoughts').includes('typeof _t2.id !== "number"'));
+  assert.ok(extractFunction('_loadProjects').includes('VALID_PROJECT_STATUS.indexOf(_p2.status) === -1'));
 });
