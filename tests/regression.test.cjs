@@ -2267,6 +2267,7 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
   let checkpointReason = null;
   const sandbox = {
     STORAGE_KEY: 'main',
+    PROJECTS_KEY: 'projects',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
@@ -2326,10 +2327,11 @@ test('daily-log save refuses writes during migration, import, reset, and rolling
     'reset-in-progress', 'rolling-restore-in-progress'
   ];
   for (const markerKey of markerKeys) {
-    const values = new Map([['main', original], [markerKey, 'pending']]);
+    const values = new Map([['main', original], ['projects', '[]'], [markerKey, 'pending']]);
     let checkpointCount = 0;
     const sandbox = {
       STORAGE_KEY: 'main',
+      PROJECTS_KEY: 'projects',
       IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
       MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
       RESET_IN_PROGRESS_KEY: 'reset-in-progress',
@@ -2343,6 +2345,10 @@ test('daily-log save refuses writes during migration, import, reset, and rolling
         setItem(key, value) { values.set(key, String(value)); }
       },
       _setMainStorageBaseline(raw) { sandbox._mainStorageBaselineRaw = raw; },
+      _verifyStoredTaskProjectReferences() {
+        return { valid: true, mainRaw: values.get('main'), projectsRaw: values.get('projects'), projects: [] };
+      },
+      validateTaskProjectReferences: () => ({ valid: true, reason: null }),
       validateV2: () => true,
       showToast: () => {},
       console,

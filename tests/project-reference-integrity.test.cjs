@@ -726,12 +726,12 @@ test('project-ID reconciliation uses the guarded migration writer while the V1 m
   assert.equal(harness.sandbox._secondaryStorageBaselines[PROJECTS_KEY], harness.storage.getItem(PROJECTS_KEY));
 });
 
-test('project-ID reconciliation refuses to persist a repair that would orphan an existing task reference', () => {
+test('project-ID reconciliation never assigns a repaired ID that could adopt an existing orphan task reference', () => {
   const rawProjects = JSON.stringify([{ id: 'invalid', name: 'مشروع قديم' }]);
-  const originalMain = validMain([task(1, 7)]);
+  const originalMain = validMain([task(1, 8)]);
   const harness = projectNormalizationHarness({
     projectRaw: rawProjects,
-    tasks: [task(1, 7)],
+    tasks: [task(1, 8)],
     reconciledProjects: [{ ...project(8), _healed: true }]
   });
   assert.equal(harness.storage.getItem(STORAGE_KEY), originalMain);
@@ -739,7 +739,8 @@ test('project-ID reconciliation refuses to persist a repair that would orphan an
   const result = harness.sandbox._normalizeStoredProjectIdsForRelationshipValidation();
 
   assert.equal(result.valid, false);
-  assert.match(result.reason, /مرجعًا غير محسوم/);
+  assert.match(result.reason, /غير موجود في القائمة الأصلية/);
+  assert.equal(harness.projectLoads, 0, 'the legacy loader must not allocate an ID that matches an orphan reference');
   assert.equal(harness.projectWrites, 0);
   assert.equal(harness.storage.getItem(PROJECTS_KEY), rawProjects);
   assert.equal(harness.storage.getItem(PROJECTS_KEY + '_corrupt_original'), rawProjects);

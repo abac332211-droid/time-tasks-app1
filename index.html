@@ -2760,6 +2760,23 @@ function _normalizeStoredProjectIdsForRelationshipValidation() {
     if (!normalizedStoredTasks.valid) {
       return fail("تعذر تطبيع مراجع المهام القديمة قبل إصلاح المشاريع.");
     }
+
+    // Do not let a freshly allocated repair ID accidentally adopt an orphan
+    // task reference that had no matching project in the original raw store.
+    var originalProjectIds = new Set();
+    decoded.forEach(function(project) {
+      if (project && typeof project === "object" && !Array.isArray(project)
+          && Number.isSafeInteger(project.id) && project.id > 0) {
+        originalProjectIds.add(project.id);
+      }
+    });
+    var taskWithUnknownOriginalProject = normalizedStoredTasks.tasks.find(function(task) {
+      return task && task.projectId !== null && !originalProjectIds.has(task.projectId);
+    });
+    if (taskWithUnknownOriginalProject) {
+      return fail("توجد مهمة تشير إلى معرّف مشروع غير موجود في القائمة الأصلية؛ لا يجوز ربطها بمشروع أُعيد ترقيمه تلقائيًا.");
+    }
+
     if (localStorage.getItem(STORAGE_KEY) !== storedTasks.raw) {
       return fail("تغير مخزن المهام أثناء فحص إصلاح المشاريع؛ أُوقف الإصلاح لحماية البيانات.");
     }
