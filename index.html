@@ -4230,6 +4230,11 @@ function persistDailyLog(log) {
     serializedDailyLogData = JSON.stringify(data);
     // Re-check both stores immediately before the write; a changed secondary
     // store must not be masked by a valid cache or an earlier read.
+    if (typeof _secondaryStorageWriteAllowed !== "function"
+        || !_secondaryStorageWriteAllowed(PROJECTS_KEY)) {
+      showToast("⚠️ تغيّر مخزن المشاريع في نافذة أخرى؛ أعد تحميل التطبيق قبل حفظ سجل اليوم");
+      return false;
+    }
     if (localStorage.getItem(STORAGE_KEY) !== previousMainRaw
         || localStorage.getItem(PROJECTS_KEY) !== relationshipState.projectsRaw
         || !_storageWriteAllowed()) {

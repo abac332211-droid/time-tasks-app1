@@ -747,7 +747,7 @@ test('project-ID reconciliation never assigns a repaired ID that could adopt an 
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 });
 
-function dailyLogHarness({ tasks, projects, readbackMismatch = false }) {
+function dailyLogHarness({ tasks, projects, readbackMismatch = false, projectConflict = false }) {
   const initialMain = JSON.stringify({
     schemaVersion: 2,
     settings: {},
@@ -790,6 +790,7 @@ function dailyLogHarness({ tasks, projects, readbackMismatch = false }) {
     _mainStorageExternalChangeObserved: false,
     _trackSecondaryStorageRead: () => {},
     _storageWriteAllowed: () => true,
+    _secondaryStorageWriteAllowed: () => !projectConflict,
     _setMainStorageBaseline(raw) {
       baselineWrites++;
       sandbox._mainStorageBaselineRaw = raw;
@@ -840,6 +841,23 @@ test('persistDailyLog writes only after validating and rereading both stores', (
   assert.equal(persisted.dailyLogs[0].control, 4);
   assert.equal(harness.mainWrites, 1);
   assert.equal(harness.baselineWrites, 1, 'baseline advances only after read-back and relationship verification');
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+});
+
+test('persistDailyLog refuses to write after a secondary-store optimistic concurrency conflict', () => {
+  const harness = dailyLogHarness({
+    tasks: [task(1, 70)],
+    projects: [project(70)],
+    projectConflict: true
+  });
+  const log = { date: '2026-11-22', control: 5, execution: null, wellbeing: null };
+
+  const saved = harness.sandbox.persistDailyLog(log);
+
+  assert.equal(saved, false);
+  assert.equal(harness.storage.getItem(STORAGE_KEY), harness.initialMain);
+  assert.equal(harness.mainWrites, 0);
+  assert.equal(harness.baselineWrites, 0);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
 

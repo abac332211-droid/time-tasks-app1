@@ -2290,6 +2290,7 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
       };
     },
     validateTaskProjectReferences: () => ({ valid: true, reason: null }),
+    _secondaryStorageWriteAllowed: () => true,
     validateV2: () => true,
     showToast: () => {},
     console,
@@ -2349,6 +2350,7 @@ test('daily-log save refuses writes during migration, import, reset, and rolling
         return { valid: true, mainRaw: values.get('main'), projectsRaw: values.get('projects'), projects: [] };
       },
       validateTaskProjectReferences: () => ({ valid: true, reason: null }),
+      _secondaryStorageWriteAllowed: () => true,
       validateV2: () => true,
       showToast: () => {},
       console,
