@@ -3285,6 +3285,7 @@ test('project loading repairs invalid and duplicate IDs without retaining execut
 test('project persistence refuses invalid, unsafe, or duplicate IDs before writing', () => {
   let writes = 0;
   const sandbox = {
+    PROJECTS_KEY: 'projects',
     _storageWriteAllowed: () => true,
     _writeSecondaryStorageVerified: () => { writes++; return true; },
     _invalidateProjectsCache() {},
@@ -3361,5 +3362,5 @@ test('project cards bind action IDs through data attributes and never interpolat
   assert.match(renderer, /data-project-action="edit"/);
   assert.match(renderer, /data-project-action="delete"/);
   assert.match(renderer, /addEventListener\("click"/);
-  assert.match(extractFunction('validateBackup'), /_isValidProjectId\(project\.id\)/);
+  assert.match(extractFunction('validateBackup'), /Number\.isSafeInteger\(project\.id\)/);
 });

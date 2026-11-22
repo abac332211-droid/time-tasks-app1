@@ -5996,7 +5996,7 @@ function validateBackup(obj) {
       const project = d.projects[i];
       if (!project || typeof project !== "object" || Array.isArray(project))
         return { valid: false, reason: "المشروع رقم " + (i+1) + " تالف." };
-      if (!_isValidProjectId(project.id))
+      if (!Number.isSafeInteger(project.id) || project.id <= 0)
         return { valid: false, reason: "معرّف مشروع غير صالح (" + (i+1) + ")." };
       if (projectIds.has(project.id))
         return { valid: false, reason: "معرّف مشروع مكرر: " + project.id + "." };
@@ -10546,7 +10546,7 @@ function clearProjectForm() {
 }
 
 function editProject(id) {
-  if (!_isValidProjectId(id)) return;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
@@ -10578,7 +10578,7 @@ function cancelProjectEdit() {
 }
 
 function deleteProject(id) {
-  if (!_isValidProjectId(id)) return;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return;
   var projectsBefore = _loadProjects();
   var project = projectsBefore.find(function(item) { return item.id === id; });
   if (!project) return;
@@ -10678,7 +10678,8 @@ function deleteProject(id) {
   });
 }
 function setProjectStatus(id, status) {
-  if (!_isValidProjectId(id) || VALID_PROJECT_STATUS.indexOf(status) === -1) return;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0
+      || VALID_PROJECT_STATUS.indexOf(status) === -1) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
@@ -10692,7 +10693,7 @@ function setProjectStatus(id, status) {
 }
 
 function toggleProjectStatus(id) {
-  if (!_isValidProjectId(id)) return;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
@@ -10773,7 +10774,7 @@ function renderProjects() {
 }
 
 function addTaskToProject(projectId) {
-  if (!_isValidProjectId(projectId)) return;
+  if (typeof projectId !== "number" || !Number.isSafeInteger(projectId) || projectId <= 0) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === projectId; });
   if (!p) return;
