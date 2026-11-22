@@ -4912,6 +4912,15 @@ function saveTask() {
   const time = document.getElementById("taskTime").value;
   const projectSel = document.getElementById("taskProject");
   const projectId = (projectSel && projectSel.value) ? Number(projectSel.value) : null;
+  // Reject stale or forged project selections against the current project store.
+  if (projectId !== null) {
+    const projectExists = Number.isSafeInteger(projectId) && projectId > 0
+      && _loadProjects().some(function(project) { return project && project.id === projectId; });
+    if (!projectExists) {
+      showAlertModal("خطأ", "المشروع المحدد غير موجود حاليًا. اختر مشروعًا موجودًا أو احفظ المهمة دون مشروع.");
+      return;
+    }
+  }
   const priorityEl = document.getElementById("taskPriority");
   const priority = (priorityEl && priorityEl.value) ? priorityEl.value : null;
   const recurrenceEl = document.getElementById("taskRecurrence");

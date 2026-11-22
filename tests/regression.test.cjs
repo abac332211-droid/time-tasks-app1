@@ -1132,6 +1132,7 @@ function taskFormSandbox(options = {}) {
       }
     },
     todayStr: () => '2026-11-19',
+    _loadProjects: options.loadProjects || (() => []),
     isValidCalendarDate: () => true,
     isValidLocalTime: () => true,
     localDateTimeString: () => '2026-11-19T09:00:00',
@@ -1159,6 +1160,58 @@ function taskFormSandbox(options = {}) {
   vm.runInNewContext(extractFunction('saveTask'), sandbox);
   return { sandbox, elements };
 }
+
+test('new task with a missing project is rejected before persistence', () => {
+  let saveCalls = 0;
+  const harness = taskFormSandbox({
+    values: { taskProject: '404' },
+    loadProjects: () => [{ id: 7 }],
+    saveData: () => { saveCalls++; return true; }
+  });
+
+  harness.sandbox.saveTask();
+
+  assert.equal(saveCalls, 0, 'missing project reference must not reach saveData');
+  assert.equal(harness.sandbox.tasks.length, 0, 'no task is retained');
+  assert.equal(harness.sandbox.alertCalls, 1, 'user is informed that the selected project is missing');
+});
+
+test('editing a task with a missing project is rejected before persistence', () => {
+  const original = {
+    id: 7, name: 'المهمة الأصلية', type: 'معرفية', status: 'pending',
+    expected: 30, actual: null, plannedDate: '2026-11-10', plannedTime: '',
+    completedAt: null, createdAt: 1, projectId: 7
+  };
+  let saveCalls = 0;
+  const harness = taskFormSandbox({
+    tasks: [original],
+    editingId: 7,
+    values: { taskProject: '404' },
+    loadProjects: () => [{ id: 7 }],
+    saveData: () => { saveCalls++; return true; }
+  });
+
+  harness.sandbox.saveTask();
+
+  assert.equal(saveCalls, 0, 'missing project reference must not reach saveData');
+  assert.equal(original.projectId, 7, 'the original project reference is preserved');
+  assert.equal(original.name, 'المهمة الأصلية', 'the task is not mutated');
+  assert.equal(harness.sandbox.alertCalls, 1);
+});
+
+test('task can still be saved with an existing project reference', () => {
+  const harness = taskFormSandbox({
+    values: { taskProject: '7' },
+    loadProjects: () => [{ id: 7 }],
+    saveData: () => true
+  });
+
+  harness.sandbox.saveTask();
+
+  assert.equal(harness.sandbox.alertCalls, 0);
+  assert.equal(harness.sandbox.tasks.length, 1);
+  assert.equal(harness.sandbox.tasks[0].projectId, 7);
+});
 
 test('new task is not retained in memory when persistence fails', () => {
   const harness = taskFormSandbox({ saveData: () => false });
