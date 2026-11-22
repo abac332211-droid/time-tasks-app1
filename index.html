@@ -266,8 +266,8 @@ input::placeholder, textarea::placeholder {
 }
 
 input:focus, select:focus, textarea:focus {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--focus-outline-offset);
   border-color: var(--focus-ring);
 }
 
@@ -293,7 +293,7 @@ button {
   transition: transform 0.1s ease, opacity 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
 }
 
-button:active { transform: scale(0.985); }
+button:active:not(:disabled) { transform: scale(0.985); }
 button:disabled { opacity: 0.48; cursor: not-allowed; }
 
 .btn-primary {
@@ -538,7 +538,7 @@ nav button.active {
   background: var(--ghost);
   color: var(--text);
   border: 1px solid var(--control-border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 13px;
   cursor: pointer;
   font-weight: 600;
@@ -687,8 +687,8 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
   border: 0;
   color: var(--danger-text);
   font-size: 16px;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--control-height);
+  min-height: var(--control-height);
   padding: 6px;
   cursor: pointer;
 }
@@ -709,12 +709,12 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
 .rating-buttons, .energy-buttons { display: flex; gap: 6px; }
 .rating-buttons button {
   flex: 1;
-  min-height: 44px;
+  min-height: var(--control-height);
   padding: 8px 0;
   background: var(--ghost);
   color: var(--text);
   border: 1px solid var(--control-border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 15px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -726,12 +726,12 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
 }
 .energy-buttons button {
   flex: 1;
-  min-height: 44px;
+  min-height: var(--control-height);
   padding: 8px 4px;
   background: var(--ghost);
   color: var(--text);
   border: 1px solid var(--control-border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 13px;
 }
 .energy-buttons button.active {
@@ -752,6 +752,13 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
   color: var(--text);
 }
 .mental-details summary::-webkit-details-marker { color: var(--primary); }
+
+.timer-settings summary:focus-visible,
+.mental-details summary:focus-visible {
+  outline: var(--focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--focus-outline-offset);
+  border-radius: 4px;
+}
 
 /* Weekly Report & Analytics */
 .weekly-summary {
@@ -953,7 +960,7 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
   color: var(--on-solid);
   border: 0;
   border-radius: 8px;
-  min-height: 44px;
+  min-height: var(--control-height);
   padding: 8px 14px;
   font-size: 12.5px;
   font-weight: 600;
@@ -1002,7 +1009,7 @@ body.dark-mode .card.accent-info::before { opacity: 0.7; }
 
 @media (max-width: 420px) {
   .container { padding: 12px 10px; }
-  .card { padding: 15px; }
+  :root { --card-padding: 15px; }
   nav button { font-size: 11px; padding: 6px 4px; }
   nav button span { font-size: 11px; }
 }
@@ -1015,12 +1022,12 @@ body.dark-mode .card.accent-info::before { opacity: 0.7; }
 .notebook-tabs { display: flex; gap: 6px; margin-top: 6px; }
 .notebook-tab {
   flex: 1;
-  min-height: 44px;
+  min-height: var(--control-height);
   padding: 8px 6px;
   background: var(--ghost);
   color: var(--text);
   border: 1px solid var(--control-border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 14px;
   cursor: pointer;
   font-weight: 600;
@@ -1031,6 +1038,29 @@ body.dark-mode .card.accent-info::before { opacity: 0.7; }
   background: var(--primary);
   color: var(--on-solid);
   border-color: var(--primary);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .filters button:not(.active):hover,
+  .timer-tab:not(.active):hover,
+  .rating-buttons button:not(.active):hover,
+  .energy-buttons button:not(.active):hover,
+  .notebook-tab:not(.active):hover {
+    background: var(--surface-hover);
+  }
+
+  .filters button.active:hover,
+  .timer-tab.active:hover,
+  .rating-buttons button.active:hover,
+  .energy-buttons button.active:hover,
+  .notebook-tab.active:hover {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+  }
+
+  nav button:not(.active):hover {
+    background: var(--surface-subtle);
+  }
 }
 
 .thought-card {
@@ -1050,7 +1080,7 @@ body.dark-mode .card.accent-info::before { opacity: 0.7; }
 }
 .thought-meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .thought-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
-.thought-actions button { flex: 0 0 auto; min-height: 44px; padding: 8px 14px; font-size: 12.5px; }
+.thought-actions button { flex: 0 0 auto; min-height: var(--control-height); padding: 8px 14px; font-size: 12.5px; }
 
 .project-card {
   border: 1px solid var(--border);
