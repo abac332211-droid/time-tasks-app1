@@ -26,9 +26,10 @@
   --surface-subtle: #f1f5f9;
   --surface-hover: #e8eef6;
   --muted: #5b667a;
-  --empty: #6b7280;
+  --empty: var(--muted);
   --border: #e2e8f0;
   --input-border: #7b899d;
+  --control-border: #7b899d;
   --shadow: rgba(15, 23, 42, 0.05);
   --shadow-lg: rgba(15, 23, 42, 0.14);
 
@@ -102,9 +103,10 @@ body.dark-mode {
   --surface-subtle: #1c2940;
   --surface-hover: #24344f;
   --muted: #9aa8bd;
-  --empty: #94a3b8;
+  --empty: var(--muted);
   --border: #26344b;
   --input-border: #60758f;
+  --control-border: #71839b;
   --shadow: rgba(0, 0, 0, 0.35);
   --shadow-lg: rgba(0, 0, 0, 0.55);
 
@@ -296,7 +298,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .btn-ghost {
   background: var(--ghost);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -322,7 +324,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   transition: background-color 0.25s ease, border-color 0.25s ease, opacity 0.2s ease;
 }
 
-.task.done { border-right-color: var(--success); opacity: 0.72; }
+.task.done { border-right-color: var(--success); }
 
 .task-title {
   font-size: 15.5px;
@@ -460,7 +462,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   min-height: 44px;
   background: var(--ghost);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   padding: 8px 14px;
   font-size: 13px;
 }
@@ -524,7 +526,7 @@ nav button.active {
   padding: 8px 6px;
   background: var(--ghost);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   font-size: 13px;
   cursor: pointer;
@@ -652,7 +654,7 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
   word-break: break-word;
   line-height: 1.5;
 }
-.checklist-item.done .ci-txt { text-decoration: line-through; opacity: 0.6; }
+.checklist-item.done .ci-txt { text-decoration: line-through; color: var(--muted); }
 .checklist-item .ci-del {
   background: transparent;
   border: 0;
@@ -684,7 +686,7 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
   padding: 8px 0;
   background: var(--ghost);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   font-size: 15px;
   font-weight: 700;
@@ -701,7 +703,7 @@ body:has(.modal-overlay:not(.hidden)) { overflow: hidden; }
   padding: 8px 4px;
   background: var(--ghost);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   font-size: 13px;
 }
@@ -990,7 +992,7 @@ body.dark-mode .card.accent-info::before { opacity: 0.7; }
   padding: 8px 6px;
   background: var(--ghost);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   font-size: 14px;
   cursor: pointer;
@@ -1031,7 +1033,7 @@ body.dark-mode .card.accent-info::before { opacity: 0.7; }
   margin-top: 12px;
   background: var(--card-bg);
 }
-.project-card.status-completed { opacity: 0.68; border-right-color: var(--success); }
+.project-card.status-completed { border-right-color: var(--success); }
 .project-card.status-paused { border-right-color: var(--warning); }
 .project-header {
   display: flex;
