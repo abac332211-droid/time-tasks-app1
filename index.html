@@ -2585,6 +2585,105 @@ function _healTaskFieldsAfterLoad() {
 }
 
 function migrateV1ToV2() {
+function validateTaskProjectReferences(taskList, projectList) {
+  if (!Array.isArray(taskList) || !Array.isArray(projectList)) {
+    return { valid: false, reason: "قوائم المهام أو المشاريع غير صالحة." };
+  }
+  var projectIds = new Set();
+  for (var pi = 0; pi < projectList.length; pi++) {
+    var project = projectList[pi];
+    if (!project || typeof project !== "object" || Array.isArray(project)
+        || !Number.isSafeInteger(project.id) || project.id <= 0) {
+      return { valid: false, reason: "معرّف المشروع غير صالح في السجل رقم " + (pi + 1) + "." };
+    }
+    if (projectIds.has(project.id)) {
+      return { valid: false, reason: "معرّف مشروع مكرر: " + project.id + "." };
+    }
+    projectIds.add(project.id);
+  }
+  for (var ti = 0; ti < taskList.length; ti++) {
+    var task = taskList[ti];
+    if (!task || typeof task !== "object" || Array.isArray(task)) {
+      return { valid: false, reason: "سجل المهمة رقم " + (ti + 1) + " غير صالح." };
+    }
+    if (task.projectId === undefined) {
+      return { valid: false, reason: "حقل projectId مفقود في المهمة رقم " + (ti + 1) + "." };
+    }
+    if (task.projectId === null) continue;
+    if (!Number.isSafeInteger(task.projectId) || task.projectId <= 0) {
+      return { valid: false, reason: "معرّف المشروع غير صالح في المهمة رقم " + (ti + 1) + "." };
+    }
+    if (!projectIds.has(task.projectId)) {
+      return { valid: false, reason: "المهمة رقم " + (ti + 1) + " تشير إلى مشروع غير موجود: " + task.projectId + "." };
+    }
+  }
+  return { valid: true, reason: null };
+}
+
+// Explicit compatibility migration: only a missing legacy field becomes null.
+// Existing references are preserved for validation and are never silently detached.
+function normalizeLegacyTaskProjectReferences(taskList) {
+  if (!Array.isArray(taskList)) {
+    return { valid: false, changed: false, tasks: null, reason: "قائمة المهام غير صالحة." };
+  }
+  var changed = false;
+  var normalizedTasks = taskList.map(function(task) {
+    if (!task || typeof task !== "object" || Array.isArray(task)) return task;
+    if (task.projectId === undefined) {
+      changed = true;
+      return Object.assign({}, task, { projectId: null });
+    }
+    return task;
+  });
+  return { valid: true, changed: changed, tasks: normalizedTasks, reason: null };
+}
+
+// Read persisted storage directly; never rely on the _loadProjects UI cache.
+function _readStoredProjectsForTaskReferenceValidation() {
+  try {
+    var raw = localStorage.getItem(PROJECTS_KEY);
+    if (typeof _trackSecondaryStorageRead === "function") _trackSecondaryStorageRead(PROJECTS_KEY, raw);
+    var projects = raw === null || raw === "" ? [] : JSON.parse(raw);
+    if (!Array.isArray(projects)) {
+      return { valid: false, reason: "مخزن المشاريع لا يحتوي قائمة صالحة.", projects: null, raw: raw };
+    }
+    var shapeCheck = validateTaskProjectReferences([], projects);
+    if (!shapeCheck.valid) return { valid: false, reason: shapeCheck.reason, projects: null, raw: raw };
+    return { valid: true, reason: null, projects: projects, raw: raw };
+  } catch (e) {
+    return { valid: false, reason: "تعذرت قراءة مخزن المشاريع للتحقق من العلاقات.", projects: null, raw: null, error: e };
+  }
+}
+
+function _readStoredTasksForProjectReferenceValidation() {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return { valid: true, reason: null, tasks: [], raw: null };
+    var data = JSON.parse(raw);
+    if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.tasks)) {
+      return { valid: false, reason: "سجل المهام المخزن لا يحتوي قائمة مهام صالحة.", tasks: null, raw: raw };
+    }
+    if (typeof validateV2 === "function" && data.schemaVersion === CURRENT_SCHEMA_VERSION && !validateV2(data)) {
+      return { valid: false, reason: "سجل المهام المخزن لا يجتاز تحقق مخطط V2.", tasks: null, raw: raw };
+    }
+    return { valid: true, reason: null, tasks: data.tasks, raw: raw };
+  } catch (e) {
+    return { valid: false, reason: "تعذرت قراءة سجل المهام للتحقق من العلاقات.", tasks: null, raw: null, error: e };
+  }
+}
+
+function _verifyStoredTaskProjectReferences() {
+  var storedTasks = _readStoredTasksForProjectReferenceValidation();
+  if (!storedTasks.valid) return storedTasks;
+  var storedProjects = _readStoredProjectsForTaskReferenceValidation();
+  if (!storedProjects.valid) return storedProjects;
+  var result = validateTaskProjectReferences(storedTasks.tasks, storedProjects.projects);
+  return {
+    valid: result.valid, reason: result.reason, tasks: storedTasks.tasks,
+    projects: storedProjects.projects, mainRaw: storedTasks.raw, projectsRaw: storedProjects.raw
+  };
+}
+
   const report = {
     date: new Date().toISOString(),
     fromVersion: 1, toVersion: 2,
@@ -2618,7 +2717,17 @@ function migrateV1ToV2() {
         report.error = "generated_empty_v2_invalid";
         return report;
       }
+      if (typeof _readStoredProjectsForTaskReferenceValidation === "function") {
+        var emptyProjects = _readStoredProjectsForTaskReferenceValidation();
+        if (!emptyProjects.valid) { report.error = "project_store_invalid: " + emptyProjects.reason; return report; }
+        var emptyLinks = validateTaskProjectReferences(empty.tasks, emptyProjects.projects);
+        if (!emptyLinks.valid) { report.error = "project_reference_integrity_failed: " + emptyLinks.reason; return report; }
+      }
       writeAndVerify(STORAGE_KEY, JSON.stringify(empty), "empty_main");
+      if (typeof _verifyStoredTaskProjectReferences === "function") {
+        var emptyReadback = _verifyStoredTaskProjectReferences();
+        if (!emptyReadback.valid) { report.error = "empty_main_project_reference_readback_failed: " + emptyReadback.reason; return report; }
+      }
       report.success = true;
       return report;
     }
@@ -2673,19 +2782,25 @@ function migrateV1ToV2() {
       // Heal a private candidate only. The stored bytes remain untouched unless
       // the complete candidate passes the V2 validator.
       const candidate = JSON.parse(JSON.stringify(parsed));
-      const candidateHealed = Array.isArray(candidate.tasks)
-        ? _healTaskArray(candidate.tasks)
-        : false;
-
-      if (!validateV2(candidate)) {
-        report.error = "v2_invalid_no_recovery";
-        return report;
+      var candidateHealed = Array.isArray(candidate.tasks) ? _healTaskArray(candidate.tasks) : false;
+      if (typeof normalizeLegacyTaskProjectReferences === "function") {
+        var legacyProjectRefs = normalizeLegacyTaskProjectReferences(candidate.tasks);
+        if (!legacyProjectRefs.valid) { report.error = "v2_project_reference_normalization_failed"; return report; }
+        candidate.tasks = legacyProjectRefs.tasks;
+        if (legacyProjectRefs.changed) candidateHealed = true;
       }
-
-      if (candidateHealed) {
-        writeAndVerify(STORAGE_KEY, JSON.stringify(candidate), "v2_repair");
+      if (!validateV2(candidate)) { report.error = "v2_invalid_no_recovery"; return report; }
+      if (typeof _readStoredProjectsForTaskReferenceValidation === "function") {
+        var candidateProjects = _readStoredProjectsForTaskReferenceValidation();
+        if (!candidateProjects.valid) { report.error = "project_store_invalid: " + candidateProjects.reason; return report; }
+        var candidateLinks = validateTaskProjectReferences(candidate.tasks, candidateProjects.projects);
+        if (!candidateLinks.valid) { report.error = "project_reference_integrity_failed: " + candidateLinks.reason; return report; }
       }
-
+      if (candidateHealed) writeAndVerify(STORAGE_KEY, JSON.stringify(candidate), "v2_repair");
+      if (typeof _verifyStoredTaskProjectReferences === "function") {
+        var candidateReadback = _verifyStoredTaskProjectReferences();
+        if (!candidateReadback.valid) { report.error = "v2_project_reference_readback_failed: " + candidateReadback.reason; return report; }
+      }
       if (pendingMigration) clearMigrationMarker();
       report.success = true;
       report.fromVersion = CURRENT_SCHEMA_VERSION;
@@ -2756,6 +2871,10 @@ function migrateV1ToV2() {
       firstUseDate = todayStr();
     }
 
+    const normalizedMigratedRefs = typeof normalizeLegacyTaskProjectReferences === "function"
+      ? normalizeLegacyTaskProjectReferences(migratedTasks)
+      : { valid: true, tasks: migratedTasks };
+    if (!normalizedMigratedRefs.valid) { report.error = "generated_v2_project_reference_normalization_failed"; return report; }
     const v2Data = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       createdByVersion: APP_VERSION,
@@ -2766,23 +2885,24 @@ function migrateV1ToV2() {
         themeMode: "system",
         lastRecurringDates: {}
       },
-      tasks: migratedTasks,
+      tasks: normalizedMigratedRefs.tasks,
       dailyLogs: []
     };
-
-    if (!validateV2(v2Data)) {
-      report.error = "generated_v2_invalid";
-      return report;
+    if (!validateV2(v2Data)) { report.error = "generated_v2_invalid"; return report; }
+    if (typeof _readStoredProjectsForTaskReferenceValidation === "function") {
+      const migrationProjects = _readStoredProjectsForTaskReferenceValidation();
+      if (!migrationProjects.valid) { report.error = "project_store_invalid: " + migrationProjects.reason; return report; }
+      const migratedLinks = validateTaskProjectReferences(v2Data.tasks, migrationProjects.projects);
+      if (!migratedLinks.valid) { report.error = "project_reference_integrity_failed: " + migratedLinks.reason; return report; }
     }
-
     const migratedRaw = JSON.stringify(v2Data);
     writeAndVerify(STORAGE_KEY, migratedRaw, "migrated_main");
     const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (!validateV2(persisted)) {
-      report.error = "migrated_main_readback_invalid";
-      return report;
+    if (!validateV2(persisted)) { report.error = "migrated_main_readback_invalid"; return report; }
+    if (typeof _verifyStoredTaskProjectReferences === "function") {
+      const migratedReadback = _verifyStoredTaskProjectReferences();
+      if (!migratedReadback.valid) { report.error = "migrated_main_project_reference_readback_failed: " + migratedReadback.reason; return report; }
     }
-
     clearMigrationMarker();
     report.success = true;
     return report;
@@ -2896,6 +3016,15 @@ function loadData() {
     } else tasks = [];
   } catch (e) { tasks = []; }
 
+  if (typeof _verifyStoredTaskProjectReferences === "function") {
+    var loadedProjectReferences = _verifyStoredTaskProjectReferences();
+    if (!loadedProjectReferences.valid) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر التحقق من ارتباطات المشاريع",
+        loadedProjectReferences.reason + " احتفظ التطبيق بالبيانات الأصلية وأوقف عمليات الكتابة حتى تتم مراجعة الحالة أو استعادتها.");
+      return;
+    }
+  }
 
   try {
     if (tasks.length > 0) {
@@ -2910,7 +3039,7 @@ function loadData() {
             var _dSync = JSON.parse(_rawSync);
             if (_dSync && _dSync.settings) {
               _dSync.settings.lastTaskId = _maxExistingId;
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(_dSync));
+              if (typeof _writeMainStorageRecordVerified === "function") _writeMainStorageRecordVerified(JSON.stringify(_dSync));
             }
           }
         } catch (e2) {}
@@ -3449,6 +3578,13 @@ function _recoverInterruptedReset() {
       if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
       return false;
     }
+    if (typeof _verifyStoredTaskProjectReferences === "function") {
+      var resetRelationCheck = _verifyStoredTaskProjectReferences();
+      if (!resetRelationCheck.valid) {
+        if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+        return false;
+      }
+    }
 
     localStorage.removeItem(RESET_IN_PROGRESS_KEY);
     if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) {
@@ -3562,6 +3698,21 @@ function saveData() {
       showAlertModal("تنبيه الحفظ", "تعذر حفظ البيانات — البنية غير صالحة. لم يتم تعديل التخزين.");
       return false;
     }
+    if (typeof _readStoredProjectsForTaskReferenceValidation === "function"
+        && typeof validateTaskProjectReferences === "function") {
+      var projectsForSave = _readStoredProjectsForTaskReferenceValidation();
+      if (!projectsForSave.valid) {
+        storageRecoveryRequired = true;
+        showAlertModal("تعذر التحقق من المشاريع", projectsForSave.reason + " لم يتم حفظ المهام.");
+        return false;
+      }
+      var taskLinksForSave = validateTaskProjectReferences(v2.tasks, projectsForSave.projects);
+      if (!taskLinksForSave.valid) {
+        storageRecoveryRequired = true;
+        showAlertModal("تعذر حفظ ارتباط المهمة بمشروع", taskLinksForSave.reason + " لم يتم تعديل التخزين.");
+        return false;
+      }
+    }
 
     var serializedV2 = JSON.stringify(v2);
     try {
@@ -3598,6 +3749,17 @@ function saveData() {
       return false;
     }
 
+    if (typeof _verifyStoredTaskProjectReferences === "function") {
+      var verifiedProjectLinks = _verifyStoredTaskProjectReferences();
+      if (!verifiedProjectLinks.valid) {
+        storageRecoveryRequired = true;
+        _mainStorageBaselineReady = false;
+        console.error("saveData: task/project relation read-back failed:", verifiedProjectLinks.reason);
+        showAlertModal("تعذر التحقق من ارتباطات المشاريع بعد الحفظ",
+          verifiedProjectLinks.reason + " أوقف التطبيق الكتابة اللاحقة لحماية البيانات.");
+        return false;
+      }
+    }
     _setMainStorageBaseline(verifiedMainRaw);
     _queueAllTaskReminderSync();
     if (typeof _storeRollingRecoveryBackup === "function"
@@ -4232,7 +4394,7 @@ function convertMentalItemToTask(id) {
     var newTask = {
       id: getNextTaskId(), name: name.slice(0, 200), type: "معرفية",
       status: "pending", expected: 30, actual: null, plannedDate: todayStr(),
-      plannedTime: "", completedAt: null, createdAt: Date.now()
+      plannedTime: "", completedAt: null, createdAt: Date.now(), projectId: null
     };
     tasks.push(newTask);
     if (!saveData()) {
@@ -4601,7 +4763,7 @@ function showBreakdownTool() {
         const _t = {
           id: getNextTaskId(), name: val, type: 'معرفية', status: 'pending',
           expected: 15, actual: null, plannedDate: todayStr(),
-          plannedTime: '', completedAt: null, createdAt: Date.now()
+          plannedTime: '', completedAt: null, createdAt: Date.now(), projectId: null
         };
         tasks.push(_t);
         _added.push(_t);
@@ -5203,7 +5365,7 @@ function quickAdd() {
   tasks.push({
     id: getNextTaskId(), name, type: "معرفية", status: "pending",
     expected, actual: null, plannedDate: todayStr(), plannedTime: "",
-    completedAt: null, createdAt: Date.now()
+    completedAt: null, createdAt: Date.now(), projectId: null
   });
   if (saveData()) {
     nameInput.value = "";
@@ -5651,6 +5813,12 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
 }
 
 function buildBackupObject() {
+  if (typeof _verifyStoredTaskProjectReferences === "function") {
+    var exportRelationCheck = _verifyStoredTaskProjectReferences();
+    if (!exportRelationCheck.valid) {
+      throw new Error("تعذر تصدير النسخة: " + exportRelationCheck.reason);
+    }
+  }
   const raw = localStorage.getItem(STORAGE_KEY);
   const data = raw ? JSON.parse(raw) : buildEmptyV2();
   if (!data || typeof data !== "object" || Array.isArray(data)
@@ -6130,8 +6298,29 @@ function _restoreStorageSnapshot(rb) {
     }
   }
 
+  var restoredMainRaw = rb.main;
+  if (typeof normalizeLegacyTaskProjectReferences === "function"
+      && typeof validateTaskProjectReferences === "function") {
+    try {
+      var restoreMainData = restoredMainRaw === null ? { tasks: [] } : JSON.parse(restoredMainRaw);
+      if (!restoreMainData || typeof restoreMainData !== "object" || Array.isArray(restoreMainData)
+          || !Array.isArray(restoreMainData.tasks)) { markRecoveryRequired(); return false; }
+      var restoreNormalized = normalizeLegacyTaskProjectReferences(restoreMainData.tasks);
+      if (!restoreNormalized.valid) { markRecoveryRequired(); return false; }
+      restoreMainData.tasks = restoreNormalized.tasks;
+      if (restoredMainRaw !== null && typeof validateV2 === "function" && !validateV2(restoreMainData)) {
+        markRecoveryRequired(); return false;
+      }
+      if (restoredMainRaw !== null && restoreNormalized.changed) restoredMainRaw = JSON.stringify(restoreMainData);
+      var restoreProjects = rb.projects === null || rb.projects === "" ? [] : JSON.parse(rb.projects);
+      if (!Array.isArray(restoreProjects)) { markRecoveryRequired(); return false; }
+      var restoreLinks = validateTaskProjectReferences(restoreMainData.tasks, restoreProjects);
+      if (!restoreLinks.valid) { markRecoveryRequired(); return false; }
+    } catch (referenceError) { markRecoveryRequired(); return false; }
+  }
+
   var entries = [
-    [STORAGE_KEY, rb.main],
+    [STORAGE_KEY, restoredMainRaw],
     [FOCUS_SESSIONS_KEY, rb.focusSessions],
     [FOCUS_TIMER_KEY, rb.focusTimer],
     [MENTAL_INBOX_KEY, rb.mentalInbox],
@@ -6162,11 +6351,15 @@ function _restoreStorageSnapshot(rb) {
   }
 
   try {
-    for (var i = 0; i < entries.length; i++) {
-      writeAndVerify(entries[i][0], entries[i][1]);
+    for (var i = 0; i < entries.length; i++) writeAndVerify(entries[i][0], entries[i][1]);
+    if (typeof _verifyStoredTaskProjectReferences === "function") {
+      var restoredReferenceCheck = _verifyStoredTaskProjectReferences();
+      if (!restoredReferenceCheck.valid) {
+        throw new Error("تعذر التحقق من ارتباطات المهام والمشاريع بعد الاستعادة: " + restoredReferenceCheck.reason);
+      }
     }
     _invalidateProjectsCache();
-    if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(rb.main);
+    if (typeof _setMainStorageBaseline === "function") _setMainStorageBaseline(restoredMainRaw);
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = false;
     return true;
   } catch (restoreError) {
@@ -6240,6 +6433,14 @@ function _recoverInterruptedImport() {
 
 function showImportPreview(obj) {
   const d = obj.data;
+  if (typeof _verifyStoredTaskProjectReferences === "function") {
+    var currentRelationCheck = _verifyStoredTaskProjectReferences();
+    if (!currentRelationCheck.valid) {
+      storageRecoveryRequired = true;
+      showAlertModal("تعذر بدء الاستعادة", currentRelationCheck.reason + " عالج الحالة الحالية أو استعد نسخة سليمة قبل الاستيراد.");
+      return;
+    }
+  }
   const tasksCount = d.tasks.length;
   const logsCount = d.dailyLogs.length;
   const exportedAt = obj.exportedAt || "غير معروف";
@@ -6341,13 +6542,19 @@ function showImportPreview(obj) {
         };
 
         _healTaskArray(newData.tasks);
+        if (typeof normalizeLegacyTaskProjectReferences === "function") {
+          var importedProjectRefs = normalizeLegacyTaskProjectReferences(newData.tasks);
+          if (!importedProjectRefs.valid) {
+            showAlertModal("خطأ", "تعذر تطبيع مراجع المشاريع القديمة في النسخة الاحتياطية.");
+            return;
+          }
+          newData.tasks = importedProjectRefs.tasks;
+        }
         if (d.projects === undefined || d.projects === null) {
-          // Keep this device's project collection, but never attach imported
-          // tasks to a local project merely because a numeric ID happens to match.
-          newData.tasks.forEach(function(task) {
-            if (task && Object.prototype.hasOwnProperty.call(task, "projectId")) {
-              task.projectId = null;
-            }
+          // Keep this device's projects, but never attach imported tasks by coincidental ID.
+          newData.tasks = newData.tasks.map(function(task) {
+            if (!task || typeof task !== "object" || Array.isArray(task)) return task;
+            return Object.assign({}, task, { projectId: null });
           });
         }
 
@@ -6372,6 +6579,23 @@ function showImportPreview(obj) {
           showAlertModal("فشل الاستعادة", "تعذرت قراءة جميع البيانات اللازمة لتجهيز نقطة التراجع. لم تبدأ كتابة أي بيانات ولم يتغير التخزين الحالي.");
           return;
         }
+        if (typeof validateTaskProjectReferences === "function") {
+          var importProjectsCandidate;
+          try {
+            importProjectsCandidate = (d.projects !== undefined && d.projects !== null)
+              ? d.projects
+              : (_rollback.projects === null || _rollback.projects === "" ? [] : JSON.parse(_rollback.projects));
+          } catch (projectParseError) {
+            showAlertModal("فشل الاستعادة", "تعذر قراءة قائمة المشاريع اللازمة للتحقق من النسخة. لم تبدأ أي كتابة.");
+            return;
+          }
+          var importProjectLinks = validateTaskProjectReferences(newData.tasks, importProjectsCandidate);
+          if (!importProjectLinks.valid) {
+            showAlertModal("نسخة غير متسقة", importProjectLinks.reason + " لم تبدأ الاستعادة.");
+            return;
+          }
+        }
+
         var _expectedFocusTimerRaw = (d.focusTimer !== undefined && d.focusTimer !== null)
           ? JSON.stringify(d.focusTimer)
           : _rollback.focusTimer;
@@ -6586,6 +6810,21 @@ function showImportPreview(obj) {
           return;
         }
 
+        if (typeof _verifyStoredTaskProjectReferences === "function") {
+          var importedRelationReadback = _verifyStoredTaskProjectReferences();
+          if (!importedRelationReadback.valid) {
+            var _relationRollbackOk = _rollbackRestore(_rollback);
+            if (_relationRollbackOk) {
+              try { localStorage.removeItem(IMPORT_IN_PROGRESS_KEY); localStorage.removeItem(PRE_IMPORT_KEY); } catch (_relationCleanupError) {}
+            }
+            showAlertModal("فشل التحقق من ارتباطات النسخة",
+              importedRelationReadback.reason + (_relationRollbackOk
+                ? " تمت استعادة الحالة السابقة والتحقق منها."
+                : " تعذر التراجع الكامل؛ احتُفظ بعلامة الاسترداد ونسخة التراجع."));
+            return;
+          }
+        }
+
         try {
           localStorage.removeItem(IMPORT_IN_PROGRESS_KEY);
           if (localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== null) {
@@ -6668,9 +6907,39 @@ function undoLastImport() {
           showAlertModal("خطأ", "النسخة السابقة تالفة.");
           return;
         }
-        localStorage.setItem(STORAGE_KEY, raw);
-        if (localStorage.getItem(STORAGE_KEY) !== raw) {
+        if (typeof normalizeLegacyTaskProjectReferences === "function") {
+          var undoNormalizedRefs = normalizeLegacyTaskProjectReferences(parsed.tasks);
+          if (!undoNormalizedRefs.valid) {
+            showAlertModal("خطأ", "تعذر تطبيع مراجع المشاريع القديمة في نسخة التراجع.");
+            return;
+          }
+          parsed.tasks = undoNormalizedRefs.tasks;
+        }
+        if (typeof _readStoredProjectsForTaskReferenceValidation === "function"
+            && typeof validateTaskProjectReferences === "function") {
+          var undoProjects = _readStoredProjectsForTaskReferenceValidation();
+          if (!undoProjects.valid) {
+            showAlertModal("تعذر التحقق من المشاريع", undoProjects.reason);
+            return;
+          }
+          var undoLinks = validateTaskProjectReferences(parsed.tasks, undoProjects.projects);
+          if (!undoLinks.valid) {
+            showAlertModal("تعذر استعادة الارتباطات", undoLinks.reason + " لم تُكتب نسخة التراجع.");
+            return;
+          }
+        }
+        var normalizedUndoRaw = JSON.stringify(parsed);
+        localStorage.setItem(STORAGE_KEY, normalizedUndoRaw);
+        if (localStorage.getItem(STORAGE_KEY) !== normalizedUndoRaw) {
           throw new Error("فشل التحقق من البيانات الرئيسية");
+        }
+        if (typeof _verifyStoredTaskProjectReferences === "function") {
+          var undoReadback = _verifyStoredTaskProjectReferences();
+          if (!undoReadback.valid) {
+            if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+            showAlertModal("تعذر التحقق من الاستعادة", undoReadback.reason + " بقيت علامة الاسترداد للحماية.");
+            return;
+          }
         }
       }
 
@@ -6746,6 +7015,13 @@ function _writeMainStorageRecordVerified(raw) {
     return false;
   }
   if (!validateV2(candidate)) return false;
+  if (typeof _readStoredProjectsForTaskReferenceValidation === "function"
+      && typeof validateTaskProjectReferences === "function") {
+    var candidateProjects = _readStoredProjectsForTaskReferenceValidation();
+    if (!candidateProjects.valid) { storageRecoveryRequired = true; return false; }
+    var candidateLinks = validateTaskProjectReferences(candidate.tasks, candidateProjects.projects);
+    if (!candidateLinks.valid) { storageRecoveryRequired = true; return false; }
+  }
   try {
     localStorage.setItem(STORAGE_KEY, raw);
   } catch (writeError) {
@@ -6763,6 +7039,14 @@ function _writeMainStorageRecordVerified(raw) {
       storageRecoveryRequired = true;
       _mainStorageBaselineReady = false;
       return false;
+    }
+    if (typeof _verifyStoredTaskProjectReferences === "function") {
+      var storedRelationCheck = _verifyStoredTaskProjectReferences();
+      if (!storedRelationCheck.valid) {
+        storageRecoveryRequired = true;
+        _mainStorageBaselineReady = false;
+        return false;
+      }
     }
     _setMainStorageBaseline(verifiedRaw);
     return true;
@@ -6884,12 +7168,12 @@ function injectTestData() {
         testTasks.push({
           id: nextTestId++, name: "قراءة كتاب " + dateStr, type: "معرفية", status: "done",
           expected: 60, actual: 60 + (cfg.offset * 20), plannedDate: dateStr, plannedTime: "",
-          completedAt: dateStr + "T20:00:00", createdAt: Date.now(), _test: true
+          completedAt: dateStr + "T20:00:00", createdAt: Date.now(), projectId: null, _test: true
         });
         testTasks.push({
           id: nextTestId++, name: "مراجعة البريد " + dateStr, type: "إدارية", status: "done",
           expected: 30, actual: 32, plannedDate: dateStr, plannedTime: "",
-          completedAt: dateStr + "T21:00:00", createdAt: Date.now(), _test: true
+          completedAt: dateStr + "T21:00:00", createdAt: Date.now(), projectId: null, _test: true
         });
       });
       data.dailyLogs = data.dailyLogs.concat(testLogs);
@@ -10484,10 +10768,25 @@ function _saveProjects(arr) {
         || !_isValidProjectId(_recordToSave.id) || _projectIdsToSave.has(_recordToSave.id)) return false;
     _projectIdsToSave.add(_recordToSave.id);
   }
+  if (typeof _readStoredTasksForProjectReferenceValidation === "function"
+      && typeof validateTaskProjectReferences === "function") {
+    var storedTasksForProjectSave = _readStoredTasksForProjectReferenceValidation();
+    if (!storedTasksForProjectSave.valid) { storageRecoveryRequired = true; return false; }
+    var projectSaveLinks = validateTaskProjectReferences(storedTasksForProjectSave.tasks, arr);
+    if (!projectSaveLinks.valid) { storageRecoveryRequired = true; return false; }
+  }
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(PROJECTS_KEY, JSON.stringify(arr))) return false;
     _invalidateProjectsCache();
+    if (typeof _verifyStoredTaskProjectReferences === "function") {
+      var projectSaveReadback = _verifyStoredTaskProjectReferences();
+      if (!projectSaveReadback.valid) {
+        storageRecoveryRequired = true;
+        if (typeof _secondaryStorageConflicts !== "undefined") _secondaryStorageConflicts[PROJECTS_KEY] = true;
+        return false;
+      }
+    }
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("projects-save", 0);
     return true;
   } catch (e) {
