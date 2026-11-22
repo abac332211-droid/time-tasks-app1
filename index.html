@@ -5996,7 +5996,7 @@ function validateBackup(obj) {
       const project = d.projects[i];
       if (!project || typeof project !== "object" || Array.isArray(project))
         return { valid: false, reason: "المشروع رقم " + (i+1) + " تالف." };
-      if (!Number.isInteger(project.id) || project.id <= 0)
+      if (!_isValidProjectId(project.id))
         return { valid: false, reason: "معرّف مشروع غير صالح (" + (i+1) + ")." };
       if (projectIds.has(project.id))
         return { valid: false, reason: "معرّف مشروع مكرر: " + project.id + "." };
@@ -10382,6 +10382,16 @@ var _editingProjectId = null;
 var _projectFilter = "all";
 /* FIX H1 (R3): projects cache */
 var _projectsCache = null;
+function _isValidProjectId(id) {
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0;
+}
+
+function _parseProjectActionId(value) {
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) return null;
+  var id = Number(value);
+  return _isValidProjectId(id) && String(id) === value ? id : null;
+}
+
 function _invalidateProjectsCache() { _projectsCache = null; }
 
 function _loadProjects() {
@@ -10398,22 +10408,45 @@ function _loadProjects() {
     }
     // FIX F7 (N1): مصالحة بدل فلترة — لا نحذف أي مشروع، بل نُصلح التالف ونضع _healed
     var _pMaxId = 0;
+    var _pReservedIds = new Set();
     for (var _pi = 0; _pi < arr.length; _pi++) {
       var _px = arr[_pi];
-      if (_px && typeof _px === "object" && typeof _px.id === "number" && Number.isInteger(_px.id) && _px.id > _pMaxId) _pMaxId = _px.id;
+      if (_px && typeof _px === "object" && _isValidProjectId(_px.id)) {
+        _pReservedIds.add(_px.id);
+        if (_px.id > _pMaxId) _pMaxId = _px.id;
+      }
+    }
+    var _pUsedIds = new Set();
+    var _pCandidateId = _pMaxId < Number.MAX_SAFE_INTEGER ? _pMaxId + 1 : 1;
+    function _nextUnusedProjectId() {
+      while (_pReservedIds.has(_pCandidateId) || _pUsedIds.has(_pCandidateId)) {
+        _pCandidateId++;
+        if (!_isValidProjectId(_pCandidateId)) _pCandidateId = 1;
+      }
+      var allocatedId = _pCandidateId;
+      _pUsedIds.add(allocatedId);
+      _pReservedIds.add(allocatedId);
+      if (allocatedId > _pMaxId) _pMaxId = allocatedId;
+      _pCandidateId++;
+      if (!_isValidProjectId(_pCandidateId)) _pCandidateId = 1;
+      return allocatedId;
     }
     // Repairs remain in memory during reads/renders; the next explicit _saveProjects call persists them.
     var _pOut = [];
     for (var _pj = 0; _pj < arr.length; _pj++) {
       var _p = arr[_pj];
       if (!_p || typeof _p !== "object" || Array.isArray(_p)) {
-        _pMaxId++;
-        _pOut.push({ id: _pMaxId, name: "(مشروع تالف — تم استرداده)", description: "", status: "active", targetDate: "", createdAt: new Date().toISOString(), updatedAt: null, completedAt: null, _healed: true });
+        _pOut.push({ id: _nextUnusedProjectId(), name: "(مشروع تالف — تم استرداده)", description: "", status: "active", targetDate: "", createdAt: new Date().toISOString(), updatedAt: null, completedAt: null, _healed: true });
         continue;
       }
       var _p2 = _copyStorageRecord(_p);
       var _pHealed = false;
-      if (typeof _p2.id !== "number" || !Number.isInteger(_p2.id) || _p2.id <= 0) { _pMaxId++; _p2.id = _pMaxId; _pHealed = true; }
+      if (!_isValidProjectId(_p2.id) || _pUsedIds.has(_p2.id)) {
+        _p2.id = _nextUnusedProjectId();
+        _pHealed = true;
+      } else {
+        _pUsedIds.add(_p2.id);
+      }
       if (typeof _p2.name !== "string" || _p2.name.trim() === "") { _p2.name = "(بلا اسم)"; _pHealed = true; }
       if (VALID_PROJECT_STATUS.indexOf(_p2.status) === -1) { _p2.status = "active"; _pHealed = true; }
       if (typeof _p2.createdAt !== "string" || !_p2.createdAt) { _p2.createdAt = new Date().toISOString(); _pHealed = true; }
@@ -10434,6 +10467,14 @@ function _loadProjects() {
 }
 
 function _saveProjects(arr) {
+  if (!Array.isArray(arr)) return false;
+  var _projectIdsToSave = new Set();
+  for (var _si = 0; _si < arr.length; _si++) {
+    var _recordToSave = arr[_si];
+    if (!_recordToSave || typeof _recordToSave !== "object" || Array.isArray(_recordToSave)
+        || !_isValidProjectId(_recordToSave.id) || _projectIdsToSave.has(_recordToSave.id)) return false;
+    _projectIdsToSave.add(_recordToSave.id);
+  }
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(PROJECTS_KEY, JSON.stringify(arr))) return false;
@@ -10447,9 +10488,17 @@ function _saveProjects(arr) {
 }
 
 function _nextProjectId() {
-  var arr = _loadProjects(); var max = 0;
-  arr.forEach(function(p) { if (p.id > max) max = p.id; });
-  return max + 1;
+  var arr = _loadProjects();
+  var max = 0;
+  var seen = new Set();
+  for (var i = 0; i < arr.length; i++) {
+    if (!_isValidProjectId(arr[i].id) || seen.has(arr[i].id)) return null;
+    seen.add(arr[i].id);
+    if (arr[i].id > max) max = arr[i].id;
+  }
+  if (max >= Number.MAX_SAFE_INTEGER) return null;
+  var nextId = max + 1;
+  return _isValidProjectId(nextId) && !seen.has(nextId) ? nextId : null;
 }
 
 function saveProject() {
@@ -10463,6 +10512,7 @@ function saveProject() {
   if (!name) { showAlertModal("خطأ", "اكتب اسم المشروع"); return; }
   if (targetDate && !isValidCalendarDate(targetDate)) { showAlertModal("خطأ", "التاريخ غير صالح"); return; }
   if (_editingProjectId !== null) {
+    if (!_isValidProjectId(_editingProjectId)) { cancelProjectEdit(); return; }
     var arr = _loadProjects();
     var p = arr.find(function(x) { return x.id === _editingProjectId; });
     if (!p) { cancelProjectEdit(); return; }
@@ -10477,7 +10527,12 @@ function saveProject() {
     showToast("✏️ عُدّل المشروع");
   } else {
     var newArr = _loadProjects();
-    newArr.push({ id: _nextProjectId(), name: name.slice(0, 200), description: description.slice(0, 1000), status: "active", targetDate: targetDate, createdAt: new Date().toISOString(), updatedAt: null, completedAt: null });
+    var newProjectId = _nextProjectId();
+    if (!_isValidProjectId(newProjectId)) {
+      showAlertModal("تعذر إضافة المشروع", "تعذر إنشاء معرّف مشروع آمن جديد. راجع بيانات المشاريع قبل المتابعة.");
+      return;
+    }
+    newArr.push({ id: newProjectId, name: name.slice(0, 200), description: description.slice(0, 1000), status: "active", targetDate: targetDate, createdAt: new Date().toISOString(), updatedAt: null, completedAt: null });
     if (!_saveProjects(newArr)) { showToast("⚠️ تعذر الحفظ"); return; }
     clearProjectForm();
     renderProjects();
@@ -10491,6 +10546,7 @@ function clearProjectForm() {
 }
 
 function editProject(id) {
+  if (!_isValidProjectId(id)) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
@@ -10522,6 +10578,7 @@ function cancelProjectEdit() {
 }
 
 function deleteProject(id) {
+  if (!_isValidProjectId(id)) return;
   var projectsBefore = _loadProjects();
   var project = projectsBefore.find(function(item) { return item.id === id; });
   if (!project) return;
@@ -10621,7 +10678,7 @@ function deleteProject(id) {
   });
 }
 function setProjectStatus(id, status) {
-  if (VALID_PROJECT_STATUS.indexOf(status) === -1) return;
+  if (!_isValidProjectId(id) || VALID_PROJECT_STATUS.indexOf(status) === -1) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
@@ -10635,6 +10692,7 @@ function setProjectStatus(id, status) {
 }
 
 function toggleProjectStatus(id) {
+  if (!_isValidProjectId(id)) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
@@ -10678,7 +10736,8 @@ function renderProjects() {
     if (_order[a.status] !== _order[b.status]) return _order[a.status] - _order[b.status];
     return new Date(b.createdAt) - new Date(a.createdAt);
   });
-  var filtered = _projectFilter === "all" ? all : all.filter(function(p) { return p.status === _projectFilter; });
+  var filtered = (_projectFilter === "all" ? all : all.filter(function(p) { return p.status === _projectFilter; }))
+    .filter(function(p) { return p && _isValidProjectId(p.id); });
   if (filtered.length === 0) {
     list.innerHTML = '<div class="empty">' + (all.length === 0 ? "لا مشاريع بعد" : "لا مشاريع بهذه الحالة") + '</div>';
     return;
@@ -10697,11 +10756,24 @@ function renderProjects() {
     if (p.status === "completed") statusBadge = '<span class="badge done">✅ مكتمل</span>';
     else if (p.status === "paused") statusBadge = '<span class="badge soon">⏸ موقوف</span>';
     var descHtml = p.description ? '<div class="small" style="margin-top:4px;line-height:1.6;">' + escapeHTML(p.description) + '</div>' : '';
-    return '<div class="project-card status-' + p.status + '"><div class="project-header"><div class="project-title">🎯 ' + escapeHTML(p.name) + '</div><div>' + statusBadge + ' ' + daysTxt + '</div></div>' + descHtml + '<div class="progress" style="margin-top:10px;"><div class="progress-bar" style="width:' + prog.pct + '%"></div></div><div class="small" style="margin-top:6px;">' + prog.done + ' / ' + prog.total + ' مهمة — ' + prog.pct + '%</div><div class="actions" style="margin-top:10px;"><button type="button" class="btn-ghost" onclick="addTaskToProject(' + p.id + ')">➕ مهمة</button><button type="button" class="btn-ghost" onclick="toggleProjectStatus(' + p.id + ')">' + (p.status === "completed" ? "🔄 إعادة" : "✅ إتمام") + '</button><button type="button" class="btn-warning" onclick="editProject(' + p.id + ')">✏️</button><button type="button" class="btn-danger" onclick="deleteProject(' + p.id + ')">🗑️</button></div></div>';
+    return '<div class="project-card status-' + p.status + '"><div class="project-header"><div class="project-title">🎯 ' + escapeHTML(p.name) + '</div><div>' + statusBadge + ' ' + daysTxt + '</div></div>' + descHtml + '<div class="progress" style="margin-top:10px;"><div class="progress-bar" style="width:' + prog.pct + '%"></div></div><div class="small" style="margin-top:6px;">' + prog.done + ' / ' + prog.total + ' مهمة — ' + prog.pct + '%</div><div class="actions" style="margin-top:10px;"><button type="button" class="btn-ghost" data-project-action="add-task" data-project-id="' + p.id + '">➕ مهمة</button><button type="button" class="btn-ghost" data-project-action="toggle-status" data-project-id="' + p.id + '">' + (p.status === "completed" ? "🔄 إعادة" : "✅ إتمام") + '</button><button type="button" class="btn-warning" data-project-action="edit" data-project-id="' + p.id + '">✏️</button><button type="button" class="btn-danger" data-project-action="delete" data-project-id="' + p.id + '">🗑️</button></div></div>';
   }).join("");
+
+  list.querySelectorAll("[data-project-action]").forEach(function(button) {
+    button.addEventListener("click", function() {
+      var projectId = _parseProjectActionId(button.getAttribute("data-project-id"));
+      if (projectId === null) return;
+      var action = button.getAttribute("data-project-action");
+      if (action === "add-task") addTaskToProject(projectId);
+      else if (action === "toggle-status") toggleProjectStatus(projectId);
+      else if (action === "edit") editProject(projectId);
+      else if (action === "delete") deleteProject(projectId);
+    });
+  });
 }
 
 function addTaskToProject(projectId) {
+  if (!_isValidProjectId(projectId)) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === projectId; });
   if (!p) return;

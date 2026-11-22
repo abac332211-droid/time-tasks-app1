@@ -3218,3 +3218,148 @@ test('remaining HTML render sinks escape persisted free text and validate interp
   assert.ok(extractFunction('_loadThoughts').includes('typeof _t2.id !== "number"'));
   assert.ok(extractFunction('_loadProjects').includes('VALID_PROJECT_STATUS.indexOf(_p2.status) === -1'));
 });
+
+
+test('project IDs are positive safe integers and strict data attributes only parse canonical decimal IDs', () => {
+  const sandbox = {};
+  vm.runInNewContext(
+    extractFunction('_isValidProjectId') + '\n' + extractFunction('_parseProjectActionId'),
+    sandbox
+  );
+
+  for (const id of [1, 2, Number.MAX_SAFE_INTEGER]) assert.equal(sandbox._isValidProjectId(id), true);
+  for (const id of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '1', '1);globalThis.__p0Injected=1;//', null]) {
+    assert.equal(sandbox._isValidProjectId(id), false);
+  }
+  for (const value of ['1', '27', String(Number.MAX_SAFE_INTEGER)]) {
+    assert.equal(sandbox._parseProjectActionId(value), Number(value));
+  }
+  for (const value of ['', '0', '-1', '01', '1.0', '1e2', '9007199254740992', '1);globalThis.__p0Injected=1;//', null]) {
+    assert.equal(sandbox._parseProjectActionId(value), null);
+  }
+});
+
+test('project loading repairs invalid and duplicate IDs without retaining executable or unsafe values', () => {
+  const records = [
+    { id: 9, name: 'الأول' },
+    { id: 9, name: 'مكرر' },
+    { id: '10);globalThis.__p0Injected=1;//', name: 'قيمة مصطنعة' },
+    { id: 0, name: 'صفر' },
+    { id: Number.MAX_SAFE_INTEGER + 1, name: 'خارج النطاق الآمن' },
+    null,
+    { id: 1, name: 'رقم منخفض محفوظ' },
+    { id: Number.MAX_SAFE_INTEGER, name: 'الحد الأعلى الآمن' }
+  ];
+  const storage = new Map([['projects', JSON.stringify(records)]]);
+  const sandbox = {
+    _projectsCache: null,
+    PROJECTS_KEY: 'projects',
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
+    _trackSecondaryStorageRead: (_key, raw) => raw,
+    _preserveCorruptStorageSnapshot() {},
+    _copyStorageRecord: (record) => Object.assign({}, record),
+    localStorage: { getItem: (key) => storage.get(key) || null },
+    storageRecoveryRequired: false,
+    Date
+  };
+  vm.runInNewContext(
+    extractFunction('_isValidProjectId') + '\n' + extractFunction('_loadProjects') + '\n' + extractFunction('_nextProjectId'),
+    sandbox
+  );
+
+  const loaded = sandbox._loadProjects();
+  const ids = loaded.map((project) => project.id);
+  assert.equal(loaded.length, records.length);
+  assert.ok(ids.every((id) => sandbox._isValidProjectId(id)));
+  assert.equal(new Set(ids).size, ids.length, 'repaired IDs are unique');
+  assert.equal(ids[0], 9, 'the first valid occurrence retains its ID');
+  assert.notEqual(ids[1], 9, 'a duplicate ID is reassigned');
+  assert.equal(loaded[2].name, 'قيمة مصطنعة');
+  assert.notEqual(loaded[2].id, '10);globalThis.__p0Injected=1;//');
+  assert.equal(loaded.find((project) => project.name === 'رقم منخفض محفوظ').id, 1,
+    'a valid ID later in storage is reserved before any replacement is allocated');
+  assert.equal(loaded.find((project) => project.name === 'الحد الأعلى الآمن').id, Number.MAX_SAFE_INTEGER);
+  assert.equal(sandbox._nextProjectId(), null, 'ID allocation fails closed at the safe integer limit');
+});
+
+test('project persistence refuses invalid, unsafe, or duplicate IDs before writing', () => {
+  let writes = 0;
+  const sandbox = {
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified: () => { writes++; return true; },
+    _invalidateProjectsCache() {},
+    _storeRollingRecoveryBackup() { return true; }
+  };
+  vm.runInNewContext(
+    extractFunction('_isValidProjectId') + '\n' + extractFunction('_saveProjects'),
+    sandbox
+  );
+
+  for (const projects of [
+    [{ id: 0 }],
+    [{ id: -1 }],
+    [{ id: 2.5 }],
+    [{ id: Number.MAX_SAFE_INTEGER + 1 }],
+    [{ id: '5);globalThis.__p0Injected=1;//' }],
+    [{ id: 3 }, { id: 3 }]
+  ]) {
+    assert.equal(sandbox._saveProjects(projects), false);
+  }
+  assert.equal(writes, 0, 'invalid collections never reach storage');
+  assert.equal(sandbox._saveProjects([{ id: 3 }, { id: 4 }]), true);
+  assert.equal(writes, 1);
+});
+
+test('project operations reject fabricated IDs before lookup, confirmation, or mutation', () => {
+  let lookups = 0, confirmations = 0, prompts = 0, canceled = 0;
+  const sandbox = {
+    VALID_PROJECT_STATUS: ['active', 'completed', 'paused'],
+    _loadProjects() { lookups++; throw new Error('invalid ID must be rejected before lookup'); },
+    showConfirmModal() { confirmations++; },
+    showPromptModal() { prompts++; },
+    cancelProjectEdit() { canceled++; sandbox._editingProjectId = null; },
+    _editingProjectId: '1);globalThis.__p0Injected=1;//',
+    document: {
+      getElementById(id) {
+        const values = { projectName: 'اسم', projectDesc: '', projectTarget: '' };
+        return { value: values[id] || '' };
+      }
+    },
+    showAlertModal() {},
+    showToast() {}
+  };
+  vm.runInNewContext([
+    extractFunction('_isValidProjectId'),
+    extractFunction('editProject'),
+    extractFunction('deleteProject'),
+    extractFunction('setProjectStatus'),
+    extractFunction('toggleProjectStatus'),
+    extractFunction('addTaskToProject'),
+    extractFunction('saveProject')
+  ].join('\n'), sandbox);
+
+  const invalidIds = ['1);globalThis.__p0Injected=1;//', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, null];
+  for (const id of invalidIds) {
+    sandbox.editProject(id);
+    sandbox.deleteProject(id);
+    sandbox.setProjectStatus(id, 'completed');
+    sandbox.toggleProjectStatus(id);
+    sandbox.addTaskToProject(id);
+  }
+  sandbox.saveProject();
+  assert.equal(lookups, 0);
+  assert.equal(confirmations, 0);
+  assert.equal(prompts, 0);
+  assert.equal(canceled, 1, 'a corrupted edit identity is cleared before saving');
+});
+
+test('project cards bind action IDs through data attributes and never interpolate them into inline JavaScript', () => {
+  const renderer = extractFunction('renderProjects');
+  assert.doesNotMatch(renderer, /onclick\s*=/i);
+  assert.match(renderer, /data-project-action="add-task"/);
+  assert.match(renderer, /data-project-action="toggle-status"/);
+  assert.match(renderer, /data-project-action="edit"/);
+  assert.match(renderer, /data-project-action="delete"/);
+  assert.match(renderer, /addEventListener\("click"/);
+  assert.match(extractFunction('validateBackup'), /_isValidProjectId\(project\.id\)/);
+});
