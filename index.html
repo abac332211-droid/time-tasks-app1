@@ -5685,10 +5685,14 @@ function buildBackupObject() {
     throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
 
   var keys = [
-    ["main", STORAGE_KEY], ["focusSessions", FOCUS_SESSIONS_KEY],
+    ["main", STORAGE_KEY],
+    ["focusSessions", typeof FOCUS_SESSIONS_KEY !== "undefined" ? FOCUS_SESSIONS_KEY : null],
     ["focusTimer", typeof FOCUS_TIMER_KEY !== "undefined" ? FOCUS_TIMER_KEY : null],
-    ["mentalInbox", MENTAL_INBOX_KEY], ["thoughts", THOUGHTS_KEY], ["projects", PROJECTS_KEY],
-    ["focusSettings", FOCUS_SETTINGS_KEY], ["notifications", NOTIFICATIONS_KEY]
+    ["mentalInbox", typeof MENTAL_INBOX_KEY !== "undefined" ? MENTAL_INBOX_KEY : null],
+    ["thoughts", typeof THOUGHTS_KEY !== "undefined" ? THOUGHTS_KEY : null],
+    ["projects", typeof PROJECTS_KEY !== "undefined" ? PROJECTS_KEY : null],
+    ["focusSettings", typeof FOCUS_SETTINGS_KEY !== "undefined" ? FOCUS_SETTINGS_KEY : null],
+    ["notifications", typeof NOTIFICATIONS_KEY !== "undefined" ? NOTIFICATIONS_KEY : null]
   ];
   function readSnapshot() {
     var snapshot = {};
