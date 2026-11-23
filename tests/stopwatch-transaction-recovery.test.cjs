@@ -860,3 +860,21 @@ test('short-session discard resets under the transaction lock without task or se
   assert.equal(timer.pendingStopwatchTransaction, null);
   assert.ok(runtime.rollingSnapshots.includes('focus-session-discard'));
 });
+
+
+test('commit baselines reject a mismatch between durable and in-memory transaction journals', () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  timer.pendingStopwatchTransaction = {
+    version: 1, id: 'focus-durable-journal', taskId: 7,
+    previousActual: 5, targetActual: 8, previousTransactionId: null,
+    minutesToAdd: 3, durationSec: 125, sessionStartAt: timer.sessionStartAt,
+    mode: 'stopwatch', phase: 'work', clockAdjusted: false,
+    elapsedRemainderMs: 0, completed: true, createdAt: Date.now()
+  };
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const runtime = createRuntime(storage);
+  runtime.sandbox._focusTimer.pendingStopwatchTransaction = null;
+  const snapshot = runtime.sandbox._captureFocusTimerSnapshot();
+  assert.equal(runtime.sandbox._focusCommitBaselinesMatch(snapshot), null);
+});
