@@ -1910,7 +1910,8 @@ function resetAllHarness(faults = {}) {
 }
 test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
-  assert.equal(harness.run(), false);
+  harness.seedResetMarker();
+  assert.equal(harness.recover(), false);
 
   assert.ok(harness.removeCalls.includes('focus-timer'));
   assert.ok(harness.removeCalls.includes('focus-sessions'));
@@ -1935,7 +1936,8 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     notifications: 'notifications',
     backupA: 'rolling-backup-a',
     backupB: 'rolling-backup-b',
-    restoreMarker: 'rolling-restore-in-progress'
+    restoreMarker: 'rolling-restore-in-progress',
+    generation: 'rolling-backup-generation'
   };
   const values = new Map(Object.entries(initial));
   const writes = [];
@@ -1952,9 +1954,18 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     ROLLING_BACKUP_A_KEY: keys.backupA,
     ROLLING_BACKUP_B_KEY: keys.backupB,
     ROLLING_RESTORE_IN_PROGRESS_KEY: keys.restoreMarker,
+    ROLLING_BACKUP_GENERATION_KEY: keys.generation,
     Date,
     console,
     storageRecoveryRequired: false,
+    _rollingRecoveryBackupEpoch: 0,
+    _rollingRecoveryBackupPending: null,
+    _rollingRecoveryCheckpointHold: 0,
+    _stopwatchTransactionLockDepth: 0,
+    _rollingRecoveryBackupStale: false,
+    _rollingRecoveryBackupLastFailure: null,
+    _rollingRecoveryBackupLastSuccessAt: null,
+    _isOptionalRollingRecoveryBackupFailure: () => false,
     validateV2(data) {
       return !!data && data.schemaVersion === 2
         && Array.isArray(data.tasks) && Array.isArray(data.dailyLogs);
@@ -1994,7 +2005,8 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     }
   };
   vm.runInNewContext(
-    extractFunction('_parseRollingRecoveryBackup') + '\n'
+    extractFunction('_readPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_parseRollingRecoveryBackup') + '\n'
       + extractFunction('_getLatestRollingRecoveryBackup') + '\n'
       + extractFunction('_storeRollingRecoveryBackupLocked') + '\n'
       + extractFunction('_storeRollingRecoveryBackup') + '\n'
@@ -2125,10 +2137,10 @@ test('failed interrupted rolling-backup restoration preserves its marker and ver
   assert.equal(harness.values.get(harness.keys.restoreMarker), rawMarker);
 });
 
-test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', () => {
+test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', async () => {
   const faults = { throwOnRemoveKey: 'projects' };
   const harness = resetAllHarness(faults);
-  harness.run();
+  assert.equal(await harness.run(), false);
   const markerRaw = harness.values.get(harness.keys.resetInProgress);
   assert.ok(markerRaw, 'reset intent survives after the first reset attempt');
   const marker = JSON.parse(markerRaw);
@@ -2137,12 +2149,7 @@ test('resetAll leaves a persistent marker on partial deletion and startup recove
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 
   faults.throwOnRemoveKey = null;
-  const recover = vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
-    harness.sandbox
-  );
-  assert.equal(recover(), true);
+  assert.equal(harness.recover(), true);
   assert.equal(harness.values.has('projects'), false);
   assert.equal(harness.values.has(harness.keys.focusTimer), false);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
@@ -2153,10 +2160,10 @@ test('resetAll leaves a persistent marker on partial deletion and startup recove
     'reset preserves the notification preference');
 });
 
-test('resetAll does not change data when its durable marker cannot be written and verified', () => {
+test('resetAll does not change data when its durable marker cannot be written and verified', async () => {
   const harness = resetAllHarness({ throwOnSetKey: 'reset-in-progress' });
   const originalMain = harness.values.get('main');
-  harness.run();
+  assert.equal(await harness.run(), false);
   assert.equal(harness.values.get('main'), originalMain);
   assert.equal(harness.removeCalls.length, 0);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
@@ -2167,12 +2174,7 @@ test('interrupted reset recovery rejects an invalid marker without deleting any 
   const harness = resetAllHarness();
   const original = new Map(harness.values);
   harness.values.set(harness.keys.resetInProgress, '{broken');
-  const recover = vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
-    harness.sandbox
-  );
-  assert.equal(recover(), false);
+  assert.equal(harness.recover(), false);
   assert.equal(harness.values.get(harness.keys.resetInProgress), '{broken');
   assert.equal(harness.values.get('projects'), original.get('projects'));
   assert.equal(harness.values.get('focus-timer'), original.get('focus-timer'));
@@ -2224,9 +2226,9 @@ test('rolling recovery uses the timestamp to select the newest equal-sequence sl
     'the selected latest slot remains intact when sequence and timestamp are tied');
 });
 
-test('resetAll keeps its durable marker and original records when writing the empty main record fails', () => {
+test('resetAll keeps its durable marker and original records when writing the empty main record fails', async () => {
   const harness = resetAllHarness({ throwOnSetKey: 'main' });
-  harness.run();
+  assert.equal(await harness.run(), false);
   assert.equal(harness.values.get('main'), 'old-value');
   assert.ok(harness.values.get(harness.keys.resetInProgress));
   assert.equal(harness.values.get('projects'), 'old-value');
@@ -2234,22 +2236,17 @@ test('resetAll keeps its durable marker and original records when writing the em
   assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
 });
 
-test('reset recovery retains its marker when marker cleanup fails and can finish on retry', () => {
+test('reset recovery retains its marker when marker cleanup fails and can finish on retry', async () => {
   const faults = { throwOnRemoveKey: 'reset-in-progress' };
   const harness = resetAllHarness(faults);
-  harness.run();
+  assert.equal(await harness.run(), false);
   assert.ok(harness.values.get(harness.keys.resetInProgress));
   assert.equal(harness.values.get('main') !== 'old-value', true);
   assert.equal(harness.values.has('projects'), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 
   faults.throwOnRemoveKey = null;
-  const recover = vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
-    harness.sandbox
-  );
-  assert.equal(recover(), true);
+  assert.equal(harness.recover(), true);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
@@ -2415,7 +2412,7 @@ test('rolling recovery refuses a mixed multi-collection snapshot when another ta
   assert.equal(projectReads, 2);
 });
 
-test('resetAll also removes timestamped corruption snapshots from every auxiliary collection', () => {
+test('resetAll also removes timestamped corruption snapshots from every auxiliary collection', async () => {
   const harness = resetAllHarness();
   const corruptKeys = [
     'mental-inbox_corrupt_1700000000000',
@@ -2424,7 +2421,7 @@ test('resetAll also removes timestamped corruption snapshots from every auxiliar
   ];
   for (const key of corruptKeys) harness.values.set(key, 'preserved-corrupt-bytes');
 
-  harness.run();
+  assert.equal(await harness.run(), true);
 
   for (const key of corruptKeys) {
     assert.equal(harness.values.has(key), false, 'reset must remove hidden corrupt snapshot: ' + key);
@@ -2434,13 +2431,13 @@ test('resetAll also removes timestamped corruption snapshots from every auxiliar
   assert.ok(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)));
 });
 
-test('failed corruption-snapshot deletion keeps reset marker and startup retry removes the remaining snapshot', () => {
+test('failed corruption-snapshot deletion keeps reset marker and startup retry removes the remaining snapshot', async () => {
   const corruptKey = 'projects_corrupt_1700000000002';
   const faults = { throwOnRemoveKey: corruptKey };
   const harness = resetAllHarness(faults);
   harness.values.set(corruptKey, 'preserved-corrupt-bytes');
 
-  harness.run();
+  assert.equal(await harness.run(), false);
 
   assert.equal(harness.values.get(corruptKey), 'preserved-corrupt-bytes');
   assert.ok(harness.values.has(harness.keys.resetInProgress),
@@ -2448,7 +2445,7 @@ test('failed corruption-snapshot deletion keeps reset marker and startup retry r
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 
   faults.throwOnRemoveKey = null;
-  assert.equal(harness.sandbox._recoverInterruptedReset(), true);
+  assert.equal(harness.recover(), true);
   assert.equal(harness.values.has(corruptKey), false);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
