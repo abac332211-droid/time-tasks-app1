@@ -225,6 +225,13 @@ test('backup builder includes the paused focus timer and uses backup format v2',
     _getNotificationsPref: () => ({ enabled: false })
   };
   const buildBackup = vm.runInNewContext(`(${html.slice(sourceStart, sourceEnd + 2)})`, context);
+  context._focusTimer.pendingStopwatchTransaction = { version: 1, id: 'pending-stopwatch-tx' };
+  assert.throws(
+    () => buildBackup(),
+    /توجد عملية Stopwatch غير مكتملة/,
+    'an incomplete task/session transaction must not be exported without its recovery journal'
+  );
+  context._focusTimer.pendingStopwatchTransaction = null;
   const backup = buildBackup();
 
   assert.equal(backup.backupFormatVersion, 2);
