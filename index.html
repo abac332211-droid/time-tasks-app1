@@ -10307,6 +10307,9 @@ function _focusCommitBaselinesMatch(s) {
     }
     var timerRecord = timerRaw === null ? null : JSON.parse(timerRaw);
     if (!_focusTimerSnapshotMatchesRecord(s,timerRecord)) return null;
+    var durablePendingTransaction = timerRecord.pendingStopwatchTransaction || null;
+    var memoryPendingTransaction = _focusTimer.pendingStopwatchTransaction || null;
+    if (JSON.stringify(durablePendingTransaction) !== JSON.stringify(memoryPendingTransaction)) return null;
 
     var sessionRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
     if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines,FOCUS_SESSIONS_KEY)) {
