@@ -928,7 +928,9 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
     assert.equal(finalState.externalMain, false);
     assert.equal(finalState.externalTimer, false);
     assert.equal(finalState.timerConflict, false);
-    assert.equal(finalState.sessionsCache, null);
+    assert.ok(finalState.sessionsCache === null
+      || (Array.isArray(finalState.sessionsCache) && finalState.sessionsCache.length === 0),
+      'the old session-cache entries must be cleared; a fresh empty cache is valid');
     assert.equal(finalState.focusSettingsRaw, retainedSettingsRaw);
     assert.equal(finalState.focusSettingsBaseline, retainedSettingsRaw);
     assert.equal(finalState.focusSettingsWritable, true,
