@@ -10365,7 +10365,7 @@ function _commitFocusTaskSession(p) {
     .catch(function(e){
       if(_focusTimer&&_focusTimer.pendingStopwatchTransaction)storageRecoveryRequired=true;
       console.error("Focus session commit failed:",e);
-      showAlertModal("تعذر تأمين حفظ جلسة التركيز","لم نتابع عملية قد تتداخل مع نافذة أخرى؛ بقي المؤقت متوقفًا.");
+      showAlertModal("تعذر تأمين عملية Stopwatch","لم نتابع عملية قد تتداخل مع نافذة أخرى؛ بقي المؤقت متوقفًا.");
       return false;
     }).finally(function(){
       releaseHold();_focusCommitInFlight=false;
