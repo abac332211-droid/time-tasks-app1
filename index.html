@@ -5460,21 +5460,48 @@ function renderTypeGapAnalysis() {
  * phase already ended, preserve the pending confirmation instead of silently
  * losing the completed phase or logging it twice.
  */
+function _parseStrictFocusSessionTimestamp(value) {
+  if (typeof value !== "string") return null;
+  var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return null;
+
+  var year = Number(match[1]);
+  var month = Number(match[2]);
+  var day = Number(match[3]);
+  var hour = Number(match[4]);
+  var minute = Number(match[5]);
+  var second = Number(match[6]);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return null;
+
+  var leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  var monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (day < 1 || day > monthDays[month - 1]) return null;
+
+  if (match[8] !== "Z") {
+    var offsetHours = Number(match[8].slice(1, 3));
+    var offsetMinutes = Number(match[8].slice(4, 6));
+    if (offsetMinutes > 59 || offsetHours > 14
+        || (offsetHours === 14 && offsetMinutes !== 0)) return null;
+  }
+
+  var timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
 function _validateFocusSessionRecord(session) {
   if (!session || typeof session !== "object" || Array.isArray(session)) return false;
   if (session.id !== undefined
-      && (!Number.isInteger(session.id) || session.id <= 0)) return false;
+      && (!Number.isSafeInteger(session.id) || session.id <= 0)) return false;
   if (typeof session.durationSec !== "number"
       || !Number.isFinite(session.durationSec) || session.durationSec < 0) return false;
-  if (typeof session.startedAt !== "string" || !Number.isFinite(Date.parse(session.startedAt))) return false;
-  if (typeof session.endedAt !== "string" || !Number.isFinite(Date.parse(session.endedAt))) return false;
-  var startMs = Date.parse(session.startedAt);
-  var endMs = Date.parse(session.endedAt);
+  var startMs = _parseStrictFocusSessionTimestamp(session.startedAt);
+  var endMs = _parseStrictFocusSessionTimestamp(session.endedAt);
+  if (startMs === null || endMs === null) return false;
   if (endMs < startMs || Math.abs((endMs - startMs) - session.durationSec * 1000) > 2000) return false;
   if (session.mode !== "pomodoro" && session.mode !== "stopwatch") return false;
   if (!["work", "short-break", "long-break"].includes(session.phase)) return false;
   if (session.taskId !== undefined && session.taskId !== null
-      && (!Number.isInteger(session.taskId) || session.taskId <= 0)) return false;
+      && (!Number.isSafeInteger(session.taskId) || session.taskId <= 0)) return false;
   if (session.taskName !== undefined && session.taskName !== null
       && typeof session.taskName !== "string") return false;
   if (session.completed !== undefined && typeof session.completed !== "boolean") return false;
@@ -9116,6 +9143,11 @@ function _logSession(phase, durationSec, completed, endedAtMs) {
       session.mode === _focusTimer.mode && session.phase === phase;
   })) return true;
   var maxId = arr.reduce(function(m, s) { return Math.max(m, s.id || 0); }, 0);
+  var nextSessionId = maxId + 1;
+  if (!Number.isSafeInteger(nextSessionId) || nextSessionId <= 0) {
+    showToast("⚠️ تعذر إنشاء معرّف آمن لجلسة التركيز؛ لم تُسجّل");
+    return false;
+  }
   var taskName = "";
   if (_focusTimer.taskId) {
     var task = tasks.find(function(x) { return x.id === _focusTimer.taskId; });
@@ -9144,7 +9176,7 @@ function _logSession(phase, durationSec, completed, endedAtMs) {
     sessionEnd = computedEnd;
     clockAdjusted = true;
   }
-  arr.push({ id: maxId + 1, mode: _focusTimer.mode, phase: phase, taskId: _focusTimer.taskId,
+  arr.push({ id: nextSessionId, mode: _focusTimer.mode, phase: phase, taskId: _focusTimer.taskId,
     taskName: taskName, startedAt: sessionStartedAt, endedAt: sessionEndDate.toISOString(),
     durationSec: durationSec, completed: !!completed,
     clockAdjusted: clockAdjusted || undefined });
