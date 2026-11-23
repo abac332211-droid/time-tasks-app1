@@ -342,7 +342,7 @@ test('unlinked Stopwatch save failure keeps the frozen session available and doe
   assert.equal(h.calls.includes('reset'), false);
   assert.equal(h.timer.running, false);
   assert.equal(h.timer.baseElapsed, 75);
-  assert.ok(h.calls.some(call => Array.isArray(call) && /بقيت الجلسة متوقفة/.test(call[1])));
+  assert.ok(h.calls.some(call => Array.isArray(call) && call[0] === 'alert' && /بقيت الجلسة متوقفة/.test(call[2])));
 });
 
 test('unlinked Stopwatch discard resets the timer without logging a session', () => {
