@@ -10198,7 +10198,7 @@ function _showStopwatchSaveDialog(elapsedSec) {
     footer.appendChild(unlinked);
   }
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
-  if(_modalKeyHandler)document.removeEventListener('keydown',_modalKeyHandler);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler=function(e){if(e.key==='Escape'){e.preventDefault();cancel.click();}else trap(e);};
   document.addEventListener('keydown',_modalKeyHandler);
 }
@@ -10406,7 +10406,7 @@ function _commitFocusTaskSessionLocked(p) {
     if(!_withFocusCommitWrite(function(){return _recoverPendingStopwatchSave(true);}))return false;
   } else if(linked){
     if(_hasAmbiguousLegacyFocusSession(s.phase)){storageRecoveryRequired=true;
-      showAlertModal("جلسة قديمة تحتاج إلى مراجعة","توجد جلسة سابقة بلا معرّف معاملة موثوق؛ لم نضف الدقائق ولم نصفر المؤقت.");return false;}
+      showAlertModal("جلسة Stopwatch قديمة تحتاج إلى مراجعة","توجد جلسة سابقة بلا معرّف معاملة موثوق؛ لم نضف الدقائق ولم نصفر المؤقت.");return false;}
     var task=tasks.find(function(t){return t&&t.id===taskId;});
     if(!task){showAlertModal("المهمة غير موجودة","لم تعد المهمة المرتبطة موجودة في سجل المهام.");return false;}
     var previous=task.actual===undefined||task.actual===null?null:task.actual;
@@ -10688,7 +10688,7 @@ function finishTimer() {
   save.onclick=function(){closeModal();_applyTimerFinish(elapsed,task,minutes,snapshot.phase,snapshot);};
   footer.appendChild(cancel);footer.appendChild(edit);footer.appendChild(save);
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
-  if(_modalKeyHandler)document.removeEventListener('keydown',_modalKeyHandler);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler=function(e){if(e.key==='Escape'){e.preventDefault();cancel.click();}else trap(e);};
   document.addEventListener('keydown',_modalKeyHandler);
 }
@@ -10802,7 +10802,7 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
   };
   footer.appendChild(cancel);footer.appendChild(discard);footer.appendChild(save);
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
-  if(_modalKeyHandler)document.removeEventListener('keydown',_modalKeyHandler);
+  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
   _modalKeyHandler=function(e){if(e.key==='Escape'){e.preventDefault();cancel.click();}else trap(e);};
   document.addEventListener('keydown',_modalKeyHandler);
 }
