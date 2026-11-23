@@ -802,6 +802,12 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       null, { timeout: 20000 }
     )));
     const generationBefore = await pageA.evaluate(() => _readPersistedRollingBackupGeneration());
+    const retainedSettingsRaw = JSON.stringify({ workMin: 35, shortMin: 7, longMin: 20 });
+    const retainedNotificationsRaw = JSON.stringify({ enabled: true, permission: 'granted' });
+    await pageA.evaluate(({ settingsRaw, notificationsRaw }) => {
+      localStorage.setItem(FOCUS_SETTINGS_KEY, settingsRaw);
+      localStorage.setItem(NOTIFICATIONS_KEY, notificationsRaw);
+    }, { settingsRaw: retainedSettingsRaw, notificationsRaw: retainedNotificationsRaw });
     await Promise.all([pageA, pageB].map(page => page.evaluate(() => {
       _focusTimer.mode = 'stopwatch';
       _focusTimer.running = true;
@@ -881,7 +887,16 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       externalMain: _mainStorageExternalChangeObserved,
       externalTimer: _focusTimerExternalConflict,
       timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY],
-      sessionsCache: _sessionsCache
+      sessionsCache: _sessionsCache,
+      focusSettingsRaw: localStorage.getItem(FOCUS_SETTINGS_KEY),
+      focusSettingsBaseline: _secondaryStorageBaselines[FOCUS_SETTINGS_KEY],
+      focusSettingsWritable: _secondaryStorageWriteAllowed(FOCUS_SETTINGS_KEY),
+      notificationsRaw: localStorage.getItem(NOTIFICATIONS_KEY),
+      notificationsBaseline: _secondaryStorageBaselines[NOTIFICATIONS_KEY],
+      notificationsWritable: _secondaryStorageWriteAllowed(NOTIFICATIONS_KEY),
+      focusWorkSeconds: POMODORO_WORK_SEC,
+      focusShortBreakSeconds: POMODORO_SHORT_BREAK_SEC,
+      focusLongBreakSeconds: POMODORO_LONG_BREAK_SEC
     }));
     const otherWindowState = await pageB.evaluate(() => ({
       resetInFlight: _resetInFlight,
@@ -914,6 +929,17 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
     assert.equal(finalState.externalTimer, false);
     assert.equal(finalState.timerConflict, false);
     assert.equal(finalState.sessionsCache, null);
+    assert.equal(finalState.focusSettingsRaw, retainedSettingsRaw);
+    assert.equal(finalState.focusSettingsBaseline, retainedSettingsRaw);
+    assert.equal(finalState.focusSettingsWritable, true,
+      'preserved focus settings must have a synchronized secondary baseline after Reset');
+    assert.equal(finalState.notificationsRaw, retainedNotificationsRaw);
+    assert.equal(finalState.notificationsBaseline, retainedNotificationsRaw);
+    assert.equal(finalState.notificationsWritable, true,
+      'preserved notification settings must remain writable after Reset');
+    assert.equal(finalState.focusWorkSeconds, 35 * 60);
+    assert.equal(finalState.focusShortBreakSeconds, 7 * 60);
+    assert.equal(finalState.focusLongBreakSeconds, 20 * 60);
     assert.equal(otherWindowState.resetInFlight, false);
     assert.deepEqual(otherWindowState.timer, {
       mode: 'pomodoro',
