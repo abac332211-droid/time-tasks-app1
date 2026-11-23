@@ -52,6 +52,11 @@ function createStopwatchSaveHarness(options = {}) {
     storageRecoveryRequired: false,
     tasks: task ? [task] : [],
     console: { error() {}, warn() {} },
+    navigator: {
+      locks: {
+        request(_name, _options, callback) { return Promise.resolve().then(callback); }
+      }
+    },
     _sessionAlreadyLogged() { calls.push('alreadyLogged'); return logged; },
     _validatePendingStopwatchTransaction: () => true,
     _saveFocusTimer() { calls.push('saveTimer'); return true; },
@@ -122,7 +127,10 @@ function createStopwatchSaveHarness(options = {}) {
     showToast(message) { toasts.push(message); },
     showAlertModal(...args) { alerts.push(args); }
   };
-  vm.runInNewContext(extractFunction('_applyStopwatchSave'), sandbox);
+  vm.runInNewContext(
+    extractFunction('_withStopwatchTransactionLock') + '\n'
+      + extractFunction('_applyStopwatchSave'), sandbox
+  );
   return {
     sandbox, timer, task, calls, alerts, toasts,
     get logged() { return logged; },
@@ -132,10 +140,10 @@ function createStopwatchSaveHarness(options = {}) {
   };
 }
 
-test('Stopwatch save commits task time and session before resetting the paused timer', () => {
+test('Stopwatch save commits task time and session before resetting the paused timer', async () => {
   const h = createStopwatchSaveHarness({ actual: 5 });
 
-  h.sandbox._applyStopwatchSave(125, h.task, 3);
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
 
   assert.equal(h.task.actual, 8);
   assert.equal(h.logged, true);
@@ -150,10 +158,10 @@ test('Stopwatch save commits task time and session before resetting the paused t
   assert.ok(h.toasts.some(message => /أُضيفت 3 دقيقة/.test(message)));
 });
 
-test('Stopwatch does not log a session or retain task minutes when the task save fails', () => {
+test('Stopwatch does not log a session or retain task minutes when the task save fails', async () => {
   const h = createStopwatchSaveHarness({ actual: 5, saveDataResult: false });
 
-  h.sandbox._applyStopwatchSave(125, h.task, 3);
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
 
   assert.equal(h.task.actual, 5, 'the unverified main write must not remain as an in-memory commit');
   assert.equal(h.logged, false);
@@ -165,10 +173,10 @@ test('Stopwatch does not log a session or retain task minutes when the task save
   assert.equal(h.releaseCalls, 1);
 });
 
-test('Stopwatch keeps committed task minutes and a pending journal when session logging fails', () => {
+test('Stopwatch keeps committed task minutes and a pending journal when session logging fails', async () => {
   const h = createStopwatchSaveHarness({ actual: 5, logResult: false });
 
-  h.sandbox._applyStopwatchSave(125, h.task, 3);
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
 
   assert.equal(h.task.actual, 8, 'the verified task update remains committed while its session is pending');
   assert.equal(h.saveCalls, 1, 'the task update is written once; recovery must not roll it back and re-add it');
@@ -182,18 +190,18 @@ test('Stopwatch keeps committed task minutes and a pending journal when session 
   assert.match(h.alerts[0][0], /لم يكتمل استرداد Stopwatch/);
 });
 
-test('retry after a logged session but failed timer reset does not add the task minutes twice', () => {
+test('retry after a logged session but failed timer reset does not add the task minutes twice', async () => {
   const h = createStopwatchSaveHarness({
     actual: 5,
     resetResult(attempt) { return attempt > 1; }
   });
 
-  h.sandbox._applyStopwatchSave(125, h.task, 3);
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
   assert.equal(h.task.actual, 8);
   assert.equal(h.resetAttempts, 1);
   assert.equal(h.timer.baseElapsed, 125);
 
-  h.sandbox._applyStopwatchSave(125, h.task, 3);
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
   assert.equal(h.task.actual, 8, 'already-logged retry must not add the same minutes again');
   assert.equal(h.resetAttempts, 2);
   assert.equal(h.timer.baseElapsed, 0);
@@ -202,10 +210,10 @@ test('retry after a logged session but failed timer reset does not add the task 
   assert.ok(h.toasts.some(message => /استُكملت عملية Stopwatch المحفوظة دون تكرار/.test(message)));
 });
 
-test('an already logged Stopwatch session completes reset without changing task.actual', () => {
+test('an already logged Stopwatch session completes reset without changing task.actual', async () => {
   const h = createStopwatchSaveHarness({ actual: 11, alreadyLogged: true });
 
-  h.sandbox._applyStopwatchSave(125, h.task, 3);
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
 
   assert.equal(h.task.actual, 11);
   assert.equal(h.saveCalls, 0);

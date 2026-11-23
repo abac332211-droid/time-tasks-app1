@@ -1669,7 +1669,7 @@ function _pendingStopwatchWriteAllowed() {
 
 function _storageWriteAllowed() {
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
-  if (!_pendingStopwatchWriteAllowed()) return false;
+  if (typeof _pendingStopwatchWriteAllowed === 'function' && !_pendingStopwatchWriteAllowed()) return false;
   var blockingKeys = [];
   if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
   if (typeof MIGRATION_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(MIGRATION_IN_PROGRESS_KEY);
@@ -1681,7 +1681,7 @@ function _storageWriteAllowed() {
     }
     if (typeof _mainStorageBaselineReady !== "undefined" && _mainStorageBaselineReady) {
       var currentMainRaw = localStorage.getItem(STORAGE_KEY);
-      if (_mainStorageExternalChangeObserved || currentMainRaw !== _mainStorageBaselineRaw) return false;
+      if ((typeof _mainStorageExternalChangeObserved !== 'undefined' && _mainStorageExternalChangeObserved) || currentMainRaw !== _mainStorageBaselineRaw) return false;
     }
     return true;
   } catch (e) {
@@ -3120,12 +3120,13 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return fail("recovery_required");
   if (typeof _rollingRecoveryCheckpointHold !== "undefined"
       && _rollingRecoveryCheckpointHold > 0) return true;
-  if (_mainStorageExternalChangeObserved || _focusTimerExternalConflict
-      || Object.keys(_secondaryStorageConflicts || {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
+  if ((typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
+      || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)
+      || Object.keys(typeof _secondaryStorageConflicts !== "undefined" ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
     return fail("external_storage_conflict");
   // A pending Stopwatch transaction must be completed before a mixed rolling
   // snapshot can be published. Its durable journal lives in the timer record.
-  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction) return true;
+  if (typeof _focusTimer !== "undefined" && _focusTimer && _focusTimer.pendingStopwatchTransaction) return true;
   try {
     var blockingKeys = [];
     if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
@@ -3173,9 +3174,10 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       var property = snapshotKeys[verifyIndex][0];
       if (data[property] !== confirmationSnapshot[property]) return fail("snapshot_conflict");
     }
-    if (_mainStorageBaselineReady && data.main !== _mainStorageBaselineRaw)
+    if (typeof _mainStorageBaselineReady !== "undefined" && _mainStorageBaselineReady
+        && data.main !== _mainStorageBaselineRaw)
       return fail("external_storage_conflict");
-    var trackedBaselines = _secondaryStorageBaselines || {};
+    var trackedBaselines = typeof _secondaryStorageBaselines !== "undefined" ? _secondaryStorageBaselines : {};
     for (var baselineIndex = 0; baselineIndex < snapshotKeys.length; baselineIndex++) {
       var baselineEntry = snapshotKeys[baselineIndex];
       if (Object.prototype.hasOwnProperty.call(trackedBaselines, baselineEntry[1])
@@ -3456,7 +3458,7 @@ function _recoverInterruptedReset() {
 }
 
 function saveData() {
-  if (storageRecoveryRequired) {
+  if (typeof storageRecoveryRequired !== 'undefined' && storageRecoveryRequired) {
     console.error("saveData: refusing write — data recovery required");
     showAlertModal("تنبيه الحفظ", "البيانات القديمة لم تُرحَّل بعد. استعدها من نسخة احتياطية، أو احذف كل البيانات من الإعدادات.");
     return false;
@@ -3521,7 +3523,7 @@ function saveData() {
       }
     }
 
-    if (!_pendingStopwatchWriteAllowed()) {
+    if (typeof _pendingStopwatchWriteAllowed === 'function' && !_pendingStopwatchWriteAllowed()) {
       showAlertModal("تعارض معاملة Stopwatch", "توجد معاملة مؤقت محفوظة في نافذة أخرى. أوقفنا الكتابة حتى يكتمل الاسترداد.");
       return false;
     }
@@ -3566,7 +3568,7 @@ function saveData() {
         showAlertModal("تعارض بين النوافذ", "تغير سجل المهام أثناء تجهيز الكتابة. لم نستبدل البيانات الأحدث.");
         return false;
       }
-      if (!_pendingStopwatchWriteAllowed()) {
+      if (typeof _pendingStopwatchWriteAllowed === 'function' && !_pendingStopwatchWriteAllowed()) {
         showAlertModal("تعارض معاملة Stopwatch", "ظهرت معاملة مؤقت غير مملوكة لهذه النافذة قبل الكتابة؛ أوقفنا الحفظ.");
         return false;
       }
@@ -5675,8 +5677,9 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
 function buildBackupObject() {
   if (storageRecoveryRequired)
     throw new Error("تعذر تصدير النسخة: توجد حالة استرداد أو تعارض تخزين غير محسوم.");
-  if (_mainStorageExternalChangeObserved || _focusTimerExternalConflict
-      || Object.keys(_secondaryStorageConflicts || {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
+  if ((typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
+      || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)
+      || Object.keys(typeof _secondaryStorageConflicts !== "undefined" ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
     throw new Error("تعذر تصدير النسخة: هذه النافذة قديمة أو توجد تغييرات في نافذة أخرى. أعد تحميل التطبيق أولًا.");
   if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction)
     throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
@@ -5692,9 +5695,10 @@ function buildBackupObject() {
     return snapshot;
   }
   var rawSnapshot = readSnapshot();
-  if (_mainStorageBaselineReady && rawSnapshot.main !== _mainStorageBaselineRaw)
+  if (typeof _mainStorageBaselineReady !== "undefined" && _mainStorageBaselineReady
+      && rawSnapshot.main !== _mainStorageBaselineRaw)
     throw new Error("تعذر تصدير النسخة: تغير سجل المهام منذ تحميل هذه النافذة.");
-  var baselines = _secondaryStorageBaselines || {};
+  var baselines = typeof _secondaryStorageBaselines !== "undefined" ? _secondaryStorageBaselines : {};
   for (var bi = 0; bi < keys.length; bi++) {
     var item = keys[bi];
     if (Object.prototype.hasOwnProperty.call(baselines, item[1])
@@ -5752,8 +5756,9 @@ function buildBackupObject() {
     if (rawSnapshot[property] !== confirmation[property])
       throw new Error("تعذر تصدير النسخة: تغيرت البيانات أثناء تجهيز اللقطة. أعد المحاولة بعد إعادة تحميل التطبيق.");
   }
-  if (_mainStorageExternalChangeObserved || _focusTimerExternalConflict
-      || Object.keys(_secondaryStorageConflicts || {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
+  if ((typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
+      || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)
+      || Object.keys(typeof _secondaryStorageConflicts !== "undefined" ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
     throw new Error("تعذر تصدير النسخة: رُصد تعارض تخزين أثناء إنشاء اللقطة.");
   return backup;
 }

@@ -341,6 +341,16 @@ test('a stale page refuses manual and rolling backups while another page has a p
       null, { timeout: 20000 }
     )));
     const pendingId = await pageA.evaluate(() => {
+      // Startup reconciliation in the second page may legitimately write default metadata.
+      // Refresh the owner page's in-memory main record and durable-key baselines before the test.
+      loadData();
+      _loadFocusTimer();
+      _setMainStorageBaseline(localStorage.getItem(STORAGE_KEY));
+      _mainStorageExternalChangeObserved = false;
+      _focusTimerExternalConflict = false;
+      _secondaryStorageConflicts = Object.create(null);
+      _secondaryStorageBaselines[FOCUS_TIMER_KEY] = localStorage.getItem(FOCUS_TIMER_KEY);
+      _secondaryStorageBaselines[FOCUS_SESSIONS_KEY] = localStorage.getItem(FOCUS_SESSIONS_KEY);
       const task = tasks.find(item => item.id === 7021);
       const release = _acquireRollingRecoveryCheckpointHold(true);
       try {
