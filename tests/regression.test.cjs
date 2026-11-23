@@ -1564,36 +1564,40 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   };
 }
 
-test('failed session logging rolls task.actual back even when its old value is null and keeps the session for retry', () => {
-  const harness = transitionDialogHarness({ saveResults: [true, true], logResult: false });
-  assert.equal(harness.footer.children.length, 3);
-  harness.footer.children[2].onclick();
-
-  assert.equal(harness.task.actual, null);
-  assert.equal(harness.timer.running, false);
-  assert.equal(harness.timer.baseElapsed, 120);
-  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
-  assert.match(harness.alerts[0][0], /تعذر تسجيل الجلسة/);
+test('transition save delegates a frozen snapshot and switches only after an explicit true callback', () => {
+  const h=transitionDialogHarness({switchResult:true});
+  assert.equal(h.elements.modalFooter.children.length,3);
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,1);
+  assert.equal(h.commits[0].minutesToAdd,2);
+  assert.equal(Object.isFrozen(h.commits[0].snapshot),true);
+  assert.equal(h.task.actual,null,'the UI dialog must not mutate task.actual outside the transaction engine');
+  assert.equal(h.counts().switchCalls,1);
 });
 
-test('failed session logging reports inconsistency if rollback persistence also fails', () => {
-  const harness = transitionDialogHarness({ saveResults: [true, false], logResult: false });
-  harness.footer.children[2].onclick();
-
-  assert.equal(harness.task.actual, null, 'the in-memory value is still restored');
-  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
-  assert.match(harness.alerts[0][0], /فشل تسجيل الجلسة والتراجع/);
-  assert.equal(harness.sandbox.storageRecoveryRequired, true,
-    'normal writes must be blocked when task compensation failed');
-  assert.deepEqual(harness.checkpoints, [],
-    'the intermediate task write must not become a rolling recovery checkpoint');
+test('transition failure does not invoke the next-session callback', () => {
+  const h=transitionDialogHarness({commitResult:false,switchResult:true});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.counts().switchCalls,0);
+  assert.equal(h.task.actual,null);
 });
 
-test('transition dialog is not opened when the initial paused-timer checkpoint fails', () => {
-  const harness = transitionDialogHarness({ checkpointResult: false });
-  assert.equal(harness.footer, undefined, 'the modal is not constructed when the initial checkpoint fails');
-  assert.equal(harness.alerts.length, 1);
-  assert.deepEqual(harness.counts(), { saveCalls: 0, resetCalls: 0, switchCalls: 0, renderCalls: 0 });
+test('transition dialog is not opened when the initial frozen checkpoint fails', () => {
+  const h=transitionDialogHarness({checkpointResult:false});
+  assert.equal(h.elements.modalFooter,undefined);
+  assert.equal(h.alerts.length,1);
+  assert.equal(h.counts().freezeCalls,1);
+});
+
+test('cancel transition from an originally paused timer keeps it paused', () => {
+  const h=transitionDialogHarness({initiallyRunning:false});
+  assert.equal(h.timer.running,false);
+  h.elements.modalFooter.children[0].onclick();
+  assert.equal(h.timer.running,false);
+  assert.equal(h.timer.baseElapsed,120);
+  assert.equal(h.counts().switchCalls,0);
 });
 
 test('failed timer-transition checkpoint pauses safely and suppresses the success notification', () => {
