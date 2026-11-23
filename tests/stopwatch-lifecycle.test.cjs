@@ -422,24 +422,10 @@ test('unlinked Stopwatch discard resets the timer without logging a session', ()
 });
 
 
-test('linked legacy Stopwatch session without transaction ID is held for review at previousActual', async () => {
-  const h = createStopwatchSaveHarness({ actual: 5, legacySessionAmbiguous: true });
-  await h.sandbox._applyStopwatchSave(125, h.task, 3);
-  assert.equal(h.task.actual, 5);
-  assert.equal(h.saveCalls, 0);
-  assert.equal(h.resetAttempts, 0);
-  assert.equal(h.timer.baseElapsed, 125);
-  assert.equal(h.sandbox.storageRecoveryRequired, true);
-  assert.match(String(h.alerts[0][0]), /جلسة Stopwatch قديمة تحتاج إلى مراجعة/);
+test('Stopwatch save wrapper refuses to delegate without a verified frozen snapshot', async () => {
+  const h=createStopwatchSaveHarness();
+  h.sandbox._captureFocusTimerSnapshot=()=>null;
+  assert.equal(await h.sandbox._applyStopwatchSave(125,h.task,3),false);
+  assert.equal(h.calls.length,0);
 });
 
-test('linked legacy Stopwatch session remains ambiguous at targetActual', async () => {
-  const h = createStopwatchSaveHarness({ actual: 8, legacySessionAmbiguous: true });
-  await h.sandbox._applyStopwatchSave(125, h.task, 3);
-  assert.equal(h.task.actual, 8);
-  assert.equal(h.saveCalls, 0);
-  assert.equal(h.resetAttempts, 0);
-  assert.equal(h.timer.baseElapsed, 125);
-  assert.equal(h.sandbox.storageRecoveryRequired, true);
-  assert.match(String(h.alerts[0][0]), /جلسة Stopwatch قديمة تحتاج إلى مراجعة/);
-});
