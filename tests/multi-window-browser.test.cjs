@@ -957,7 +957,11 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
 test('retryStorageRecovery keeps writes blocked while queued and after injected cleanup failure', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
-  await withBrowserPages(async ({ pageA }) => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
+      null, { timeout: 20000 }
+    )));
     const outcome = await pageA.evaluate(async () => {
       const originalReload = _reloadAfterVerifiedOperation;
       _reloadAfterVerifiedOperation = function() {};
@@ -1092,7 +1096,11 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
 test('startup reset recovery waits for the shared lock and makes an older queued backup callback inert', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
-  await withBrowserPages(async ({ pageA, context }) => {
+  await withBrowserPages(async ({ pageA, pageB, context }) => {
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
+      null, { timeout: 20000 }
+    )));
     await pageA.waitForFunction(
       () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
       null, { timeout: 20000 }
