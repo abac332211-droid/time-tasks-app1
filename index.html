@@ -8165,10 +8165,16 @@ function _getFocusTimerElapsedParts() {
       }
       var previousMonotonicSample = _focusMonotonicLastSample;
       var previousWallSample = _focusMonotonicLastWallSample;
+      var monotonicDeltaSinceSample = Number.isFinite(previousMonotonicSample)
+        ? monoNow - previousMonotonicSample : 0;
+      var wallDeltaSinceSample = Number.isFinite(previousWallSample)
+        ? wallNow - previousWallSample : 0;
+      // Android WebView may advance performance.now() by a few milliseconds
+      // after sleep without accounting for the full suspended interval. Detect
+      // the wall/monotonic gap, not only an exactly frozen monotonic reading.
       if (Number.isFinite(previousMonotonicSample)
           && Number.isFinite(previousWallSample)
-          && monoNow === previousMonotonicSample
-          && wallNow - previousWallSample > 120000) {
+          && wallDeltaSinceSample - monotonicDeltaSinceSample > 120000) {
         // A present but frozen monotonic source cannot prove time spent in device sleep.
         // Keep the last trusted sample, pause, and require the user to resume explicitly.
         var trustedElapsedMs = remainder + Math.max(0, previousMonotonicSample - _focusMonotonicStart);
@@ -8215,10 +8221,24 @@ function _getFocusTimerElapsedParts() {
   if (_focusFallbackLastWall === null) _focusFallbackLastWall = fallbackNow;
   var fallbackDelta = fallbackNow - _focusFallbackLastWall;
   if (fallbackDelta < 0 || fallbackDelta > 120000) {
+    // Date.now() is the only available clock here. After a large discontinuity
+    // it cannot prove how much time elapsed, so pause instead of silently
+    // continuing with an unannounced corrected timeline.
     _focusTimer.clockAdjusted = true;
-  } else {
-    _focusFallbackElapsedMs += fallbackDelta;
+    var trustedFallbackMs = remainder + _focusFallbackElapsedMs;
+    _focusTimer.baseElapsed = base + Math.floor(trustedFallbackMs / 1000);
+    _focusElapsedRemainderMs = trustedFallbackMs % 1000;
+    _focusTimer.running = false;
+    _focusTimer.startedAt = null;
+    if (typeof _stopDisplayTick === "function") _stopDisplayTick();
+    return {
+      seconds: _focusTimer.baseElapsed,
+      remainderMs: _focusElapsedRemainderMs,
+      monotonicNow: null,
+      wallNow: null
+    };
   }
+  _focusFallbackElapsedMs += fallbackDelta;
   _focusFallbackLastWall = fallbackNow;
   var totalFallbackMs = remainder + _focusFallbackElapsedMs;
   return {
@@ -8245,7 +8265,7 @@ function _handleFocusTimerClockDiscontinuity() {
   var saved = _saveFocusTimer();
   showAlertModal(
     "⏸ أُوقف المؤقت للتحقق من الساعة",
-    "تقدّم توقيت الجهاز بينما بقيت الساعة الرتيبة دون تقدم. احتُفظ بالوقت حتى آخر قراءة موثوقة فقط؛ لم تُحتسب فترة الغياب، ولم تُسجّل جلسة أو تنتقل مرحلة تلقائيًا. راجع ساعة الجهاز، ثم اضغط «ابدأ» يدويًا للاستئناف." +
+    "اكتشف التطبيق فجوة زمنية لا تسمح الساعة المتاحة بقياسها بثقة. احتُفظ بالوقت حتى آخر قراءة موثوقة فقط؛ لم تُحتسب الفترة غير الموثوقة، ولم تُسجّل جلسة أو تنتقل مرحلة تلقائيًا. راجع ساعة الجهاز، ثم اضغط «ابدأ» يدويًا للاستئناف." +
       (saved ? "" : "<br><br>تعذر تأكيد حفظ حالة الإيقاف. لا تغلق التطبيق قبل التحقق من التخزين.")
   );
 }
