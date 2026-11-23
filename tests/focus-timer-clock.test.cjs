@@ -177,7 +177,7 @@ test('B6: losing performance.now mid-session switches to fallback without losing
   assert.equal(h.sandbox._getElapsedSec(), 6);
 });
 
-test('B6 fallback preserves the last monotonic sample across a wall-clock correction', () => {
+test('B6 fallback preserves the last monotonic sample and pauses on large wall-clock corrections', () => {
   const backward = createClockHarness();
   backward.clock.mono = 3_000;
   backward.clock.wall += 3_000;
@@ -185,8 +185,14 @@ test('B6 fallback preserves the last monotonic sample across a wall-clock correc
   backward.clock.performanceAvailable = false;
   backward.clock.wall -= 30 * 60 * 1000;
   assert.equal(backward.sandbox._getElapsedSec(), 3);
+  assert.equal(backward.timer.running, false);
   backward.clock.wall += 1_000;
-  assert.equal(backward.sandbox._getElapsedSec(), 4);
+  assert.equal(backward.sandbox._getElapsedSec(), 3, 'a backward correction cannot resume the timer');
+  backward.timer.running = true;
+  backward.timer.startedAt = backward.clock.wall;
+  backward.sandbox._anchorFocusTimerClock(backward.timer.startedAt);
+  backward.clock.wall += 1_000;
+  assert.equal(backward.sandbox._getElapsedSec(), 4, 'manual resume starts a new fallback segment');
 
   const forward = createClockHarness();
   forward.clock.mono = 3_000;
@@ -195,8 +201,14 @@ test('B6 fallback preserves the last monotonic sample across a wall-clock correc
   forward.clock.performanceAvailable = false;
   forward.clock.wall += 30 * 60 * 1000;
   assert.equal(forward.sandbox._getElapsedSec(), 3);
+  assert.equal(forward.timer.running, false);
   forward.clock.wall += 1_000;
-  assert.equal(forward.sandbox._getElapsedSec(), 4);
+  assert.equal(forward.sandbox._getElapsedSec(), 3, 'a forward correction cannot resume the timer');
+  forward.timer.running = true;
+  forward.timer.startedAt = forward.clock.wall;
+  forward.sandbox._anchorFocusTimerClock(forward.timer.startedAt);
+  forward.clock.wall += 1_000;
+  assert.equal(forward.sandbox._getElapsedSec(), 4, 'manual resume starts a new fallback segment');
 });
 
 test('throwing or non-finite performance.now safely uses the fallback clock', () => {
