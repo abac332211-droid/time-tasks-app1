@@ -791,3 +791,315 @@ test('real Chromium pages release Web Lock after owner callback Promise rejects'
     assert.equal(await pageB.evaluate(() => _stopwatchTransactionLockDepth), 0);
   });
 });
+
+
+test('two real Chromium pages serialize concurrent Reset transactions and both report success', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
+      null, { timeout: 20000 }
+    )));
+    const generationBefore = await pageA.evaluate(() => _readPersistedRollingBackupGeneration());
+    await pageA.evaluate(() => {
+      window.__resetLockAcquired = false;
+      window.__releaseResetLock = null;
+      window.__resetLockHolder = navigator.locks.request(
+        'timeTasksApp-stopwatch-transaction', { mode: 'exclusive' }, async () => {
+          window.__resetLockAcquired = true;
+          await new Promise(resolve => { window.__releaseResetLock = resolve; });
+        }
+      );
+    });
+    await pageA.waitForFunction(() => window.__resetLockAcquired === true,
+      null, { timeout: 5000 });
+
+    await pageA.evaluate(() => { window.__resetPromiseA = _executeResetAllTransaction(); });
+    await pageB.evaluate(() => { window.__resetPromiseB = _executeResetAllTransaction(); });
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._resetInFlight === true,
+      null, { timeout: 5000 }
+    )));
+    await pageA.waitForFunction(async () => {
+      const state = await navigator.locks.query();
+      return (state.pending || []).filter(lock =>
+        lock.name === 'timeTasksApp-stopwatch-transaction'
+      ).length >= 2;
+    }, null, { timeout: 5000 });
+
+    const started = await Promise.all([
+      pageA.evaluate(() => ({
+        promise: !!window.__resetPromiseA && typeof window.__resetPromiseA.then === 'function',
+        inFlight: _resetInFlight
+      })),
+      pageB.evaluate(() => ({
+        promise: !!window.__resetPromiseB && typeof window.__resetPromiseB.then === 'function',
+        inFlight: _resetInFlight
+      }))
+    ]);
+    assert.deepEqual(started, [
+      { promise: true, inFlight: true },
+      { promise: true, inFlight: true }
+    ], 'both Reset operations must have started before the shared lock is released');
+
+    await pageA.evaluate(() => window.__releaseResetLock());
+    await pageA.evaluate(() => window.__resetLockHolder);
+    const results = await Promise.all([
+      pageA.evaluate(() => window.__resetPromiseA),
+      pageB.evaluate(() => window.__resetPromiseB)
+    ]);
+    assert.deepEqual(results, [true, true],
+      'both reset operations must resolve explicitly to true');
+
+    const finalState = await pageA.evaluate(() => ({
+      generation: _readPersistedRollingBackupGeneration(),
+      marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
+      main: JSON.parse(localStorage.getItem(STORAGE_KEY)),
+      resetInFlight: _resetInFlight
+    }));
+    const otherWindowState = await pageB.evaluate(() => ({ resetInFlight: _resetInFlight }));
+    assert.equal(finalState.generation, generationBefore + 2,
+      'each completed reset must advance the shared generation exactly once');
+    assert.equal(finalState.marker, null, 'the durable reset marker must be removed');
+    assert.deepEqual(finalState.main.tasks, []);
+    assert.deepEqual(finalState.main.dailyLogs, []);
+    assert.equal(finalState.resetInFlight, false);
+    assert.equal(otherWindowState.resetInFlight, false);
+  });
+});
+
+test('retryStorageRecovery keeps writes blocked while queued and after injected cleanup failure', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA }) => {
+    const outcome = await pageA.evaluate(async () => {
+      const originalReload = _reloadAfterVerifiedOperation;
+      _reloadAfterVerifiedOperation = function() {};
+      let holder = null;
+      let originalRemove = null;
+      try {
+        const emptyMain = JSON.stringify(buildEmptyV2());
+        const generationBefore = _readPersistedRollingBackupGeneration();
+        localStorage.setItem(RESET_IN_PROGRESS_KEY, JSON.stringify({
+          version: 1,
+          main: emptyMain,
+          generation: generationBefore + 1
+        }));
+        localStorage.setItem(THOUGHTS_KEY,
+          '[{"id":1,"text":"must be removed","createdAt":"2026-01-01T00:00:00Z"}]');
+        storageRecoveryRequired = true;
+
+        let releaseHolder;
+        let acquiredHolder;
+        const acquired = new Promise(resolve => { acquiredHolder = resolve; });
+        const hold = new Promise(resolve => { releaseHolder = resolve; });
+        holder = navigator.locks.request(
+          'timeTasksApp-stopwatch-transaction', { mode: 'exclusive' }, async () => {
+            acquiredHolder();
+            await hold;
+          }
+        );
+        await acquired;
+
+        const retryPromise = retryStorageRecovery();
+        const pendingPromise = _retryResetRecoveryPromise;
+        const waitingState = {
+          hasPromise: !!pendingPromise && typeof pendingPromise.then === 'function',
+          retryInFlight: _resetRecoveryInFlight,
+          recoveryRequired: storageRecoveryRequired,
+          writesAllowed: _storageWriteAllowed(),
+          saveResult: saveData(),
+          mainUnchanged: localStorage.getItem(STORAGE_KEY) !== null
+        };
+        releaseHolder();
+        await holder;
+        const recovered = await retryPromise;
+        const successState = {
+          recovered,
+          retryInFlight: _resetRecoveryInFlight,
+          recoveryRequired: storageRecoveryRequired,
+          marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
+          thoughts: localStorage.getItem(THOUGHTS_KEY),
+          generation: _readPersistedRollingBackupGeneration()
+        };
+
+        const nextGeneration = _readPersistedRollingBackupGeneration();
+        localStorage.setItem(RESET_IN_PROGRESS_KEY, JSON.stringify({
+          version: 1,
+          main: emptyMain,
+          generation: nextGeneration + 1
+        }));
+        localStorage.setItem(THOUGHTS_KEY,
+          '[{"id":2,"text":"retain marker on failure","createdAt":"2026-01-01T00:00:00Z"}]');
+        storageRecoveryRequired = true;
+        originalRemove = Storage.prototype.removeItem;
+        Storage.prototype.removeItem = function(key) {
+          if (String(key) === THOUGHTS_KEY) throw new Error('INJECTED_REMOVE_FAILURE');
+          return originalRemove.call(this, key);
+        };
+        let failedRetry;
+        try {
+          failedRetry = await retryStorageRecovery();
+        } finally {
+          Storage.prototype.removeItem = originalRemove;
+          originalRemove = null;
+        }
+        const failureState = {
+          result: failedRetry,
+          retryInFlight: _resetRecoveryInFlight,
+          recoveryRequired: storageRecoveryRequired,
+          markerPresent: localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
+        };
+
+        // The fixture is isolated to this browser context; clean it after the
+        // assertions have captured the intentionally failed recovery state.
+        const cleanup = await _recoverInterruptedResetWithLock({ keepRecoveryLock: false });
+        if (cleanup) {
+          storageRecoveryRequired = false;
+          loadData();
+          _captureMainStorageBaseline();
+        }
+        return { waitingState, successState, failureState, cleanup };
+      } finally {
+        if (originalRemove) Storage.prototype.removeItem = originalRemove;
+        _reloadAfterVerifiedOperation = originalReload;
+      }
+    });
+
+    assert.equal(outcome.waitingState.hasPromise, true);
+    assert.equal(outcome.waitingState.retryInFlight, true,
+      'retry must set its in-flight guard before requesting the lock');
+    assert.equal(outcome.waitingState.recoveryRequired, true);
+    assert.equal(outcome.waitingState.writesAllowed, false);
+    assert.equal(outcome.waitingState.saveResult, false);
+    assert.equal(outcome.waitingState.mainUnchanged, true);
+    assert.equal(outcome.successState.recovered, true);
+    assert.equal(outcome.successState.retryInFlight, false);
+    assert.equal(outcome.successState.recoveryRequired, false);
+    assert.equal(outcome.successState.marker, null);
+    assert.equal(outcome.successState.thoughts, null);
+    assert.equal(outcome.failureState.result, false);
+    assert.equal(outcome.failureState.retryInFlight, false);
+    assert.equal(outcome.failureState.recoveryRequired, true);
+    assert.equal(outcome.failureState.markerPresent, true,
+      'a failed delete must retain the durable marker and write protection');
+    assert.equal(outcome.cleanup, true);
+  });
+});
+
+test('startup reset recovery waits for the shared lock and makes an older queued backup callback inert', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA, context }) => {
+    await pageA.waitForFunction(
+      () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
+      null, { timeout: 20000 }
+    );
+    const generationBefore = await pageA.evaluate(() => _readPersistedRollingBackupGeneration());
+    await pageA.evaluate(() => {
+      window.__startupLockAcquired = false;
+      window.__releaseStartupLock = null;
+      window.__startupLockHolder = navigator.locks.request(
+        'timeTasksApp-stopwatch-transaction', { mode: 'exclusive' }, async () => {
+          window.__startupLockAcquired = true;
+          await new Promise(resolve => { window.__releaseStartupLock = resolve; });
+        }
+      );
+    });
+    await pageA.waitForFunction(() => window.__startupLockAcquired === true,
+      null, { timeout: 5000 });
+
+    await pageA.evaluate(() => {
+      const current = _readPersistedRollingBackupGeneration();
+      localStorage.setItem(RESET_IN_PROGRESS_KEY, JSON.stringify({
+        version: 1,
+        main: JSON.stringify(buildEmptyV2()),
+        generation: current + 1
+      }));
+    });
+    const startupPage = await context.newPage();
+    const appUrl = await pageA.evaluate(() => location.href);
+    await startupPage.goto(appUrl);
+    await startupPage.waitForFunction(() => _startupResetRecoveryInFlight === true,
+      null, { timeout: 10000 });
+    const startupWaiting = await startupPage.evaluate(() => ({
+      recoveryInFlight: _startupResetRecoveryInFlight,
+      writesAllowed: _storageWriteAllowed(),
+      appInitCompleted: _appInitCompleted
+    }));
+    assert.equal(startupWaiting.recoveryInFlight, true);
+    assert.equal(startupWaiting.writesAllowed, false);
+    assert.equal(startupWaiting.appInitCompleted, false,
+      'normal application initialization must wait for reset recovery');
+
+    await pageA.evaluate(() => {
+      _storeRollingRecoveryBackup('queued-before-startup-reset-recovery', 0);
+      if (!_rollingRecoveryBackupPending
+          || typeof _rollingRecoveryBackupPending.then !== 'function') {
+        throw new Error('Expected an older rolling-backup request queued behind the lock');
+      }
+      // These sentinels are installed after queueing. A stale callback must
+      // not clear or overwrite them when it resumes after the reset generation.
+      _rollingRecoveryBackupLastFailure = 'STALE_CALLBACK_SENTINEL';
+      _rollingRecoveryBackupStale = false;
+    });
+    await pageA.evaluate(() => window.__releaseStartupLock());
+    await pageA.evaluate(() => window.__startupLockHolder);
+    const startupRecovered = await startupPage.evaluate(() => _startupResetRecoveryPromise);
+    await startupPage.waitForFunction(() => _appInitCompleted === true,
+      null, { timeout: 20000 });
+    await pageA.waitForFunction(() => _rollingRecoveryBackupPending === null,
+      null, { timeout: 10000 });
+
+    const recoveredState = await startupPage.evaluate(() => ({
+      recoveryRequired: storageRecoveryRequired,
+      marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
+      generation: _readPersistedRollingBackupGeneration(),
+      main: JSON.parse(localStorage.getItem(STORAGE_KEY)).tasks
+    }));
+    const staleCallbackState = await pageA.evaluate(() => ({
+      lastFailure: _rollingRecoveryBackupLastFailure,
+      stale: _rollingRecoveryBackupStale
+    }));
+    assert.equal(startupRecovered, true);
+    assert.equal(recoveredState.recoveryRequired, false);
+    assert.equal(recoveredState.marker, null);
+    assert.equal(recoveredState.generation, generationBefore + 1);
+    assert.deepEqual(recoveredState.main, []);
+    assert.equal(staleCallbackState.lastFailure, 'STALE_CALLBACK_SENTINEL');
+    assert.equal(staleCallbackState.stale, false);
+    await startupPage.close();
+  });
+});
+
+test('Reset uses a documented best-effort path when Web Locks is unavailable', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA }) => {
+    const state = await pageA.evaluate(async () => {
+      const generationBefore = _readPersistedRollingBackupGeneration();
+      Object.defineProperty(navigator, 'locks', {
+        configurable: true,
+        value: undefined
+      });
+      const result = await _executeResetAllTransaction();
+      return {
+        result,
+        generationBefore,
+        generationAfter: _readPersistedRollingBackupGeneration(),
+        marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
+        main: JSON.parse(localStorage.getItem(STORAGE_KEY)),
+        resetInFlight: _resetInFlight,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    assert.equal(state.result, true);
+    assert.equal(state.generationAfter, state.generationBefore + 1);
+    assert.equal(state.marker, null);
+    assert.deepEqual(state.main.tasks, []);
+    assert.deepEqual(state.main.dailyLogs, []);
+    assert.equal(state.resetInFlight, false);
+    assert.equal(state.recoveryRequired, false);
+  });
+});
