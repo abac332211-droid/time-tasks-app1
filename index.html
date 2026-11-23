@@ -1482,6 +1482,7 @@ const RESET_IN_PROGRESS_KEY = "timeTasksApp_resetInProgress";
 const ROLLING_BACKUP_A_KEY = "timeTasksApp_recoveryBackupA";
 const ROLLING_BACKUP_B_KEY = "timeTasksApp_recoveryBackupB";
 const ROLLING_RESTORE_IN_PROGRESS_KEY = "timeTasksApp_rollingRestoreInProgress";
+const ROLLING_BACKUP_GENERATION_KEY = "timeTasksApp_recoveryBackupGeneration";
 const TEST_FLAG_KEY = "timeTasksApp_testInjected";
 const TEST_BACKUP_KEY = "timeTasksApp_testBackup";
 const CURRENT_SCHEMA_VERSION = 2;
@@ -1508,6 +1509,14 @@ let storageRecoveryRequired = false;
 var _rollingRecoveryCheckpointHold = 0;
 var _stopwatchTransactionLockDepth = 0;
 var _rollingRecoveryBackupPending = null;
+var _rollingRecoveryBackupEpoch = 0;
+var _startupResetRecoveryInFlight = false;
+var _startupResetRecoveryPromise = null;
+var _resetRecoveryInFlight = false;
+var _retryResetRecoveryPromise = null;
+var _resetInFlight = false;
+var _resetAllPendingPromise = null;
+var _appInitCompleted = false;
 var _rollingRecoveryBackupLastFailure = null;
 var _rollingRecoveryBackupLastSuccessAt = null;
 var _rollingRecoveryBackupStale = false;
@@ -1658,6 +1667,9 @@ function _pendingStopwatchWriteAllowed() {
 }
 
 function _storageWriteAllowed() {
+  if (typeof _startupResetRecoveryInFlight !== "undefined" && _startupResetRecoveryInFlight) return false;
+  if (typeof _resetRecoveryInFlight !== "undefined" && _resetRecoveryInFlight) return false;
+  if (typeof _resetInFlight !== "undefined" && _resetInFlight) return false;
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
   if (typeof _pendingStopwatchWriteAllowed === 'function' && !_pendingStopwatchWriteAllowed()) return false;
   var blockingKeys = [];
@@ -2800,27 +2812,29 @@ function _setupSystemThemeListener() {
   else if (media && typeof media.addListener === "function") media.addListener(onChange);
 }
 
-function loadData() {
-  if (!_recoverInterruptedReset()) {
+function loadData(options) {
+  var opts = options || {};
+  var keepRecoveryLock = opts.keepRecoveryLock === true;
+  if (!_recoverInterruptedReset({ keepRecoveryLock: keepRecoveryLock })) {
     storageRecoveryRequired = true;
     showAlertModal("إعادة ضبط غير مكتملة",
       "بدأ حذف البيانات في جلسة سابقة ولم يكتمل تنظيف التخزين. احتفظ بالتطبيق مفتوحًا وأعد محاولة الاسترداد قبل متابعة العمل.");
-    return;
+    return false;
   }
   if (!_recoverInterruptedRollingRestore()) {
     storageRecoveryRequired = true;
     showAlertModal("استعادة نسخة داخلية غير مكتملة",
       "توقفت استعادة نسخة داخلية قبل اكتمالها. احتفظ بعلامة الاسترداد والنسخة المصدر، وأعد محاولة الاسترداد قبل متابعة العمل.");
-    return;
+    return false;
   }
   if (!_recoverInterruptedImport()) {
     storageRecoveryRequired = true;
     showAlertModal("تعذر استرداد استعادة منقطعة",
       "اكتشف التطبيق عملية استيراد لم تكتمل، لكنه لم يستطع التحقق من نسخة التراجع. لم تُحذف النسخة الاحتياطية أو علامة الاسترداد. صدّر الملفات المتاحة وراجع مساحة التخزين قبل المتابعة.");
-    return;
+    return false;
   }
   const report = migrateV1ToV2();
-  storageRecoveryRequired = !report.success;
+  storageRecoveryRequired = !report.success || keepRecoveryLock;
   if (!report.success) {
     console.error("Migration failed:", report.error);
     try {
@@ -2838,7 +2852,7 @@ function loadData() {
     setTimeout(function() {
       showAlertModal("تعذر ترقية البيانات", "السبب: " + report.error + "<br>بياناتك الأصلية محفوظة ولم تُلمس.");
     }, 400);
-    return;
+    return false;
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -2849,9 +2863,14 @@ function loadData() {
       _loadAppSettings(data.settings || {});
       createdByVersion = data.createdByVersion || APP_VERSION;
       _applyThemePreference();
-    } else tasks = [];
-  } catch (e) { tasks = []; }
-
+    } else {
+      tasks = [];
+      if (keepRecoveryLock) return false;
+    }
+  } catch (e) {
+    tasks = [];
+    if (keepRecoveryLock) return false;
+  }
 
   try {
     if (tasks.length > 0) {
@@ -2883,6 +2902,8 @@ function loadData() {
     if (report.recoveredFromBackup) lines.unshift("ℹ️ تم الاستعادة من النسخة الاحتياطية.");
     setTimeout(function() { showAlertModal("ترقية النظام", lines.join("<br>")); }, 400);
   }
+  if (keepRecoveryLock) storageRecoveryRequired = true;
+  return true;
 }
 
 /* ============ قائمة التحقق الفرعية ============ */
@@ -3101,21 +3122,40 @@ function _getLatestRollingRecoveryBackup() {
 function _storeRollingRecoveryBackup(reason, minIntervalMs) {
   if (typeof _stopwatchTransactionLockDepth === "number"
       && _stopwatchTransactionLockDepth > 0) {
-    return _storeRollingRecoveryBackupLocked(reason, minIntervalMs);
+    return _storeRollingRecoveryBackupLocked(reason, minIntervalMs,
+      _readPersistedRollingBackupGeneration());
   }
   if (typeof _rollingRecoveryCheckpointHold !== "undefined"
       && _rollingRecoveryCheckpointHold > 0) return true;
+
+  var expectedGeneration = _readPersistedRollingBackupGeneration();
+  if (expectedGeneration === null) {
+    _rollingRecoveryBackupLastFailure = "generation_read_failed";
+    _rollingRecoveryBackupStale = true;
+    storageRecoveryRequired = true;
+    return false;
+  }
+  var expectedEpoch = _rollingRecoveryBackupEpoch;
 
   if (typeof navigator !== "undefined" && navigator.locks
       && typeof navigator.locks.request === "function") {
     _rollingRecoveryBackupLastFailure = "lock_pending";
     _rollingRecoveryBackupStale = true;
     var request = _withStopwatchTransactionLock(function() {
-      return _storeRollingRecoveryBackupLocked(reason, minIntervalMs);
+      // A request queued before Reset becomes inert after the durable
+      // generation changes. Do not call the writer or alter recovery flags.
+      if (expectedEpoch !== _rollingRecoveryBackupEpoch
+          || _readPersistedRollingBackupGeneration() !== expectedGeneration) {
+        return { stale: true };
+      }
+      return _storeRollingRecoveryBackupLocked(reason, minIntervalMs, expectedGeneration);
     });
     _rollingRecoveryBackupPending = request;
     request.then(function(saved) {
       if (_rollingRecoveryBackupPending === request) _rollingRecoveryBackupPending = null;
+      if (expectedEpoch !== _rollingRecoveryBackupEpoch
+          || _readPersistedRollingBackupGeneration() !== expectedGeneration
+          || (saved && saved.stale)) return;
       if (saved === false) {
         if (_isOptionalRollingRecoveryBackupFailure()) {
           _rollingRecoveryBackupStale = true;
@@ -3128,6 +3168,8 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       }
     }).catch(function(error) {
       if (_rollingRecoveryBackupPending === request) _rollingRecoveryBackupPending = null;
+      if (expectedEpoch !== _rollingRecoveryBackupEpoch
+          || _readPersistedRollingBackupGeneration() !== expectedGeneration) return;
       _rollingRecoveryBackupLastFailure = "lock_failed";
       _rollingRecoveryBackupStale = true;
       storageRecoveryRequired = true;
@@ -3138,12 +3180,15 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
     return false;
   }
 
-  // Without Web Locks this build cannot start or recover task-linked Stopwatch
-  // transactions. Preserve the double-read snapshot fallback for other data.
-  return _storeRollingRecoveryBackupLocked(reason, minIntervalMs);
+  // Best effort without Web Locks: synchronous local work is safe within this
+  // task, but cross-window Reset/backup races cannot be made atomic.
+  return _storeRollingRecoveryBackupLocked(reason, minIntervalMs, expectedGeneration);
 }
 
-function _storeRollingRecoveryBackupLocked(reason, minIntervalMs) {
+function _storeRollingRecoveryBackupLocked(reason, minIntervalMs, expectedGeneration) {
+  if (expectedGeneration === undefined) expectedGeneration = _readPersistedRollingBackupGeneration();
+  if (expectedGeneration === null
+      || _readPersistedRollingBackupGeneration() !== expectedGeneration) return false;
   _rollingRecoveryBackupLastFailure = null;
   var failureStage = "recovery_marker_read_failed";
   var publication = null;
@@ -3292,6 +3337,9 @@ function _storeRollingRecoveryBackupLocked(reason, minIntervalMs) {
 
     // Record both previous slot values before publication. A rejected
     // candidate is rolled back only when the target still contains our bytes.
+    if (_readPersistedRollingBackupGeneration() !== expectedGeneration)
+      return fail("stale_generation");
+
     publication = {
       targetKey: targetKey,
       otherKey: otherKey,
@@ -3330,6 +3378,9 @@ function _storeRollingRecoveryBackupLocked(reason, minIntervalMs) {
           || finalTimer.pendingStopwatchTransaction)
         return fail("snapshot_conflict");
     }
+
+    if (_readPersistedRollingBackupGeneration() !== expectedGeneration)
+      return fail("stale_generation");
 
     publication = null;
     _rollingRecoveryBackupLastFailure = null;
@@ -3454,6 +3505,98 @@ function _restoreLatestRollingRecoveryBackup() {
   return _recoverInterruptedRollingRestore();
 }
 
+function _readPersistedRollingBackupGeneration() {
+  try {
+    var raw = localStorage.getItem(ROLLING_BACKUP_GENERATION_KEY);
+    if (raw === null) return 0;
+    if (!/^(0|[1-9]\\d*)$/.test(raw)) return null;
+    var value = Number(raw);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _setPersistedRollingBackupGeneration(expectedCurrent, nextValue) {
+  if (!Number.isSafeInteger(expectedCurrent) || expectedCurrent < 0
+      || !Number.isSafeInteger(nextValue) || nextValue !== expectedCurrent + 1) return false;
+  try {
+    if (_readPersistedRollingBackupGeneration() !== expectedCurrent) return false;
+    localStorage.setItem(ROLLING_BACKUP_GENERATION_KEY, String(nextValue));
+    return _readPersistedRollingBackupGeneration() === nextValue;
+  } catch (e) {
+    console.error("Could not persist rolling-backup generation:", e);
+    return false;
+  }
+}
+
+function _advancePersistedRollingBackupGeneration() {
+  var current = _readPersistedRollingBackupGeneration();
+  if (current === null || current >= Number.MAX_SAFE_INTEGER) return null;
+  var nextValue = current + 1;
+  return _setPersistedRollingBackupGeneration(current, nextValue) ? nextValue : null;
+}
+
+function _invalidateRollingRecoveryBackupRequests() {
+  _rollingRecoveryBackupEpoch = (Number.isSafeInteger(_rollingRecoveryBackupEpoch)
+    ? _rollingRecoveryBackupEpoch : 0) + 1;
+  // This does not cancel an already queued Promise. Its captured epoch and
+  // persisted generation make its eventual callback inert.
+  _rollingRecoveryBackupPending = null;
+  _rollingRecoveryBackupStale = true;
+}
+
+function _withResetTransactionLock(callback) {
+  if (typeof callback !== "function")
+    return Promise.reject(new Error("A reset transaction callback is required."));
+  if (typeof navigator !== "undefined" && navigator.locks
+      && typeof navigator.locks.request === "function") {
+    return _withStopwatchTransactionLock(callback);
+  }
+  // Best effort only: without Web Locks, localStorage offers no cross-window
+  // compare-and-swap primitive, so simultaneous resets cannot be made atomic.
+  try {
+    return Promise.resolve(callback());
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
+function _recoverInterruptedResetWithLock(options) {
+  var opts = {
+    fromResetTransaction: false,
+    keepRecoveryLock: !!(options && options.keepRecoveryLock)
+  };
+  if (typeof navigator !== "undefined" && navigator.locks
+      && typeof navigator.locks.request === "function") {
+    return _withStopwatchTransactionLock(function() {
+      return _recoverInterruptedReset(opts);
+    });
+  }
+  try {
+    return Promise.resolve(_recoverInterruptedReset(opts));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
+function _resetSecondaryStorageTrackingAfterReset() {
+  if (typeof _secondaryStorageKeys !== "undefined" && Array.isArray(_secondaryStorageKeys)) {
+    for (var i = 0; i < _secondaryStorageKeys.length; i++) {
+      _secondaryStorageBaselines[_secondaryStorageKeys[i]] = null;
+      delete _secondaryStorageConflicts[_secondaryStorageKeys[i]];
+    }
+  }
+  if (typeof _mainStorageExternalChangeObserved !== "undefined")
+    _mainStorageExternalChangeObserved = false;
+  if (typeof _focusTimerExternalConflict !== "undefined")
+    _focusTimerExternalConflict = false;
+  if (typeof _focusTimerConflictNoticeShown !== "undefined")
+    _focusTimerConflictNoticeShown = false;
+  if (typeof _sessionsCache !== "undefined") _sessionsCache = null;
+  _invalidateRollingRecoveryBackupRequests();
+}
+
 function _resetStorageRemovalKeys() {
   var keys = [
     IMPORT_IN_PROGRESS_KEY,
@@ -3476,6 +3619,7 @@ function _resetStorageRemovalKeys() {
   // A full user-requested reset must remove these too, not just the live keys.
   var corruptPrefixes = [
     MENTAL_INBOX_KEY + "_corrupt_",
+    FOCUS_SESSIONS_KEY + "_corrupt_",
     THOUGHTS_KEY + "_corrupt_",
     PROJECTS_KEY + "_corrupt_"
   ];
@@ -3496,26 +3640,56 @@ function _resetStorageRemovalKeys() {
   return keys;
 }
 
-function _recoverInterruptedReset() {
+function _recoverInterruptedReset(options) {
+  var opts = options || {};
   var markerRaw;
   try {
     markerRaw = localStorage.getItem(RESET_IN_PROGRESS_KEY);
   } catch (e) {
+    storageRecoveryRequired = true;
     return false;
   }
   if (markerRaw === null) return true;
 
+  // When Web Locks exists, reset replay is only allowed inside the shared
+  // exclusive lock. loadData() outside that lock must fail closed.
+  if (typeof navigator !== "undefined" && navigator.locks
+      && typeof navigator.locks.request === "function"
+      && !(typeof _stopwatchTransactionLockDepth === "number"
+        && _stopwatchTransactionLockDepth > 0)) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+
+  storageRecoveryRequired = true;
   try {
     var marker = JSON.parse(markerRaw);
     if (!marker || typeof marker !== "object" || Array.isArray(marker)
-        || marker.version !== 1 || typeof marker.main !== "string") {
-      return false;
-    }
+        || marker.version !== 1 || typeof marker.main !== "string") return false;
     var emptyMain = JSON.parse(marker.main);
     if (!validateV2(emptyMain) || !Array.isArray(emptyMain.tasks)
         || emptyMain.tasks.length !== 0 || !Array.isArray(emptyMain.dailyLogs)
-        || emptyMain.dailyLogs.length !== 0) {
+        || emptyMain.dailyLogs.length !== 0) return false;
+
+    var persistedGeneration = _readPersistedRollingBackupGeneration();
+    if (persistedGeneration === null) return false;
+
+    // Upgrade legacy reset markers once. Persist the target generation in the
+    // marker first, so a crash between the two writes is replayable idempotently.
+    if (marker.generation === undefined) {
+      if (persistedGeneration >= Number.MAX_SAFE_INTEGER) return false;
+      marker.generation = persistedGeneration + 1;
+      var upgradedMarkerRaw = JSON.stringify(marker);
+      localStorage.setItem(RESET_IN_PROGRESS_KEY, upgradedMarkerRaw);
+      if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== upgradedMarkerRaw) return false;
+      markerRaw = upgradedMarkerRaw;
+    } else if (!Number.isSafeInteger(marker.generation) || marker.generation < 0) {
       return false;
+    }
+
+    if (persistedGeneration < marker.generation) {
+      localStorage.setItem(ROLLING_BACKUP_GENERATION_KEY, String(marker.generation));
+      if (_readPersistedRollingBackupGeneration() !== marker.generation) return false;
     }
 
     localStorage.setItem(STORAGE_KEY, marker.main);
@@ -3534,20 +3708,19 @@ function _recoverInterruptedReset() {
         console.error("Interrupted reset cleanup failed for:", key, removeError);
       }
     }
-    if (failed) {
-      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
-      return false;
-    }
+    if (failed) return false;
 
     localStorage.removeItem(RESET_IN_PROGRESS_KEY);
-    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) {
-      if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
-      return false;
-    }
-    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = false;
+    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) return false;
+
+    _setMainStorageBaseline(marker.main);
+    _resetSecondaryStorageTrackingAfterReset();
+    if (typeof storageRecoveryRequired !== "undefined")
+      storageRecoveryRequired = !!opts.keepRecoveryLock;
     return true;
   } catch (e) {
-    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    storageRecoveryRequired = true;
+    console.error("Interrupted reset recovery failed:", e);
     return false;
   }
 }
@@ -3735,7 +3908,7 @@ function toggleDarkMode() {
 function retryStorageRecovery() {
   if (!storageRecoveryRequired) {
     showToast('✅ لا يوجد حظر حاليًّا');
-    return;
+    return Promise.resolve(true);
   }
 
   var resetPending = false;
@@ -3744,20 +3917,69 @@ function retryStorageRecovery() {
     resetPending = localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null;
     rollingRestorePending = localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY) !== null;
   } catch (markerReadError) {
+    storageRecoveryRequired = true;
     showAlertModal("تعذر قراءة حالة الاسترداد", "لم نتمكن من قراءة علامات الاسترداد. لم نغيّر البيانات.");
-    return;
+    return Promise.resolve(false);
   }
 
   if (resetPending) {
-    if (_recoverInterruptedReset()) {
-      showToast("✅ اكتمل تنظيف إعادة الضبط — أعد التحميل");
-      setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
-    } else {
-      storageRecoveryRequired = true;
-      showAlertModal("لا يزال حذف البيانات غير مكتمل",
-        "احتفظ التطبيق بعلامة الاسترداد وسيعيد المحاولة عند فتحه مجددًا. افحص مساحة التخزين ثم أعد المحاولة.");
+    if (_retryResetRecoveryPromise) return _retryResetRecoveryPromise;
+    if (_startupResetRecoveryInFlight || _resetRecoveryInFlight) {
+      showToast("⏳ جارٍ استكمال استرداد إعادة الضبط بالفعل...");
+      return _retryResetRecoveryPromise || _startupResetRecoveryPromise || Promise.resolve(false);
     }
-    return;
+
+    // Close the write gate before requesting the shared lock. Keep both flags
+    // active through marker verification, in-memory reload, and baseline read.
+    storageRecoveryRequired = true;
+    _resetRecoveryInFlight = true;
+    var recoverySucceeded = false;
+    var retryRun = _recoverInterruptedResetWithLock({ keepRecoveryLock: true })
+      .then(function(recovered) {
+        if (recovered !== true) {
+          throw new Error("Reset recovery did not complete successfully.");
+        }
+        if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) {
+          throw new Error("The reset marker remains after recovery.");
+        }
+        if (!loadData({ keepRecoveryLock: true })) {
+          throw new Error("The application data could not be reloaded and validated.");
+        }
+        if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) {
+          throw new Error("The reset marker reappeared during data reload.");
+        }
+        var mainRaw = localStorage.getItem(STORAGE_KEY);
+        var mainData = mainRaw ? JSON.parse(mainRaw) : null;
+        if (!mainData || !validateV2(mainData)
+            || !Array.isArray(mainData.tasks) || mainData.tasks.length !== 0
+            || !Array.isArray(mainData.dailyLogs) || mainData.dailyLogs.length !== 0) {
+          throw new Error("The reset main record failed post-recovery validation.");
+        }
+        if (!_captureMainStorageBaseline()) {
+          throw new Error("The main storage baseline could not be synchronized.");
+        }
+        if (typeof _loadFocusTimer === "function") _loadFocusTimer();
+        if (typeof _loadFocusSettings === "function") _loadFocusSettings();
+        recoverySucceeded = true;
+        showToast("✅ اكتمل تنظيف إعادة الضبط — أعد التحميل");
+        setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
+        return true;
+      })
+      .catch(function(lockError) {
+        storageRecoveryRequired = true;
+        console.error("retryStorageRecovery reset recovery failed:", lockError);
+        showAlertModal("لا يزال حذف البيانات غير مكتمل",
+          "تعذر إكمال الاسترداد أو التحقق من البيانات بعد انتظار قفل النوافذ. بقيت الحماية وعلامة الاسترداد مفعّلتين.");
+        return false;
+      })
+      .finally(function() {
+        _resetRecoveryInFlight = false;
+        if (_retryResetRecoveryPromise === retryRun) _retryResetRecoveryPromise = null;
+        // The lock is lifted only after every verification above has completed.
+        storageRecoveryRequired = !recoverySucceeded;
+      });
+    _retryResetRecoveryPromise = retryRun;
+    return retryRun;
   }
 
   if (rollingRestorePending) {
@@ -3769,13 +3991,13 @@ function retryStorageRecovery() {
       showAlertModal("لم تكتمل الاستعادة",
         "تعذر إكمال استعادة النسخة الداخلية. بقيت علامة الاسترداد والنسخة المصدر محفوظتين لإعادة المحاولة.");
     }
-    return;
+    return Promise.resolve(false);
   }
 
   var latest = _getLatestRollingRecoveryBackup();
   if (latest === false) {
     showAlertModal("تعذر فحص النسخ الداخلية", "فشلت قراءة مفاتيح النسخ الداخلية. لم نبدأ الاستعادة أو الترحيل.");
-    return;
+    return Promise.resolve(false);
   }
   if (latest) {
     var backupDate = new Date(latest.record.createdAtMs).toLocaleString();
@@ -3794,7 +4016,7 @@ function retryStorageRecovery() {
         }
       }
     );
-    return;
+    return Promise.resolve(false);
   }
 
   showConfirmModal(
@@ -3812,80 +4034,115 @@ function retryStorageRecovery() {
       setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
     }
   );
+  return Promise.resolve(false);
+}
+
+function _executeResetAllTransaction() {
+  if (_resetInFlight) return _resetAllPendingPromise || Promise.resolve(false);
+  _resetInFlight = true;
+  var fresh = null;
+  var resetPromise = _withResetTransactionLock(function() {
+    fresh = buildEmptyV2();
+    fresh.settings.darkMode = appSettings.darkMode;
+    fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
+    fresh.settings.firstUseDate = todayStr();
+
+    if (!validateV2(fresh)) throw new Error("سجل البيانات الفارغ غير صالح.");
+    var freshRaw = JSON.stringify(fresh);
+    var currentGeneration = _readPersistedRollingBackupGeneration();
+    if (currentGeneration === null || currentGeneration >= Number.MAX_SAFE_INTEGER)
+      throw new Error("تعذر قراءة جيل النسخ الداخلية أو زيادته.");
+
+    // Publish the marker first to close every cooperating window's write gate.
+    // The intended generation is inside it, making a crash between marker and
+    // generation persistence recoverable without incrementing twice.
+    var nextGeneration = currentGeneration + 1;
+    var markerRaw = JSON.stringify({
+      version: 1,
+      main: freshRaw,
+      generation: nextGeneration
+    });
+    storageRecoveryRequired = true;
+    localStorage.setItem(RESET_IN_PROGRESS_KEY, markerRaw);
+    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== markerRaw)
+      throw new Error("فشل التحقق من علامة إعادة الضبط.");
+
+    _invalidateRollingRecoveryBackupRequests();
+    if (!_setPersistedRollingBackupGeneration(currentGeneration, nextGeneration))
+      throw new Error("تعذر تثبيت جيل النسخ الداخلية.");
+
+    if (!_recoverInterruptedReset({
+      fromResetTransaction: true,
+      keepRecoveryLock: true
+    })) return false;
+    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null)
+      throw new Error("علامة إعادة الضبط ما زالت موجودة.");
+    if (localStorage.getItem(STORAGE_KEY) !== freshRaw)
+      throw new Error("لم يثبت سجل البيانات الفارغ بعد إعادة الضبط.");
+    if (!loadData({ keepRecoveryLock: true }))
+      throw new Error("تعذرت إعادة تحميل بيانات التطبيق بعد إعادة الضبط.");
+
+    var verifiedMainRaw = localStorage.getItem(STORAGE_KEY);
+    var verifiedMain = verifiedMainRaw ? JSON.parse(verifiedMainRaw) : null;
+    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
+        || verifiedMainRaw !== freshRaw || !verifiedMain || !validateV2(verifiedMain)
+        || verifiedMain.tasks.length !== 0 || verifiedMain.dailyLogs.length !== 0)
+      throw new Error("فشل التحقق النهائي من نتيجة إعادة الضبط.");
+    if (!_captureMainStorageBaseline())
+      throw new Error("تعذر مزامنة خط أساس التخزين بعد إعادة الضبط.");
+    if (typeof _loadFocusTimer === "function") _loadFocusTimer();
+    if (typeof _loadFocusSettings === "function") _loadFocusSettings();
+    return true;
+  }).then(function(resetSucceeded) {
+    if (resetSucceeded !== true) {
+      storageRecoveryRequired = true;
+      showAlertModal(
+        "لم يكتمل حذف كل البيانات",
+        "تعذر إكمال تنظيف التخزين والتحقق منه. بقيت علامة الاسترداد أو حالة الحماية مفعّلة؛ أعد المحاولة قبل متابعة الكتابة."
+      );
+      return false;
+    }
+
+    // Keep the per-window reset flag raised until UI and memory state are in
+    // sync. It is removed only in the Promise finally path below.
+    storageRecoveryRequired = false;
+    try { _invalidateProjectsCache(); } catch (cacheError) {}
+    _sessionsCache = null;
+    _awaySessionPromptOpen = false;
+    _applyThemePreference();
+    _queueAllTaskReminderSync();
+    cancelEdit();
+    cancelProjectEdit();
+    renderAll();
+    showToast("✅ تم حذف كل البيانات");
+    return true;
+  }).catch(function(resetError) {
+    storageRecoveryRequired = true;
+    console.error("Reset transaction failed:", resetError);
+    showAlertModal(
+      "تعذر إكمال إعادة الضبط",
+      "لم يتم اعتماد نجاح الحذف لأن إحدى خطوات الحماية أو التحقق فشلت. بقيت الكتابة محظورة؛ أعد محاولة الاسترداد."
+    );
+    return false;
+  }).finally(function() {
+    _resetInFlight = false;
+    if (_resetAllPendingPromise === resetPromise) _resetAllPendingPromise = null;
+  });
+  _resetAllPendingPromise = resetPromise;
+  return resetPromise;
 }
 
 function resetAll() {
+  if (_resetInFlight || _startupResetRecoveryInFlight) {
+    showToast("⏳ توجد عملية استرداد أو إعادة ضبط قيد التنفيذ بالفعل.");
+    return;
+  }
   showConfirmModal(
     "🗑️ حذف كل البيانات",
     "سيتم حذف المهام وسجلات الأيام وجلسات التركيز والخواطر والمشاريع والأفكار المفتوحة، وكذلك النسخ الداخلية للترحيل والتراجع. تبقى تفضيلاتك (الوضع الليلي ومدد المؤقت والإشعارات). لا تُحذف ملفات النسخ الاحتياطية التي صدّرتها خارج التطبيق. هل أنت متأكد؟",
     function() {
       showConfirmModal("تأكيد نهائي", "هل أنت واثق تمامًا؟", function() {
-        const fresh = buildEmptyV2();
-        fresh.settings.darkMode = appSettings.darkMode;
-        fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
-        fresh.settings.firstUseDate = todayStr();
-
-        let freshRaw;
-        try {
-          if (!validateV2(fresh)) throw new Error("سجل البيانات الفارغ غير صالح.");
-          freshRaw = JSON.stringify(fresh);
-        } catch (e) {
-          showAlertModal("تعذر بدء الحذف", "لم يبدأ الحذف لأن سجل المهام الفارغ غير صالح: " + e.message);
-          return;
-        }
-
-        // Persist a durable reset intent before replacing the main record or
-        // deleting any collection. Startup can safely replay this operation.
-        const resetMarkerRaw = JSON.stringify({ version: 1, main: freshRaw });
-        try {
-          localStorage.setItem(RESET_IN_PROGRESS_KEY, resetMarkerRaw);
-          if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== resetMarkerRaw) {
-            throw new Error("فشل التحقق من علامة إعادة الضبط.");
-          }
-        } catch (markerError) {
-          storageRecoveryRequired = true;
-          showAlertModal("تعذر تأمين عملية الحذف",
-            "لم تُغيّر البيانات لأن التطبيق لم يستطع حفظ علامة استرداد دائمة قبل البدء. أصلح مساحة التخزين ثم أعد المحاولة.");
-          return;
-        }
-
-        const resetSucceeded = _recoverInterruptedReset();
-
-        appSettings = fresh.settings;
-        createdByVersion = fresh.createdByVersion;
-        tasks = [];
-        try { _invalidateProjectsCache(); } catch (cacheError) {}
-        _sessionsCache = null;
-        _stopDisplayTick();
-        _focusTimer.mode = "pomodoro";
-        _focusTimer.phase = "work";
-        _focusTimer.running = false;
-        _focusTimer.baseElapsed = 0;
-        _focusElapsedRemainderMs = 0;
-        _focusTimer.startedAt = null;
-        _focusTimer.cyclePosition = 0;
-        _focusTimer.taskId = null;
-        _focusTimer.sessionStartAt = null;
-        _focusTimer.awaitingConfirmation = false;
-        _focusTimer.pendingPhaseEndedAt = null;
-        _awaySessionPromptOpen = false;
-        _applyThemePreference();
-        _queueAllTaskReminderSync();
-        cancelEdit();
-        cancelProjectEdit();
-        renderAll();
-
-        if (!resetSucceeded) {
-          storageRecoveryRequired = true;
-          showAlertModal(
-            "لم يكتمل حذف كل البيانات",
-            "تم تثبيت سجل المهام الفارغ، لكن تعذر حذف بعض مفاتيح التخزين الداخلية. بقيت علامة الاسترداد الدائمة؛ سيعيد التطبيق محاولة التنظيف عند فتحه مجددًا أو عند إعادة المحاولة."
-          );
-          return;
-        }
-
-        storageRecoveryRequired = false;
-        showToast("✅ تم حذف كل البيانات");
+        _resetAllPendingPromise = _executeResetAllTransaction();
       });
     }
   );
@@ -11230,75 +11487,117 @@ function renderNotebook() {
 
 /* ============ Init ============ */
 
-_setupMainStorageConflictListener();
-loadData();
-if (!storageRecoveryRequired) _captureMainStorageBaseline();
-_setupSystemThemeListener();
-if (!storageRecoveryRequired) {
-  try {
-    if (tasks.length > 0 && _healTaskFieldsAfterLoad()) { saveData(); }
-    var _genCount = _generateAndPersistRecurringTasks();
-    if (_genCount > 0) {
-      setTimeout(function() { showToast('🔁 أُضيفت ' + _genCount + ' مهمة متكررة لهذا اليوم'); }, 500);
+function _completeNormalStartupInit(options) {
+  var opts = options || {};
+  if (!opts.dataAlreadyLoaded) loadData();
+  if (!storageRecoveryRequired) _captureMainStorageBaseline();
+  _setupSystemThemeListener();
+  if (!storageRecoveryRequired) {
+    try {
+      if (tasks.length > 0 && _healTaskFieldsAfterLoad()) { saveData(); }
+      var _genCount = _generateAndPersistRecurringTasks();
+      if (_genCount > 0) {
+        setTimeout(function() { showToast('🔁 أُضيفت ' + _genCount + ' مهمة متكررة لهذا اليوم'); }, 500);
+      }
+    } catch (e) { console.error('Recurring generation failed:', e); }
+  }
+  document.getElementById("taskDate").value = todayStr();
+
+  // FIX I1 (F-P2-1): مسح aria-invalid الحي عند الكتابة أو التعديل
+  ["taskName", "taskExpected", "taskDate", "taskTime"].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) {
+      el.addEventListener("input", function() { this.removeAttribute("aria-invalid"); });
+      el.addEventListener("change", function() { this.removeAttribute("aria-invalid"); });
     }
-  } catch (e) { console.error('Recurring generation failed:', e); }
-}
-document.getElementById("taskDate").value = todayStr();
+  });
 
-// FIX I1 (F-P2-1): مسح aria-invalid الحي عند الكتابة أو التعديل
-["taskName", "taskExpected", "taskDate", "taskTime"].forEach(function(id) {
-  var el = document.getElementById(id);
-  if (el) {
-    el.addEventListener("input", function() { this.removeAttribute("aria-invalid"); });
-    el.addEventListener("change", function() { this.removeAttribute("aria-invalid"); });
-  }
-});
-
-_loadFocusTimer();
-_loadFocusSettings();
-if (_focusTimer.pendingStopwatchTransaction) {
-  if (typeof navigator !== "undefined" && navigator.locks
-      && typeof navigator.locks.request === "function") {
-    _withStopwatchTransactionLock(function() {
-      return _recoverPendingStopwatchSave(false);
-    }).catch(function(error) {
+  _loadFocusTimer();
+  _loadFocusSettings();
+  if (!storageRecoveryRequired && _focusTimer.pendingStopwatchTransaction) {
+    if (typeof navigator !== "undefined" && navigator.locks
+        && typeof navigator.locks.request === "function") {
+      _withStopwatchTransactionLock(function() {
+        return _recoverPendingStopwatchSave(false);
+      }).catch(function(error) {
+        storageRecoveryRequired = true;
+        console.error("Startup Stopwatch recovery lock failed:", error);
+        showAlertModal("تعذر تأمين استرداد Stopwatch", "أبقينا سجل العملية المحفوظة دون تعديل لأن قفل النوافذ غير متاح.");
+      });
+    } else {
       storageRecoveryRequired = true;
-      console.error("Startup Stopwatch recovery lock failed:", error);
-      showAlertModal("تعذر تأمين استرداد Stopwatch", "أبقينا سجل العملية المحفوظة دون تعديل لأن قفل النوافذ غير متاح.");
-    });
-  } else {
-    storageRecoveryRequired = true;
-    showAlertModal("استرداد Stopwatch متوقف", "هذا المتصفح لا يدعم قفل النوافذ؛ أبقينا سجل المعاملة كما هو دون محاولة كتابة متزامنة.");
+      showAlertModal("استرداد Stopwatch متوقف", "هذا المتصفح لا يدعم قفل النوافذ؛ أبقينا سجل المعاملة كما هو دون محاولة كتابة متزامنة.");
+    }
   }
-}
-_finalizeFocusTimerColdStartRestore();
-renderAll();
+  if (!storageRecoveryRequired) _finalizeFocusTimerColdStartRestore();
+  renderAll();
 
-/* ===== focus-timer-v2 init ===== */
-_catchUp(true);
-_renderFocusTimer();
-if (_focusTimer.awaitingConfirmation) {
-  setTimeout(function() { _showAwaySessionConfirmation(); }, 300);
-}
-_setupVisibilityListener();
-_setupRecurringTaskRefresh();
-if (_focusTimer.running) _startDisplayTick();
+  /* ===== focus-timer-v2 init ===== */
+  if (!storageRecoveryRequired) _catchUp(true);
+  _renderFocusTimer();
+  if (!storageRecoveryRequired && _focusTimer.awaitingConfirmation) {
+    setTimeout(function() { _showAwaySessionConfirmation(); }, 300);
+  }
+  _setupVisibilityListener();
+  _setupRecurringTaskRefresh();
+  if (!storageRecoveryRequired && _focusTimer.running) _startDisplayTick();
 
-_queueAllTaskReminderSync();
-_updateNotifToggleUI();
-if (!storageRecoveryRequired && typeof _storeRollingRecoveryBackup === "function") {
-  _storeRollingRecoveryBackup("startup", 60 * 1000);
+  if (!storageRecoveryRequired) _queueAllTaskReminderSync();
+  _updateNotifToggleUI();
+  if (!storageRecoveryRequired && typeof _storeRollingRecoveryBackup === "function") {
+    _storeRollingRecoveryBackup("startup", 60 * 1000);
+  }
+
+  try {
+    var _pendingToastAfterReload = sessionStorage.getItem('_pendingToastAfterReload');
+    if (_pendingToastAfterReload) {
+      sessionStorage.removeItem('_pendingToastAfterReload');
+      setTimeout(function() { showToast(_pendingToastAfterReload); }, 300);
+    }
+  } catch (e) {}
+  _appInitCompleted = true;
 }
 
-// FIX F1: عرض التوست المؤجل بعد reload المستحث بالاستيراد أو التراجع
+_setupMainStorageConflictListener();
+var _startupResetMarkerPresent = false;
 try {
-  var _pendingToastAfterReload = sessionStorage.getItem('_pendingToastAfterReload');
-  if (_pendingToastAfterReload) {
-    sessionStorage.removeItem('_pendingToastAfterReload');
-    setTimeout(function() { showToast(_pendingToastAfterReload); }, 300);
-  }
-} catch (e) {}
-</script>
+  _startupResetMarkerPresent = localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null;
+} catch (startupMarkerReadError) {
+  _startupResetMarkerPresent = true;
+  storageRecoveryRequired = true;
+}
+
+if (_startupResetMarkerPresent) {
+  storageRecoveryRequired = true;
+  _startupResetRecoveryInFlight = true;
+  _startupResetRecoveryPromise = _recoverInterruptedResetWithLock({ keepRecoveryLock: true })
+    .then(function(recovered) {
+      if (recovered !== true || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null)
+        throw new Error("Startup reset recovery did not clear and verify its marker.");
+      // Keep the recovery lock logically raised while the empty V2 record is
+      // loaded and the main baseline is refreshed.
+      if (!loadData({ keepRecoveryLock: true }))
+        throw new Error("Startup reset recovery data could not be loaded.");
+      if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
+          || !_captureMainStorageBaseline())
+        throw new Error("Startup reset recovery final verification failed.");
+      _startupResetRecoveryInFlight = false;
+      storageRecoveryRequired = false;
+      _completeNormalStartupInit({ dataAlreadyLoaded: true });
+      return true;
+    })
+    .catch(function(startupRecoveryError) {
+      _startupResetRecoveryInFlight = false;
+      storageRecoveryRequired = true;
+      console.error("Startup reset recovery failed:", startupRecoveryError);
+      showAlertModal("إعادة ضبط غير مكتملة",
+        "لم يتمكن التطبيق من تأمين استرداد إعادة الضبط. بقيت الكتابة محظورة وعلامة الاسترداد محفوظة لإعادة المحاولة.");
+      _completeNormalStartupInit();
+      return false;
+    });
+} else {
+  _completeNormalStartupInit();
+}
 
 </body>
 </html>
