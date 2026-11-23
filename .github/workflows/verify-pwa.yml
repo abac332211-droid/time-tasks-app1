@@ -27,6 +27,10 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
+      - name: Install Playwright Chromium for real multi-window tests
+        run: |
+          npm install --no-save --no-package-lock playwright@1.65.1
+          npx playwright install --with-deps chromium
       - name: Run regression tests
         run: npm test
 
