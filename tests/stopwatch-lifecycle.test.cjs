@@ -191,6 +191,7 @@ test('resetTimer uses the Stopwatch save decision at 60 seconds, not below it', 
   const outcomes = [];
   const sandbox = {
     _focusTimerExternalConflict: false,
+    STOPWATCH_SAVE_THRESHOLD_SEC: 60,
     _focusTimer: { mode: 'stopwatch', running: false },
     _getElapsedSec: () => sandbox.elapsed,
     _showStopwatchSaveDialog: (elapsed) => outcomes.push(['stopwatch-dialog', elapsed]),
@@ -211,6 +212,7 @@ test('resetTimer uses the Stopwatch save decision at 60 seconds, not below it', 
 
 function createStopwatchDialogHarness({ saveResult = true } = {}) {
   const nodes = new Map();
+  let nextElementId = 0;
   function element(name) {
     if (!nodes.has(name)) {
       nodes.set(name, {
@@ -256,7 +258,7 @@ function createStopwatchDialogHarness({ saveResult = true } = {}) {
     showAlertModal: (...args) => calls.push(['alert', ...args]),
     document: {
       getElementById: element,
-      createElement: (name) => element('created-' + name + '-' + calls.length),
+      createElement: (name) => element('created-' + name + '-' + nextElementId++),
       addEventListener(type, handler) { calls.push(['addEventListener', type]); sandbox.modalHandler = handler; },
       removeEventListener(type, handler) { calls.push(['removeEventListener', type]); }
     },
