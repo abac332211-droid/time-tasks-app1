@@ -802,6 +802,19 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       null, { timeout: 20000 }
     )));
     const generationBefore = await pageA.evaluate(() => _readPersistedRollingBackupGeneration());
+    await Promise.all([pageA, pageB].map(page => page.evaluate(() => {
+      _focusTimer.mode = 'stopwatch';
+      _focusTimer.running = true;
+      _focusTimer.baseElapsed = 120;
+      _focusTimer.startedAt = Date.now() - 120000;
+      _focusTimer.taskId = 7041;
+      _focusTimer.sessionStartAt = Date.now() - 120000;
+      _focusTimer.pendingStopwatchTransaction = { id: 'stale-reset-sentinel' };
+      _focusTimerExternalConflict = true;
+      _mainStorageExternalChangeObserved = true;
+      _secondaryStorageConflicts[FOCUS_TIMER_KEY] = true;
+      _sessionsCache = [{ id: 'stale-session-cache' }];
+    })));
     await pageA.evaluate(() => {
       window.__resetLockAcquired = false;
       window.__releaseResetLock = null;
@@ -856,16 +869,62 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       generation: _readPersistedRollingBackupGeneration(),
       marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
       main: JSON.parse(localStorage.getItem(STORAGE_KEY)),
-      resetInFlight: _resetInFlight
+      resetInFlight: _resetInFlight,
+      timer: {
+        mode: _focusTimer.mode,
+        running: _focusTimer.running,
+        baseElapsed: _focusTimer.baseElapsed,
+        taskId: _focusTimer.taskId,
+        sessionStartAt: _focusTimer.sessionStartAt,
+        pending: _focusTimer.pendingStopwatchTransaction
+      },
+      externalMain: _mainStorageExternalChangeObserved,
+      externalTimer: _focusTimerExternalConflict,
+      timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY],
+      sessionsCache: _sessionsCache
     }));
-    const otherWindowState = await pageB.evaluate(() => ({ resetInFlight: _resetInFlight }));
+    const otherWindowState = await pageB.evaluate(() => ({
+      resetInFlight: _resetInFlight,
+      timer: {
+        mode: _focusTimer.mode,
+        running: _focusTimer.running,
+        baseElapsed: _focusTimer.baseElapsed,
+        taskId: _focusTimer.taskId,
+        pending: _focusTimer.pendingStopwatchTransaction
+      },
+      externalMain: _mainStorageExternalChangeObserved,
+      externalTimer: _focusTimerExternalConflict,
+      timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY]
+    }));
     assert.equal(finalState.generation, generationBefore + 2,
       'each completed reset must advance the shared generation exactly once');
     assert.equal(finalState.marker, null, 'the durable reset marker must be removed');
     assert.deepEqual(finalState.main.tasks, []);
     assert.deepEqual(finalState.main.dailyLogs, []);
     assert.equal(finalState.resetInFlight, false);
+    assert.deepEqual(finalState.timer, {
+      mode: 'pomodoro',
+      running: false,
+      baseElapsed: 0,
+      taskId: null,
+      sessionStartAt: null,
+      pending: null
+    }, 'the active window timer state must be reset in memory');
+    assert.equal(finalState.externalMain, false);
+    assert.equal(finalState.externalTimer, false);
+    assert.equal(finalState.timerConflict, false);
+    assert.equal(finalState.sessionsCache, null);
     assert.equal(otherWindowState.resetInFlight, false);
+    assert.deepEqual(otherWindowState.timer, {
+      mode: 'pomodoro',
+      running: false,
+      baseElapsed: 0,
+      taskId: null,
+      pending: null
+    }, 'the second reset window must also clear stale in-memory timer state');
+    assert.equal(otherWindowState.externalMain, false);
+    assert.equal(otherWindowState.externalTimer, false);
+    assert.equal(otherWindowState.timerConflict, false);
   });
 });
 
