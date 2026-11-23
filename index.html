@@ -3583,8 +3583,19 @@ function _recoverInterruptedResetWithLock(options) {
 function _resetSecondaryStorageTrackingAfterReset() {
   if (typeof _secondaryStorageKeys !== "undefined" && Array.isArray(_secondaryStorageKeys)) {
     for (var i = 0; i < _secondaryStorageKeys.length; i++) {
-      _secondaryStorageBaselines[_secondaryStorageKeys[i]] = null;
-      delete _secondaryStorageConflicts[_secondaryStorageKeys[i]];
+      var key = _secondaryStorageKeys[i];
+      try {
+        // Some secondary keys are intentionally retained by Reset (for
+        // example Focus Timer preferences and notification settings). Their
+        // new baseline must be the actual stored value, not an assumed null.
+        _secondaryStorageBaselines[key] = localStorage.getItem(key);
+        delete _secondaryStorageConflicts[key];
+      } catch (baselineError) {
+        _secondaryStorageConflicts[key] = true;
+        storageRecoveryRequired = true;
+        console.error("Could not resynchronize secondary storage after Reset:", key, baselineError);
+        return false;
+      }
     }
   }
   if (typeof _mainStorageExternalChangeObserved !== "undefined")
@@ -3619,6 +3630,7 @@ function _resetSecondaryStorageTrackingAfterReset() {
   if (typeof _awaySessionPromptOpen !== "undefined") _awaySessionPromptOpen = false;
   if (typeof _clearFocusTimerClock === "function") _clearFocusTimerClock();
   _invalidateRollingRecoveryBackupRequests();
+  return true;
 }
 
 function _resetStorageRemovalKeys() {
@@ -3734,11 +3746,14 @@ function _recoverInterruptedReset(options) {
     }
     if (failed) return false;
 
+    // Synchronize all preserved and removed secondary keys before the durable
+    // marker is cleared. A read failure keeps the marker available for retry.
+    if (!_resetSecondaryStorageTrackingAfterReset()) return false;
+
     localStorage.removeItem(RESET_IN_PROGRESS_KEY);
     if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null) return false;
 
     _setMainStorageBaseline(marker.main);
-    _resetSecondaryStorageTrackingAfterReset();
     if (typeof storageRecoveryRequired !== "undefined")
       storageRecoveryRequired = !!opts.keepRecoveryLock;
     return true;
