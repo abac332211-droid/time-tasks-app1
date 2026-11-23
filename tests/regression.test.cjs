@@ -1785,13 +1785,6 @@ function resetAllHarness(faults = {}) {
   const values = new Map(Object.entries(keys)
     .filter(([name]) => !['resetInProgress', 'rollingRestoreInProgress', 'rollingBackupGeneration'].includes(name))
     .map(([, key]) => [key, 'old-value']));
-  const resetMain = JSON.stringify({
-    schemaVersion: 2, createdByVersion: 'test',
-    settings: {}, tasks: [], dailyLogs: []
-  });
-  values.set(keys.resetInProgress, JSON.stringify({
-    version: 1, main: resetMain, generation: 1
-  }));
   const removeCalls = [];
   const alerts = [];
   const toasts = [];
@@ -1815,6 +1808,8 @@ function resetAllHarness(faults = {}) {
     FOCUS_TIMER_KEY: keys.focusTimer,
     FOCUS_SESSIONS_KEY: keys.focusSessions,
     MENTAL_INBOX_KEY: keys.mentalInbox,
+    FOCUS_SETTINGS_KEY: keys.focusSettings,
+    NOTIFICATIONS_KEY: keys.notifications,
     APP_VERSION: 'test',
     appSettings: { darkMode: false, themeMode: 'light' },
     tasks: [{ id: 99 }],
@@ -1842,8 +1837,12 @@ function resetAllHarness(faults = {}) {
     _focusTimerExternalConflict: true,
     _focusTimerConflictNoticeShown: true,
     _rollingRecoveryBackupEpoch: 0,
-    _invalidateRollingRecoveryBackupRequests() { this._rollingRecoveryBackupEpoch += 1; },
-    _clearFocusTimerClock() {},
+    _rollingRecoveryBackupPending: null,
+    _rollingRecoveryBackupStale: false,
+    _rollingRecoveryBackupLastFailure: null,
+    _resetInFlight: false,
+    _startupResetRecoveryInFlight: false,
+    _resetAllPendingPromise: null,
     buildEmptyV2: () => ({
       schemaVersion: 2, createdByVersion: 'test',
       settings: {}, tasks: [], dailyLogs: []
@@ -1868,11 +1867,16 @@ function resetAllHarness(faults = {}) {
       }
     },
     _setMainStorageBaseline: () => {},
+    _captureMainStorageBaseline: () => true,
+    loadData: () => true,
+    _loadFocusTimer: () => {},
+    _loadFocusSettings: () => {},
     showConfirmModal(title, body, accept) { confirmations.push({ title, body }); accept(); },
     showAlertModal: (...args) => alerts.push(args),
     showToast: (message) => toasts.push(message),
     _invalidateProjectsCache: () => {},
     _stopDisplayTick: () => {},
+    _clearFocusTimerClock: () => {},
     _applyThemePreference: () => {},
     _queueAllTaskReminderSync: () => {},
     cancelEdit: () => {},
@@ -1881,17 +1885,29 @@ function resetAllHarness(faults = {}) {
   };
   vm.runInNewContext(
     extractFunction('_readPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_setPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_invalidateRollingRecoveryBackupRequests') + '\n'
+      + extractFunction('_withResetTransactionLock') + '\n'
       + extractFunction('_resetStorageRemovalKeys') + '\n'
       + extractFunction('_resetSecondaryStorageTrackingAfterReset') + '\n'
-      + extractFunction('_recoverInterruptedReset'),
+      + extractFunction('_recoverInterruptedReset') + '\n'
+      + extractFunction('_executeResetAllTransaction') + '\n'
+      + extractFunction('resetAll'),
     sandbox
   );
   return {
     keys, values, removeCalls, alerts, toasts, confirmations, sandbox,
-    run: () => sandbox._recoverInterruptedReset()
+    seedResetMarker() {
+      const main = JSON.stringify(sandbox.buildEmptyV2());
+      values.set(keys.resetInProgress, JSON.stringify({ version: 1, main, generation: 1 }));
+    },
+    recover: () => sandbox._recoverInterruptedReset(),
+    run: () => {
+      sandbox.resetAll();
+      return sandbox._resetAllPendingPromise;
+    }
   };
 }
-
 test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
   assert.equal(harness.run(), false);
