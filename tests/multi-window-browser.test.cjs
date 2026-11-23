@@ -219,7 +219,7 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       { timeout: 20_000 }
     );
 
-    const interrupted = await recoveryPage.evaluate(() => {
+    const interrupted = await recoveryPage.evaluate(async () => {
       const task = {
         id: 7011,
         name: 'Crash recovery task',
@@ -258,7 +258,7 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       window._logSession = function() {
         throw new Error('simulated abrupt process termination before session write');
       };
-      _applyStopwatchSave(125, task, 3);
+      await _applyStopwatchSave(125, task, 3);
 
       const committedMain = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
       const timerRecord = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
@@ -298,6 +298,151 @@ test('two real same-origin pages exchange storage events and block stale main/ti
     await recoveryContext.close();
   } finally {
     if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+test('a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browserInstance;
+  try {
+    browserInstance = await chromium.launch({ headless: true });
+    const context = await browserInstance.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 7021, name: 'Pending backup task', type: 'معرفية', status: 'pending',
+      expected: 15, actual: 5, plannedDate: '2026-11-23', plannedTime: '',
+      completedAt: null, createdAt: Date.now(), projectId: null, priority: null,
+      recurrence: null, checklist: null
+    }];
+    initial.timer.taskId = 7021;
+    initial.timer.baseElapsed = 125;
+    initial.timer.sessionStartAt = Date.now() - 125000;
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+    const pageA = await context.newPage(), pageB = await context.newPage();
+    await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._mainStorageBaselineReady === true && typeof window.buildBackupObject === 'function',
+      null, { timeout: 20000 }
+    )));
+    const pendingId = await pageA.evaluate(() => {
+      const task = tasks.find(item => item.id === 7021);
+      const release = _acquireRollingRecoveryCheckpointHold(true);
+      try {
+        const tx = {
+          version: 1, id: 'stopwatch-export-test-7021', taskId: task.id,
+          previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
+          sessionStartAt: _focusTimer.sessionStartAt, mode: 'stopwatch', phase: 'work',
+          clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+        };
+        _focusTimer.pendingStopwatchTransaction = tx;
+        if (!_saveFocusTimer()) throw new Error('could not persist pending journal');
+        task.actual = 8;
+        task.lastStopwatchTransactionId = tx.id;
+        if (!saveData()) throw new Error('could not commit task with transaction marker');
+        return tx.id;
+      } finally { release(); }
+    });
+    const result = await pageB.evaluate(() => {
+      window._mainStorageExternalChangeObserved = false;
+      window._focusTimerExternalConflict = false;
+      window._secondaryStorageConflicts = Object.create(null);
+      const keys = Object.keys(localStorage).sort();
+      const before = {};
+      keys.forEach(key => { before[key] = localStorage.getItem(key); });
+      let exportError = null;
+      try { buildBackupObject(); } catch (error) { exportError = error.message; }
+      const rollingSaved = _storeRollingRecoveryBackup('stale-window-test', 0);
+      const after = {};
+      Object.keys(localStorage).sort().forEach(key => { after[key] = localStorage.getItem(key); });
+      return {
+        exportError, rollingSaved, rollingFailure: _rollingRecoveryBackupLastFailure,
+        storageUnchanged: JSON.stringify(before) === JSON.stringify(after),
+        pending: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')).pendingStopwatchTransaction
+      };
+    });
+    assert.ok(result.exportError && /نافذة أخرى|تغير سجل المهام|تغيرت بيانات|معاملة Stopwatch معلقة/.test(result.exportError));
+    assert.equal(result.rollingSaved, false);
+    assert.equal(result.rollingFailure, 'external_storage_conflict');
+    assert.equal(result.storageUnchanged, true);
+    assert.equal(result.pending.id, pendingId);
+    await context.close();
+  } finally {
+    if (browserInstance) await browserInstance.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('two same-origin pages cannot commit duplicate task-linked Stopwatch transactions', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browserInstance;
+  try {
+    browserInstance = await chromium.launch({ headless: true });
+    const context = await browserInstance.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 7031, name: 'Concurrent stopwatch task', type: 'معرفية', status: 'pending',
+      expected: 20, actual: 5, plannedDate: '2026-11-23', plannedTime: '',
+      completedAt: null, createdAt: Date.now(), projectId: null, priority: null,
+      recurrence: null, checklist: null
+    }];
+    initial.timer.taskId = 7031;
+    initial.timer.baseElapsed = 125;
+    initial.timer.sessionStartAt = Date.now() - 125000;
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+    const pageA = await context.newPage(), pageB = await context.newPage();
+    await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._mainStorageBaselineReady === true && typeof window._applyStopwatchSave === 'function',
+      null, { timeout: 20000 }
+    )));
+    await Promise.all([
+      pageA.evaluate(async () => await _applyStopwatchSave(125, tasks.find(item => item.id === 7031), 3)),
+      pageB.evaluate(async () => await _applyStopwatchSave(125, tasks.find(item => item.id === 7031), 3))
+    ]);
+    const state = await pageA.evaluate(() => ({
+      task: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks.find(item => item.id === 7031),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+        .filter(item => item.taskId === 7031),
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
+    }));
+    assert.equal(state.task.actual, 8);
+    assert.equal(typeof state.task.lastStopwatchTransactionId, 'string');
+    assert.equal(state.sessions.length, 1);
+    assert.equal(state.sessions[0].transactionId, state.task.lastStopwatchTransactionId);
+    assert.equal(state.timer.pendingStopwatchTransaction, null);
+    await context.close();
+  } finally {
+    if (browserInstance) await browserInstance.close();
     await new Promise(resolve => server.close(resolve));
   }
 });

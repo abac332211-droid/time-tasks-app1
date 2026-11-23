@@ -111,6 +111,16 @@ function createRuntime(storage, options = {}) {
       clockAdjusted: false,
       pendingStopwatchTransaction: null
     },
+    navigator: {
+      locks: {
+        _tail: Promise.resolve(),
+        request(_name, _options, callback) {
+          const run = this._tail.then(callback);
+          this._tail = run.catch(() => {});
+          return run;
+        }
+      }
+    },
     localStorage: {
       getItem(key) { return storage.getItem(key); },
       setItem(key, value) {
@@ -156,6 +166,8 @@ function createRuntime(storage, options = {}) {
 
   const names = [
     '_trackSecondaryStorageRead',
+    '_pendingStopwatchWriteAllowed',
+    '_withStopwatchTransactionLock',
     '_secondaryStorageWriteAllowed',
     '_writeSecondaryStorageVerified',
     '_storageWriteAllowed',
@@ -173,6 +185,7 @@ function createRuntime(storage, options = {}) {
     '_resetAfterSession',
     '_recoverPendingStopwatchSave',
     '_applyStopwatchSave',
+    '_applyStopwatchSaveLocked',
     'saveData'
   ];
   vm.runInNewContext(
@@ -227,19 +240,21 @@ function initialStorage() {
   });
 }
 
-test('process restart after task commit but before session logging resumes without adding task minutes twice', () => {
+test('process restart after task commit but before session logging resumes without adding task minutes twice', async () => {
   const storage = initialStorage();
   const first = createRuntime(storage);
   first.sandbox._logSession = () => {
     throw new Error('simulated process death after the main task commit');
   };
 
-  first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
 
   const afterInterruptedCommit = JSON.parse(storage.getItem('main'));
   const interruptedTimer = JSON.parse(storage.getItem('focus-timer'));
   assert.equal(afterInterruptedCommit.tasks[0].actual, 8,
     'the first process has durably committed task minutes');
+  assert.equal(typeof afterInterruptedCommit.tasks[0].lastStopwatchTransactionId, 'string',
+    'main task record must persist its transaction identity');
   assert.ok(interruptedTimer.pendingStopwatchTransaction,
     'the transaction journal must survive with the timer record');
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0,
@@ -257,16 +272,18 @@ test('process restart after task commit but before session logging resumes witho
   assert.equal(recoveredSessions.length, 1);
   assert.equal(recoveredSessions[0].durationSec, 125);
   assert.equal(recoveredSessions[0].taskId, 7);
+  assert.equal(recoveredSessions[0].transactionId,
+    afterInterruptedCommit.tasks[0].lastStopwatchTransactionId);
   assert.equal(recoveredTimer.pendingStopwatchTransaction, null);
   assert.equal(recoveredTimer.baseElapsed, 0);
   assert.equal(restarted.sandbox.storageRecoveryRequired, false);
 });
 
-test('a durable timer journal can finish the task update when the first main write did not commit', () => {
+test('a durable timer journal can finish the task update when the first main write did not commit', async () => {
   const storage = initialStorage();
   const first = createRuntime(storage, { failMainWriteOnce: true });
 
-  first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
 
   const beforeRestart = JSON.parse(storage.getItem('main'));
   const timerBeforeRestart = JSON.parse(storage.getItem('focus-timer'));
@@ -285,14 +302,14 @@ test('a durable timer journal can finish the task update when the first main wri
   assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
 });
 
-test('restart after session write but before timer reset is idempotent', () => {
+test('restart after session write but before timer reset is idempotent', async () => {
   const storage = initialStorage();
   const first = createRuntime(storage);
   first.sandbox._resetAfterSession = () => {
     throw new Error('simulated process death after the session was stored');
   };
 
-  first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
 
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 1);
@@ -309,13 +326,13 @@ test('restart after session write but before timer reset is idempotent', () => {
   assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
 });
 
-test('recovery refuses to overwrite a task value that is neither the pre-commit nor committed value', () => {
+test('recovery refuses to overwrite a task value that is neither the pre-commit nor committed value', async () => {
   const storage = initialStorage();
   const first = createRuntime(storage);
   first.sandbox._logSession = () => {
     throw new Error('interrupt before session save');
   };
-  first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
 
   const externallyChanged = JSON.parse(storage.getItem('main'));
   externallyChanged.tasks[0].actual = 17;
@@ -327,4 +344,54 @@ test('recovery refuses to overwrite a task value that is neither the pre-commit 
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
   assert.equal(restarted.sandbox.storageRecoveryRequired, true);
+});
+
+
+test('recovery rejects targetActual without the matching task transaction marker', async () => {
+  const storage = initialStorage();
+  const first = createRuntime(storage);
+  first.sandbox._logSession = () => { throw new Error('interrupt before session save'); };
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  const changed = JSON.parse(storage.getItem('main'));
+  delete changed.tasks[0].lastStopwatchTransactionId;
+  changed.tasks[0].actual = 8;
+  storage.setItem('main', JSON.stringify(changed));
+  const restarted = createRuntime(storage);
+  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), false);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
+  assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
+  assert.equal(restarted.sandbox.storageRecoveryRequired, true);
+});
+
+test('session recovery rejects the same identity when duration differs', async () => {
+  const storage = initialStorage();
+  const first = createRuntime(storage);
+  first.sandbox._logSession = () => { throw new Error('interrupt before session save'); };
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  const tx = JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction;
+  storage.setItem('focus-sessions', JSON.stringify([{
+    id: 1, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt: new Date(tx.sessionStartAt).toISOString(),
+    endedAt: new Date(tx.sessionStartAt + 124000).toISOString(),
+    durationSec: 124, completed: true
+  }]));
+  const restarted = createRuntime(storage);
+  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), false);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions'))[0].durationSec, 124);
+  assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
+  assert.equal(restarted.sandbox.storageRecoveryRequired, true);
+});
+
+test('session dedupe does not accept the same identity with a different duration', () => {
+  const storage = initialStorage();
+  const runtime = createRuntime(storage);
+  const start = runtime.sandbox._focusTimer.sessionStartAt;
+  storage.setItem('focus-sessions', JSON.stringify([{
+    id: 1, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt: new Date(start).toISOString(), endedAt: new Date(start + 124000).toISOString(),
+    durationSec: 124, completed: true
+  }]));
+  runtime.sandbox._sessionsCache = null;
+  assert.equal(runtime.sandbox._sessionAlreadyLogged('work', 125), false);
 });
