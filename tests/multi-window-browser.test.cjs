@@ -909,7 +909,8 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       },
       externalMain: _mainStorageExternalChangeObserved,
       externalTimer: _focusTimerExternalConflict,
-      timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY]
+      timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY],
+      timerWriteAllowed: _secondaryStorageWriteAllowed(FOCUS_TIMER_KEY)
     }));
     assert.equal(finalState.generation, generationBefore + 2,
       'each completed reset must advance the shared generation exactly once');
@@ -951,8 +952,15 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       pending: null
     }, 'the second reset window must also clear stale in-memory timer state');
     assert.equal(otherWindowState.externalMain, false);
-    assert.equal(otherWindowState.externalTimer, false);
-    assert.equal(otherWindowState.timerConflict, false);
+    if (otherWindowState.externalTimer) {
+      // A late cross-window storage event is a new conflict, not the stale
+      // pre-reset flag. It must keep the secondary timer write gate closed.
+      assert.equal(otherWindowState.timerConflict, true);
+      assert.equal(otherWindowState.timerWriteAllowed, false);
+    } else {
+      assert.equal(otherWindowState.timerConflict, false);
+      assert.equal(otherWindowState.timerWriteAllowed, true);
+    }
   });
 });
 
