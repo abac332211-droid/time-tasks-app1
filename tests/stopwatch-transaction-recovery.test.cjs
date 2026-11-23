@@ -877,4 +877,6 @@ test('commit baselines reject a mismatch between durable and in-memory transacti
   runtime.sandbox._focusTimer.pendingStopwatchTransaction = null;
   const snapshot = runtime.sandbox._captureFocusTimerSnapshot();
   assert.equal(runtime.sandbox._focusCommitBaselinesMatch(snapshot), null);
+  assert.equal(runtime.sandbox.storageRecoveryRequired, true,
+    'a journal mismatch must block subsequent ordinary writes until recovery');
 });
