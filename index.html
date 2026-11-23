@@ -9770,6 +9770,9 @@ function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
 
       task.actual = transaction.targetActual;
       if (!saveData()) {
+        // The timer-key journal is durable, but keep this page's in-memory task
+        // view at the last known committed value until recovery verifies main.
+        task.actual = oldActual;
         storageRecoveryRequired = true;
         showAlertModal("عملية Stopwatch تحتاج إلى استرداد",
           "لم نتمكن من تأكيد حفظ مدة المهمة. احتفظ التطبيق بسجل المعاملة؛ لا تحاول إضافة الدقائق يدويًا. أعد فتح التطبيق لاستكمال العملية بأمان.");
