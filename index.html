@@ -3509,7 +3509,7 @@ function _readPersistedRollingBackupGeneration() {
   try {
     var raw = localStorage.getItem(ROLLING_BACKUP_GENERATION_KEY);
     if (raw === null) return 0;
-    if (!/^(0|[1-9]\\d*)$/.test(raw)) return null;
+    if (!/^(0|[1-9]\d*)$/.test(raw)) return null;
     var value = Number(raw);
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
   } catch (e) {
