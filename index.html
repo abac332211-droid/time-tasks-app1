@@ -5685,7 +5685,8 @@ function buildBackupObject() {
     throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
 
   var keys = [
-    ["main", STORAGE_KEY], ["focusSessions", FOCUS_SESSIONS_KEY], ["focusTimer", FOCUS_TIMER_KEY],
+    ["main", STORAGE_KEY], ["focusSessions", FOCUS_SESSIONS_KEY],
+    ["focusTimer", typeof FOCUS_TIMER_KEY !== "undefined" ? FOCUS_TIMER_KEY : null],
     ["mentalInbox", MENTAL_INBOX_KEY], ["thoughts", THOUGHTS_KEY], ["projects", PROJECTS_KEY],
     ["focusSettings", FOCUS_SETTINGS_KEY], ["notifications", NOTIFICATIONS_KEY]
   ];
