@@ -3090,6 +3090,9 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return fail("recovery_required");
   if (typeof _rollingRecoveryCheckpointHold !== "undefined"
       && _rollingRecoveryCheckpointHold > 0) return true;
+  // A pending Stopwatch transaction must be completed before a mixed rolling
+  // snapshot can be published. Its durable journal lives in the timer record.
+  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction) return true;
   try {
     var blockingKeys = [];
     if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
@@ -7921,7 +7924,8 @@ var _focusTimer = {
   sessionStartAt: null,
   awaitingConfirmation: false,
   pendingPhaseEndedAt: null,
-  clockAdjusted: false
+  clockAdjusted: false,
+  pendingStopwatchTransaction: null
 };
 
 var _focusDisplayInterval = null;
@@ -8003,6 +8007,12 @@ function _loadFocusTimer() {
       ? d.sessionStartAt : null;
     _focusTimer.awaitingConfirmation = d.awaitingConfirmation === true;
     _focusTimer.pendingPhaseEndedAt = (typeof d.pendingPhaseEndedAt === 'number' && Number.isFinite(d.pendingPhaseEndedAt)) ? d.pendingPhaseEndedAt : null;
+    _focusTimer.pendingStopwatchTransaction = d.pendingStopwatchTransaction || null;
+    if (_focusTimer.pendingStopwatchTransaction
+        && !_validatePendingStopwatchTransaction(_focusTimer.pendingStopwatchTransaction)) {
+      storageRecoveryRequired = true;
+      console.error("A pending Stopwatch transaction record is invalid; storage writes remain blocked.");
+    }
     var changed = wasRunning || _focusTimer.clockAdjusted;
     var nowAtRestore = Date.now();
     if (_focusTimer.sessionStartAt !== null && _focusTimer.sessionStartAt > nowAtRestore) {
@@ -8102,6 +8112,7 @@ function _saveFocusTimer() {
       awaitingConfirmation: !!_focusTimer.awaitingConfirmation,
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
       clockAdjusted: _focusTimer.clockAdjusted === true,
+      pendingStopwatchTransaction: _focusTimer.pendingStopwatchTransaction || null,
       savedAt: now
     });
     if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, focusTimerRaw)) return false;
@@ -9600,36 +9611,187 @@ function _showStopwatchSaveDialog(elapsedSec) {
   };
   document.addEventListener('keydown', _modalKeyHandler);
 }
+function _validatePendingStopwatchTransaction(tx) {
+  if (!tx || typeof tx !== "object" || Array.isArray(tx)) return false;
+  if (tx.version !== 1 || typeof tx.id !== "string" || tx.id.length < 8 || tx.id.length > 160) return false;
+  if (!Number.isInteger(tx.taskId) || tx.taskId <= 0) return false;
+  if (tx.mode !== "stopwatch" || tx.phase !== "work") return false;
+  if (!Number.isInteger(tx.durationSec) || tx.durationSec < 1) return false;
+  if (!Number.isInteger(tx.minutesToAdd) || tx.minutesToAdd < 1) return false;
+  if (tx.previousActual !== null
+      && (typeof tx.previousActual !== "number" || !Number.isFinite(tx.previousActual) || tx.previousActual < 0)) return false;
+  if (!Number.isFinite(tx.targetActual) || tx.targetActual < 0) return false;
+  var previousNumeric = tx.previousActual === null ? 0 : tx.previousActual;
+  if (tx.targetActual !== previousNumeric + tx.minutesToAdd) return false;
+  if (!Number.isFinite(tx.sessionStartAt) || tx.sessionStartAt < 0
+      || !Number.isFinite(new Date(tx.sessionStartAt).getTime())) return false;
+  if (typeof tx.clockAdjusted !== "boolean") return false;
+  if (tx.elapsedRemainderMs !== undefined
+      && (!Number.isInteger(tx.elapsedRemainderMs)
+        || tx.elapsedRemainderMs < 0 || tx.elapsedRemainderMs >= 1000)) return false;
+  if (!Number.isFinite(tx.createdAt) || tx.createdAt < 0) return false;
+  return true;
+}
+
+function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
+  var tx = _focusTimer && _focusTimer.pendingStopwatchTransaction;
+  if (!tx) return true;
+  if (!_validatePendingStopwatchTransaction(tx)) {
+    storageRecoveryRequired = true;
+    showAlertModal("تعذر استرداد عملية Stopwatch",
+      "سجل المعاملة المحفوظ غير صالح. أبقينا البيانات كما هي وأوقفنا الكتابة لتجنب مضاعفة زمن المهمة.");
+    return false;
+  }
+  if (storageRecoveryRequired) {
+    showAlertModal("استرداد التخزين مطلوب",
+      "توجد حالة تخزين أخرى غير محسومة. لم نتابع استكمال Stopwatch قبل حسمها.");
+    return false;
+  }
+
+  var releaseHold = holdAlreadyAcquired
+    ? function() {}
+    : _acquireRollingRecoveryCheckpointHold(true);
+  var completed = false;
+  try {
+    var task = tasks.find(function(item) { return item && item.id === tx.taskId; });
+    if (!task) throw new Error("The task referenced by the pending Stopwatch transaction no longer exists.");
+
+    var currentActual = task.actual === undefined || task.actual === null ? null : task.actual;
+    if (currentActual === tx.previousActual) {
+      task.actual = tx.targetActual;
+      if (!saveData()) throw new Error("The task update could not be verified while recovering Stopwatch.");
+    } else if (currentActual !== tx.targetActual) {
+      throw new Error("The task's actual duration differs from both the before and after transaction values.");
+    }
+
+    // Reconstruct the exact session identity from the durable journal. The
+    // session writer is idempotent for this identity, so a replay cannot add
+    // a second focus-session row.
+    _focusTimer.mode = tx.mode;
+    _focusTimer.phase = tx.phase;
+    _focusTimer.taskId = tx.taskId;
+    _focusTimer.sessionStartAt = tx.sessionStartAt;
+    _focusTimer.baseElapsed = tx.durationSec;
+    _focusTimer.running = false;
+    _focusTimer.startedAt = null;
+    _focusTimer.clockAdjusted = tx.clockAdjusted;
+    _focusElapsedRemainderMs = Number.isInteger(tx.elapsedRemainderMs)
+      ? tx.elapsedRemainderMs : 0;
+
+    if (!_logSession(tx.phase, tx.durationSec, true)) {
+      throw new Error("The focus session could not be written or verified.");
+    }
+    if (!_resetAfterSession()) {
+      throw new Error("The completed Stopwatch session could not be reset durably.");
+    }
+
+    _focusTimer.pendingStopwatchTransaction = null;
+    if (!_saveFocusTimer()) {
+      _focusTimer.pendingStopwatchTransaction = tx;
+      throw new Error("The Stopwatch transaction journal could not be cleared durably.");
+    }
+    completed = true;
+  } catch (e) {
+    _focusTimer.pendingStopwatchTransaction = tx;
+    storageRecoveryRequired = true;
+    console.error("Pending Stopwatch transaction recovery failed:", e);
+    showAlertModal("لم يكتمل استرداد Stopwatch",
+      "احتفظ التطبيق بسجل العملية لمنع إضافة الدقائق مرة أخرى. أُوقفت الكتابة؛ أعد فتح التطبيق بعد معالجة التخزين. التفاصيل: " +
+      escapeHTML(e && e.message ? e.message : String(e)));
+  } finally {
+    releaseHold();
+  }
+
+  if (!completed) return false;
+  if (!holdAlreadyAcquired
+      && !_completeRollingRecoveryCheckpoint("stopwatch-transaction-recovery",
+        "اكتمل استرداد Stopwatch",
+        "تمت استعادة العملية، لكن تعذر التحقق من لقطة الاسترداد الدوّارة. أوقفنا الكتابة اللاحقة لحماية البيانات.")) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  return true;
+}
+
 function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
+  if (_focusTimer.pendingStopwatchTransaction) {
+    if (_recoverPendingStopwatchSave(false)) {
+      renderAll();
+      showToast("✅ استُكملت عملية Stopwatch المحفوظة دون تكرار دقائق المهمة");
+    }
+    return;
+  }
+
   var alreadyLogged = _sessionAlreadyLogged("work", elapsedSec);
-  var oldActual = task.actual;
-  var mainUpdateNeeded = !alreadyLogged && minutesToAdd > 0;
+  var mainUpdateNeeded = !!task && !alreadyLogged && minutesToAdd > 0;
   var releaseHold = _acquireRollingRecoveryCheckpointHold(mainUpdateNeeded);
   try {
-    if (mainUpdateNeeded) task.actual = (task.actual || 0) + minutesToAdd;
-    if (mainUpdateNeeded && !saveData()) {
-      task.actual = oldActual;
-      showToast("⚠️ تعذر حفظ المدة — بقيت الجلسة متوقفة والوقت محفوظًا للمحاولة مجددًا");
+    if (mainUpdateNeeded) {
+      if (!Number.isInteger(task.id) || task.id <= 0
+          || !Number.isInteger(minutesToAdd) || minutesToAdd < 1
+          || !Number.isInteger(elapsedSec) || elapsedSec < 1
+          || !Number.isFinite(_focusTimer.sessionStartAt)) {
+        throw new Error("Stopwatch transaction inputs are invalid.");
+      }
+      var oldActual = task.actual === undefined || task.actual === null ? null : task.actual;
+      var previousNumeric = oldActual === null ? 0 : oldActual;
+      if (!Number.isFinite(previousNumeric) || previousNumeric < 0) {
+        throw new Error("The task's previous actual duration is invalid.");
+      }
+      var transaction = {
+        version: 1,
+        id: "stopwatch-" + Date.now() + "-" + task.id + "-" + Math.random().toString(36).slice(2, 10),
+        taskId: task.id,
+        previousActual: oldActual,
+        targetActual: previousNumeric + minutesToAdd,
+        minutesToAdd: minutesToAdd,
+        durationSec: elapsedSec,
+        sessionStartAt: _focusTimer.sessionStartAt,
+        mode: _focusTimer.mode,
+        phase: _focusTimer.phase,
+        clockAdjusted: _focusTimer.clockAdjusted === true,
+        elapsedRemainderMs: Number.isInteger(_focusElapsedRemainderMs)
+          ? _focusElapsedRemainderMs : 0,
+        createdAt: Date.now()
+      };
+      if (!_validatePendingStopwatchTransaction(transaction)) {
+        throw new Error("The generated Stopwatch transaction failed validation.");
+      }
+
+      // Persist the recovery journal in the same verified timer record before
+      // changing task.actual. A process death at any later point is replayable.
+      _focusTimer.pendingStopwatchTransaction = transaction;
+      if (!_saveFocusTimer()) {
+        storageRecoveryRequired = true;
+        showAlertModal("تعذر حفظ سجل عملية Stopwatch",
+          "لم نتمكن من تأكيد سجل الاسترداد. لم نتابع تعديل المهمة؛ أعد فتح التطبيق بعد التحقق من التخزين.");
+        return;
+      }
+
+      task.actual = transaction.targetActual;
+      if (!saveData()) {
+        storageRecoveryRequired = true;
+        showAlertModal("عملية Stopwatch تحتاج إلى استرداد",
+          "لم نتمكن من تأكيد حفظ مدة المهمة. احتفظ التطبيق بسجل المعاملة؛ لا تحاول إضافة الدقائق يدويًا. أعد فتح التطبيق لاستكمال العملية بأمان.");
+        return;
+      }
+
+      if (!_recoverPendingStopwatchSave(true)) return;
+      releaseHold();
+      if (!_completeRollingRecoveryCheckpoint("focus-session-commit",
+        "سُجلت الجلسة",
+        "تم حفظ المهمة والجلسة، لكن تعذر التحقق من لقطة استرداد متسقة. أوقفنا الكتابة اللاحقة لحماية البيانات.")) return;
+      renderAll();
+      showToast("✅ أُضيفت " + minutesToAdd + " دقيقة وسُجلت جلسة Stopwatch مرة واحدة");
       return;
     }
 
     if (!_logSession("work", elapsedSec, true)) {
-      task.actual = oldActual;
-      var rollbackOk = !mainUpdateNeeded || saveData();
-      if (!rollbackOk) storageRecoveryRequired = true;
-      releaseHold();
-      if (rollbackOk && mainUpdateNeeded) _completeRollingRecoveryCheckpoint("transaction-rollback");
       _renderFocusTimer();
-      showAlertModal(rollbackOk ? "فشل تسجيل الجلسة" : "فشل التسجيل والتراجع",
-        rollbackOk
-          ? "تعذر تسجيل جلسة التركيز؛ تراجعنا عن إضافة المدة للمهمة وبقي المؤقت متوقفًا."
-          : "تعذر تسجيل الجلسة والتراجع عن المدة؛ قد تكون البيانات غير متسقة. أوقفنا الكتابة لحمايتها.");
+      showAlertModal("فشل تسجيل الجلسة",
+        "تعذر تسجيل جلسة التركيز؛ بقي المؤقت متوقفًا للمحاولة مجددًا بعد التحقق من التخزين.");
       return;
     }
-
-    releaseHold();
-    if (mainUpdateNeeded && !_completeRollingRecoveryCheckpoint("focus-session-commit",
-      "سُجلت الجلسة", "تم حفظ الجلسة، لكن تعذر التحقق من لقطة الاسترداد. أوقفنا الكتابة اللاحقة لحماية البيانات.")) return;
     if (!_resetAfterSession()) {
       showToast("⚠️ سُجلت الجلسة، لكن لم يُحفظ التصفير؛ لا تُعد تسجيلها.");
       return;
@@ -9637,10 +9799,12 @@ function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
     renderAll();
     showToast(alreadyLogged
       ? "✅ استُكمل تصفير جلسة مسجلة سابقًا"
-      : "✅ أُضيفت " + minutesToAdd + " دقيقة للمدة الفعلية وسُجلت الجلسة");
+      : "✅ أُنهِيت جلسة Stopwatch");
   } catch (e) {
     console.error("Stopwatch save transaction failed:", e);
-    showAlertModal("تعذر إكمال حفظ Stopwatch", "لم نكمل العملية. أُبقي المؤقت متوقفًا، ولا تفترض أن الجلسة حُفظت دون مراجعة سجل الجلسات.");
+    if (_focusTimer.pendingStopwatchTransaction) storageRecoveryRequired = true;
+    showAlertModal("تعذر إكمال حفظ Stopwatch",
+      "لم نكمل العملية. أُبقي سجل الاسترداد إن وُجد والمؤقت متوقفًا؛ لا تفترض أن الجلسة حُفظت دون مراجعة سجل الجلسات.");
   } finally {
     releaseHold();
   }
@@ -10750,6 +10914,7 @@ document.getElementById("taskDate").value = todayStr();
 
 _loadFocusTimer();
 _loadFocusSettings();
+if (_focusTimer.pendingStopwatchTransaction) _recoverPendingStopwatchSave(false);
 _finalizeFocusTimerColdStartRestore();
 renderAll();
 
