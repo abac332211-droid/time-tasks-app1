@@ -383,3 +383,41 @@
 - لم يُجرَ اختبار محلي في بيئة المحادثة؛ سيُعتمد على GitHub Actions لإثبات مجموعة الاختبارات كاملة واختبارات Chromium متعددة النوافذ.
 - Android Debug CI لا يثبت تشغيل Android WebView ميدانيًا، ولا يُغلق اختبار Force Stop أو Doze.
 - تُربط أرقام التشغيل والنتائج وعدد الاختبارات وسبب أي تخطٍ وArtifact ID وبصمته بالـSHA النهائي بعد اكتمال التشغيلات.
+
+
+### ملحق نتائج CI النهائية على الرأس `8b85862b5592a653a3dd2fb2b59acc80543d7c1e` — 23 نوفمبر 2026
+
+جميع التشغيلات الثلاثة اكتملت بنجاح وعلى SHA نفسه:
+
+- **Push PWA** — [run 45183548503](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548503): **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل تثبيت Playwright/Chromium وتشغيل اختبارات المتصفح الحقيقية.
+- **PR PWA** — [run 45183561775](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183561775): **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل تثبيت Playwright/Chromium وتشغيل اختبارات المتصفح الحقيقية.
+- **Android Debug** — [run 45183548817](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548817): **260 ناجحًا، 0 فشل، 7 متخطاة من أصل 267**؛ سبب كل تخطٍ أن Playwright مثبت فقط في خطوة اختبار المتصفح المخصصة، ولم يُثبت في workflow Android Debug. الاختبارات السبعة المتخطاة هي:
+  1. two real same-origin pages exchange storage events and block stale main/timer writes
+  2. a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal
+  3. two same-origin pages cannot commit duplicate task-linked Stopwatch transactions
+  4. non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere
+  5. a rejected rolling snapshot is rolled back and cannot outrank the previous valid slot
+  6. real Chromium pages release Web Lock after owner callback throws synchronously
+  7. real Chromium pages release Web Lock after owner callback Promise rejects
+- Android Debug: **Gradle BUILD SUCCESSFUL**، واجتاز فحص Manifest وجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`. هذه نتائج بناء وفحص أذونات فقط؛ لا تُنسب الاختبارات السبعة المتخطاة إلى نجاح Android أو إلى اختبار WebView ميداني.
+
+### الحالات الجديدة المسجلة في PWA/Chromium
+في كل من Push PWA وPR PWA:
+- `recovery does not adopt an exact legacy session when task.actual is previousActual`: **PASS** (test 243).
+- `recovery does not adopt an exact legacy session when task.actual is targetActual`: **PASS** (test 244).
+- `recovery accepts an existing session only when its saved transaction ID and details match`: **PASS** (test 245).
+- `Web Lock ownership is released after a synchronous callback throw before the next page acquires it`: **PASS** (test 246).
+- `Web Lock ownership is released after a rejected callback Promise before the next page acquires it`: **PASS** (test 247).
+- `real Chromium pages release Web Lock after owner callback throws synchronously`: **PASS** (test 109).
+- `real Chromium pages release Web Lock after owner callback Promise rejects`: **PASS** (test 110).
+
+### Android Debug artifact
+- Artifact ID: `14821928573` — [time-tasks-app-apk](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548817/artifacts/14821928573).
+- الحجم: 5,453,499 بايت.
+- البصمة المعلنة من GitHub Actions هي **SHA-256 لأرشيف artifact ZIP**: `d7b63569114eff25408366a0cfe4f18e656a25442190c0c5840b7ed2435eb3a6`. ليست بصمة APK الخام؛ لم أستخرج APK من الأرشيف لحساب بصمته المستقلة.
+
+### القرار والقيود المتبقية
+- اختبارات PWA/Chromium الجديدة نجحت على الرأس أعلاه، بما فيها الاختبارات الفعلية لصفحتين في Chromium.
+- Android Debug نجح في البناء وفحص Manifest، لكن **Android WebView الميداني، وForce Stop، وDoze لم تُختبر**.
+- لم تُطلب أو تُسجل مراجعة GitHub مستقلة جديدة. يبقى PR #10 مفتوحًا Draft وغير مدمج حتى يراجعه حساب مستقل.
+- لم يتغير `main` أو PR #6، ولم يتغير رقم الإصدار، ولم يُنشأ Release أو نشر إنتاجي.
