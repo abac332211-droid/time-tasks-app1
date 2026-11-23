@@ -587,8 +587,8 @@ test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopw
       'the second page must wait until the owner releases the exclusive lock');
     await pageA.evaluate(() => window._ownerLockRelease());
     await pageA.evaluate(() => window._ownerLockPromise);
-    const recoveryOutcome = await pageB.evaluate(() => ({
-      result: window._recoveryPromise,
+    const recoveryOutcome = await pageB.evaluate(async () => ({
+      result: await window._recoveryPromise,
       flagsBefore: window._recoveryFlagsBefore,
       flagsAfter: {
         storageRecoveryRequired: storageRecoveryRequired,
