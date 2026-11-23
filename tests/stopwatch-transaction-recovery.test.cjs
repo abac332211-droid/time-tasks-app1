@@ -75,6 +75,8 @@ function createRuntime(storage, options = {}) {
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
     storageRecoveryRequired: false,
     _rollingRecoveryCheckpointHold: 0,
+    _stopwatchTransactionLockDepth: 0,
+    _rollingRecoveryBackupPending: null,
     _rollingRecoveryBackupLastFailure: null,
     _mainStorageBaselineRaw: mainRaw,
     _mainStorageBaselineReady: true,
@@ -115,7 +117,7 @@ function createRuntime(storage, options = {}) {
       locks: {
         _tail: Promise.resolve(),
         request(_name, _options, callback) {
-          const run = this._tail.then(callback);
+          const run = this._tail.then(() => callback({ name: _name, mode: 'exclusive' }));
           this._tail = run.catch(() => {});
           return run;
         }
@@ -166,6 +168,8 @@ function createRuntime(storage, options = {}) {
 
   const names = [
     '_trackSecondaryStorageRead',
+    '_matchingFocusSessionRecords',
+    '_hasAmbiguousLegacyFocusSession',
     '_pendingStopwatchWriteAllowed',
     '_withStopwatchTransactionLock',
     '_secondaryStorageWriteAllowed',
@@ -262,7 +266,9 @@ test('process restart after task commit but before session logging resumes witho
 
   const restarted = createRuntime(storage);
   assert.ok(restarted.sandbox._focusTimer.pendingStopwatchTransaction);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), true);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), true);
 
   const recoveredMain = JSON.parse(storage.getItem('main'));
   const recoveredTimer = JSON.parse(storage.getItem('focus-timer'));
@@ -293,7 +299,9 @@ test('a durable timer journal can finish the task update when the first main wri
     'the timer journal was saved before attempting the main write');
 
   const restarted = createRuntime(storage);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), true);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), true);
 
   const recoveredMain = JSON.parse(storage.getItem('main'));
   const recoveredSessions = JSON.parse(storage.getItem('focus-sessions'));
@@ -316,7 +324,9 @@ test('restart after session write but before timer reset is idempotent', async (
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
 
   const restarted = createRuntime(storage);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), true);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), true);
 
   const recoveredMain = JSON.parse(storage.getItem('main'));
   const recoveredSessions = JSON.parse(storage.getItem('focus-sessions'));
@@ -339,7 +349,9 @@ test('recovery refuses to overwrite a task value that is neither the pre-commit 
   storage.setItem('main', JSON.stringify(externallyChanged));
 
   const restarted = createRuntime(storage);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), false);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), false);
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 17);
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
@@ -357,7 +369,9 @@ test('recovery rejects targetActual without the matching task transaction marker
   changed.tasks[0].actual = 8;
   storage.setItem('main', JSON.stringify(changed));
   const restarted = createRuntime(storage);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), false);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), false);
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
@@ -377,7 +391,9 @@ test('session recovery rejects the same identity when duration differs', async (
     durationSec: 124, completed: true
   }]));
   const restarted = createRuntime(storage);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), false);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), false);
   assert.equal(JSON.parse(storage.getItem('focus-sessions'))[0].durationSec, 124);
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
   assert.equal(restarted.sandbox.storageRecoveryRequired, true);
@@ -394,4 +410,97 @@ test('session dedupe does not accept the same identity with a different duration
   }]));
   runtime.sandbox._sessionsCache = null;
   assert.equal(runtime.sandbox._sessionAlreadyLogged('work', 125), false);
+});
+
+
+test('matching transaction ID in page memory does not grant write permission without owning Web Lock', async () => {
+  const storage = initialStorage();
+  const tx = {
+    version: 1, id: 'stopwatch-lock-owner-test', taskId: 7, previousActual: 5,
+    targetActual: 8, minutesToAdd: 3, durationSec: 125,
+    sessionStartAt: JSON.parse(storage.getItem('focus-timer')).sessionStartAt,
+    mode: 'stopwatch', phase: 'work', clockAdjusted: false,
+    elapsedRemainderMs: 0, createdAt: Date.now()
+  };
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const runtime = createRuntime(storage);
+  assert.equal(runtime.sandbox._focusTimer.pendingStopwatchTransaction.id, tx.id);
+  assert.equal(runtime.sandbox._pendingStopwatchWriteAllowed(), false);
+  assert.equal(runtime.sandbox._storageWriteAllowed(), false);
+  assert.equal(await runtime.sandbox._withStopwatchTransactionLock(
+    () => runtime.sandbox._pendingStopwatchWriteAllowed()
+  ), true);
+  assert.equal(runtime.sandbox._stopwatchTransactionLockDepth, 0,
+    'lock ownership must be released after the callback settles');
+});
+
+test('linked legacy session without transaction ID is held for review when task remains at previousActual', async () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  storage.setItem('focus-sessions', JSON.stringify([{
+    id: 1, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt: new Date(timer.sessionStartAt).toISOString(),
+    endedAt: new Date(timer.sessionStartAt + 125000).toISOString(),
+    durationSec: 125, completed: true
+  }]));
+  const runtime = createRuntime(storage);
+  await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 3);
+  assert.equal(runtime.sandbox.tasks[0].actual, 5);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 5);
+  assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125);
+  assert.equal(runtime.sandbox._focusTimer.pendingStopwatchTransaction, null);
+  assert.equal(runtime.sandbox.storageRecoveryRequired, true);
+  assert.match(String(runtime.alerts[0][0]), /جلسة Stopwatch قديمة تحتاج إلى مراجعة/);
+});
+
+test('linked legacy session without transaction ID stays ambiguous when task.actual equals targetActual', async () => {
+  const storage = initialStorage();
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks[0].actual = 8;
+  storage.setItem('main', JSON.stringify(main));
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  storage.setItem('focus-sessions', JSON.stringify([{
+    id: 1, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt: new Date(timer.sessionStartAt).toISOString(),
+    endedAt: new Date(timer.sessionStartAt + 125000).toISOString(),
+    durationSec: 125, completed: true
+  }]));
+  const runtime = createRuntime(storage);
+  await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 3);
+  assert.equal(runtime.sandbox.tasks[0].actual, 8);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
+  assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125);
+  assert.equal(runtime.sandbox._focusTimer.pendingStopwatchTransaction, null);
+  assert.equal(runtime.sandbox.storageRecoveryRequired, true);
+  assert.match(String(runtime.alerts[0][0]), /جلسة Stopwatch قديمة تحتاج إلى مراجعة/);
+});
+
+test('invalid present task transaction marker is not treated as an absent legacy marker', async () => {
+  const storage = initialStorage();
+  const first = createRuntime(storage);
+  first.sandbox._logSession = () => { throw new Error('interrupt before session save'); };
+  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks[0].lastStopwatchTransactionId = "";
+  storage.setItem('main', JSON.stringify(main));
+  const restarted = createRuntime(storage);
+  assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
+    () => restarted.sandbox._recoverPendingStopwatchSave(false)
+  ), false);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].lastStopwatchTransactionId, "");
+  assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
+  assert.equal(restarted.sandbox.storageRecoveryRequired, true);
+});
+
+test('task-linked Stopwatch save fails closed when Web Locks is unavailable', async () => {
+  const storage = initialStorage();
+  const runtime = createRuntime(storage);
+  runtime.sandbox.navigator.locks = null;
+  await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 3);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 5);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
+  assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
+  assert.ok(runtime.alerts.some(args => /تعذر تأمين عملية Stopwatch/.test(String(args[0]))));
 });

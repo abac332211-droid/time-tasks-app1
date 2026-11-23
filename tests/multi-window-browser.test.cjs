@@ -340,7 +340,7 @@ test('a stale page refuses manual and rolling backups while another page has a p
       () => window._mainStorageBaselineReady === true && typeof window.buildBackupObject === 'function',
       null, { timeout: 20000 }
     )));
-    const pendingId = await pageA.evaluate(() => {
+    const pendingId = await pageA.evaluate(async () => {
       // Startup reconciliation in the second page may legitimately write default metadata.
       // Refresh the owner page's in-memory main record and durable-key baselines before the test.
       _mainStorageExternalChangeObserved = false;
@@ -356,8 +356,9 @@ test('a stale page refuses manual and rolling backups while another page has a p
       _focusTimerExternalConflict = false;
       _secondaryStorageConflicts = Object.create(null);
       const task = tasks.find(item => item.id === 7021);
-      const release = _acquireRollingRecoveryCheckpointHold(true);
-      try {
+      return _withStopwatchTransactionLock(async () => {
+        const release = _acquireRollingRecoveryCheckpointHold(true);
+        try {
         const tx = {
           version: 1, id: 'stopwatch-export-test-7021', taskId: task.id,
           previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
@@ -370,9 +371,10 @@ test('a stale page refuses manual and rolling backups while another page has a p
         task.lastStopwatchTransactionId = tx.id;
         if (!saveData()) throw new Error('could not commit task with transaction marker');
         return tx.id;
-      } finally { release(); }
+        } finally { release(); }
+      });
     });
-    const result = await pageB.evaluate(() => {
+    const result = await pageB.evaluate(async () => {
       window._mainStorageExternalChangeObserved = false;
       window._focusTimerExternalConflict = false;
       window._secondaryStorageConflicts = Object.create(null);
@@ -381,7 +383,9 @@ test('a stale page refuses manual and rolling backups while another page has a p
       keys.forEach(key => { before[key] = localStorage.getItem(key); });
       let exportError = null;
       try { buildBackupObject(); } catch (error) { exportError = error.message; }
-      const rollingSaved = _storeRollingRecoveryBackup('stale-window-test', 0);
+      const rollingQueued = _storeRollingRecoveryBackup('stale-window-test', 0);
+      const rollingSaved = window._rollingRecoveryBackupPending
+        ? await window._rollingRecoveryBackupPending : rollingQueued;
       const after = {};
       Object.keys(localStorage).sort().forEach(key => { after[key] = localStorage.getItem(key); });
       return {
@@ -454,6 +458,219 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
     assert.equal(state.sessions.length, 1);
     assert.equal(state.sessions[0].transactionId, state.task.lastStopwatchTransactionId);
     assert.equal(state.timer.pendingStopwatchTransaction, null);
+    await context.close();
+  } finally {
+    if (browserInstance) await browserInstance.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browserInstance;
+  try {
+    browserInstance = await chromium.launch({ headless: true });
+    const context = await browserInstance.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 7041, name: 'Lock ownership task', type: 'معرفية', status: 'pending',
+      expected: 20, actual: 5, plannedDate: '2026-11-23', plannedTime: '',
+      completedAt: null, createdAt: Date.now(), projectId: null, priority: null,
+      recurrence: null, checklist: null
+    }];
+    initial.timer.taskId = 7041;
+    initial.timer.baseElapsed = 125;
+    initial.timer.sessionStartAt = Date.now() - 125000;
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._mainStorageBaselineReady === true
+        && typeof window._pendingStopwatchWriteAllowed === 'function',
+      null, { timeout: 20000 }
+    )));
+    const tx = {
+      version: 1, id: 'stopwatch-lock-owner-7041', taskId: 7041,
+      previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
+      sessionStartAt: initial.timer.sessionStartAt, mode: 'stopwatch', phase: 'work',
+      clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+    };
+
+    await pageA.evaluate(async transaction => {
+      _mainStorageExternalChangeObserved = false;
+      _focusTimerExternalConflict = false;
+      _secondaryStorageConflicts = Object.create(null);
+      window._ownerLockReady = false;
+      window._ownerLockRelease = null;
+      window._ownerLockPromise = _withStopwatchTransactionLock(async () => {
+        const releaseHold = _acquireRollingRecoveryCheckpointHold(true);
+        try {
+          _focusTimer.pendingStopwatchTransaction = transaction;
+          if (!_saveFocusTimer()) throw new Error('lock owner could not persist its journal');
+          window._ownerLockReady = true;
+          await new Promise(resolve => { window._ownerLockRelease = resolve; });
+        } finally { releaseHold(); }
+      });
+    }, tx);
+    await pageA.waitForFunction(() => window._ownerLockReady === true, null, { timeout: 5000 });
+
+    const before = await pageB.evaluate(transaction => {
+      _focusTimer.pendingStopwatchTransaction = transaction;
+      _mainStorageBaselineRaw = localStorage.getItem(STORAGE_KEY);
+      _mainStorageBaselineReady = true;
+      _mainStorageExternalChangeObserved = false;
+      _focusTimerExternalConflict = false;
+      _secondaryStorageConflicts = Object.create(null);
+      _secondaryStorageBaselines[FOCUS_TIMER_KEY] = localStorage.getItem(FOCUS_TIMER_KEY);
+      _secondaryStorageBaselines[FOCUS_SESSIONS_KEY] = localStorage.getItem(FOCUS_SESSIONS_KEY);
+      const pomodoroSession = {
+        id: 9001, mode: 'pomodoro', phase: 'work', taskId: null, taskName: '',
+        startedAt: new Date(Date.now() - 60000).toISOString(),
+        endedAt: new Date().toISOString(), durationSec: 60, completed: true
+      };
+      const beforeMain = localStorage.getItem(STORAGE_KEY);
+      const beforeTimer = localStorage.getItem(FOCUS_TIMER_KEY);
+      const beforeSessions = localStorage.getItem(FOCUS_SESSIONS_KEY);
+      return {
+        sameId: _focusTimer.pendingStopwatchTransaction.id,
+        allowed: _pendingStopwatchWriteAllowed(),
+        mainWrite: saveData(),
+        timerWrite: _saveFocusTimer(),
+        pomodoroWrite: _saveSessions([pomodoroSession]),
+        mainUnchanged: beforeMain === localStorage.getItem(STORAGE_KEY),
+        timerUnchanged: beforeTimer === localStorage.getItem(FOCUS_TIMER_KEY),
+        sessionsUnchanged: beforeSessions === localStorage.getItem(FOCUS_SESSIONS_KEY)
+      };
+    }, tx);
+    assert.equal(before.sameId, tx.id);
+    assert.equal(before.allowed, false);
+    assert.equal(before.mainWrite, false);
+    assert.equal(before.timerWrite, false);
+    assert.equal(before.pomodoroWrite, false);
+    assert.equal(before.mainUnchanged, true);
+    assert.equal(before.timerUnchanged, true);
+    assert.equal(before.sessionsUnchanged, true);
+
+    await pageB.evaluate(() => {
+      window._recoveryResult = null;
+      window._recoveryPromise = _withStopwatchTransactionLock(function() {
+        window._recoveryResult = _pendingStopwatchWriteAllowed()
+          ? _recoverPendingStopwatchSave(false) : false;
+        return window._recoveryResult;
+      });
+    });
+    assert.equal(await pageB.evaluate(() => window._recoveryResult), null,
+      'the second page must wait until the owner releases the exclusive lock');
+    await pageA.evaluate(() => window._ownerLockRelease());
+    await pageA.evaluate(() => window._ownerLockPromise);
+    assert.equal(await pageB.evaluate(() => window._recoveryPromise), true);
+    const recovered = await pageB.evaluate(() => ({
+      task: JSON.parse(localStorage.getItem(STORAGE_KEY)).tasks.find(item => item.id === 7041),
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]')
+        .filter(item => item.taskId === 7041),
+      timer: JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY))
+    }));
+    assert.equal(recovered.task.actual, 8);
+    assert.equal(recovered.task.lastStopwatchTransactionId, tx.id);
+    assert.equal(recovered.sessions.length, 1);
+    assert.equal(recovered.sessions[0].transactionId, tx.id);
+    assert.equal(recovered.timer.pendingStopwatchTransaction, null);
+    await context.close();
+  } finally {
+    if (browserInstance) await browserInstance.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('a rejected rolling snapshot is rolled back and cannot outrank the previous valid slot', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browserInstance;
+  try {
+    browserInstance = await chromium.launch({ headless: true });
+    const context = await browserInstance.newContext({ serviceWorkers: 'block' });
+    await context.addInitScript((initial) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, seed);
+    const page = await context.newPage();
+    await page.goto(appUrl);
+    await page.waitForFunction(() => window._mainStorageBaselineReady === true
+      && typeof window._storeRollingRecoveryBackupLocked === 'function', null, { timeout: 20000 });
+
+    const outcome = await page.evaluate(async () => _withStopwatchTransactionLock(function() {
+      const initialSaved = _storeRollingRecoveryBackupLocked('initial-valid-slot', 0);
+      if (!initialSaved) throw new Error('could not create a previous valid rolling checkpoint');
+      const oldA = localStorage.getItem(ROLLING_BACKUP_A_KEY);
+      const oldB = localStorage.getItem(ROLLING_BACKUP_B_KEY);
+      const originalSetItem = Storage.prototype.setItem;
+      let injected = false;
+      Storage.prototype.setItem = function(key, value) {
+        originalSetItem.call(this, key, value);
+        if (!injected && (key === ROLLING_BACKUP_A_KEY || key === ROLLING_BACKUP_B_KEY)) {
+          injected = true;
+          const timer = JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY));
+          timer.pendingStopwatchTransaction = {
+            version: 1, id: 'stopwatch-appeared-during-backup', taskId: 99,
+            previousActual: 1, targetActual: 2, minutesToAdd: 1, durationSec: 60,
+            sessionStartAt: Date.now() - 60000, mode: 'stopwatch', phase: 'work',
+            clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+          };
+          originalSetItem.call(this, FOCUS_TIMER_KEY, JSON.stringify(timer));
+        }
+      };
+      let saved = false;
+      try { saved = _storeRollingRecoveryBackupLocked('interleaved-final-check', 0); }
+      finally { Storage.prototype.setItem = originalSetItem; }
+      const latest = _getLatestRollingRecoveryBackup();
+      return {
+        saved,
+        failure: _rollingRecoveryBackupLastFailure,
+        injected,
+        oldA, oldB,
+        currentA: localStorage.getItem(ROLLING_BACKUP_A_KEY),
+        currentB: localStorage.getItem(ROLLING_BACKUP_B_KEY),
+        latestSequence: latest && latest.record ? latest.record.sequence : null,
+        priorMaxSequence: Math.max(
+          _parseRollingRecoveryBackup(oldA)?.sequence || 0,
+          _parseRollingRecoveryBackup(oldB)?.sequence || 0
+        ),
+        timerHasPending: !!JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY)).pendingStopwatchTransaction
+      };
+    }));
+    assert.equal(outcome.saved, false);
+    assert.equal(outcome.failure, 'snapshot_conflict');
+    assert.equal(outcome.injected, true);
+    assert.equal(outcome.currentA, outcome.oldA);
+    assert.equal(outcome.currentB, outcome.oldB);
+    assert.equal(outcome.latestSequence, outcome.priorMaxSequence);
+    assert.equal(outcome.timerHasPending, true);
     await context.close();
   } finally {
     if (browserInstance) await browserInstance.close();

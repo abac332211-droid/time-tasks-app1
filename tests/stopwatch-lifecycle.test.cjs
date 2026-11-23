@@ -50,14 +50,18 @@ function createStopwatchSaveHarness(options = {}) {
     _focusElapsedRemainderMs: 250,
     _focusTimerExternalConflict: false,
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 0,
     tasks: task ? [task] : [],
     console: { error() {}, warn() {} },
     navigator: {
       locks: {
-        request(_name, _options, callback) { return Promise.resolve().then(callback); }
+        request(_name, _options, callback) {
+          return Promise.resolve().then(() => callback({ name: _name, mode: 'exclusive' }));
+        }
       }
     },
     _sessionAlreadyLogged() { calls.push('alreadyLogged'); return logged; },
+    _hasAmbiguousLegacyFocusSession() { return options.legacySessionAmbiguous === true; },
     _validatePendingStopwatchTransaction: () => true,
     _saveFocusTimer() { calls.push('saveTimer'); return true; },
     _recoverPendingStopwatchSave(holdAlreadyAcquired) {
@@ -391,4 +395,27 @@ test('unlinked Stopwatch discard resets the timer without logging a session', ()
   assert.ok(h.calls.includes('reset'));
   assert.equal(h.timer.running, false);
   assert.equal(h.timer.baseElapsed, 0);
+});
+
+
+test('linked legacy Stopwatch session without transaction ID is held for review at previousActual', async () => {
+  const h = createStopwatchSaveHarness({ actual: 5, legacySessionAmbiguous: true });
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
+  assert.equal(h.task.actual, 5);
+  assert.equal(h.saveCalls, 0);
+  assert.equal(h.resetAttempts, 0);
+  assert.equal(h.timer.baseElapsed, 125);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+  assert.match(String(h.alerts[0][0]), /جلسة Stopwatch قديمة تحتاج إلى مراجعة/);
+});
+
+test('linked legacy Stopwatch session remains ambiguous at targetActual', async () => {
+  const h = createStopwatchSaveHarness({ actual: 8, legacySessionAmbiguous: true });
+  await h.sandbox._applyStopwatchSave(125, h.task, 3);
+  assert.equal(h.task.actual, 8);
+  assert.equal(h.saveCalls, 0);
+  assert.equal(h.resetAttempts, 0);
+  assert.equal(h.timer.baseElapsed, 125);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+  assert.match(String(h.alerts[0][0]), /جلسة Stopwatch قديمة تحتاج إلى مراجعة/);
 });

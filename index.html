@@ -1506,6 +1506,8 @@ let _timerSecondsLeft = 0;
 let storageRecoveryRequired = false;
 // Suppress intermediate rolling checkpoints while a multi-key transaction is in flight.
 var _rollingRecoveryCheckpointHold = 0;
+var _stopwatchTransactionLockDepth = 0;
+var _rollingRecoveryBackupPending = null;
 var _rollingRecoveryBackupLastFailure = null;
 var _rollingRecoveryBackupLastSuccessAt = null;
 var _rollingRecoveryBackupStale = false;
@@ -1644,27 +1646,15 @@ function _pendingStopwatchWriteAllowed() {
     if (timerRaw === null) return true;
     var timerRecord = JSON.parse(timerRaw);
     if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return false;
-    var pending = timerRecord.pendingStopwatchTransaction;
-    if (!pending) return true;
-    var localPending = typeof _focusTimer !== "undefined" && _focusTimer
-      ? _focusTimer.pendingStopwatchTransaction : null;
-    if (localPending && localPending.id === pending.id) return true;
-    var mainRaw = localStorage.getItem(STORAGE_KEY);
-    if (mainRaw === null) return false;
-    var mainData = JSON.parse(mainRaw);
-    if (!mainData || !Array.isArray(mainData.tasks)) return false;
-    var task = mainData.tasks.find(function(item) { return item && item.id === pending.taskId; });
-    if (!task || task.lastStopwatchTransactionId !== pending.id || task.actual !== pending.targetActual) return false;
-    var sessionsRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
-    var sessions = sessionsRaw === null ? [] : JSON.parse(sessionsRaw);
-    if (!Array.isArray(sessions)) return false;
-    var startedAt = new Date(pending.sessionStartAt).toISOString();
-    return sessions.some(function(session) {
-      return session && session.transactionId === pending.id && session.taskId === pending.taskId
-        && session.mode === pending.mode && session.phase === pending.phase
-        && session.startedAt === startedAt && session.durationSec === pending.durationSec;
-    });
-  } catch (e) { return false; }
+    if (!timerRecord.pendingStopwatchTransaction) return true;
+
+    // Transaction IDs identify the journal; only the runtime executing inside
+    // the successfully granted Web Lock callback owns the right to write.
+    return typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0;
+  } catch (e) {
+    return false;
+  }
 }
 
 function _storageWriteAllowed() {
@@ -3109,24 +3099,104 @@ function _getLatestRollingRecoveryBackup() {
 }
 
 function _storeRollingRecoveryBackup(reason, minIntervalMs) {
+  if (typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0) {
+    return _storeRollingRecoveryBackupLocked(reason, minIntervalMs);
+  }
+  if (typeof _rollingRecoveryCheckpointHold !== "undefined"
+      && _rollingRecoveryCheckpointHold > 0) return true;
+
+  if (typeof navigator !== "undefined" && navigator.locks
+      && typeof navigator.locks.request === "function") {
+    _rollingRecoveryBackupLastFailure = "lock_pending";
+    _rollingRecoveryBackupStale = true;
+    var request = _withStopwatchTransactionLock(function() {
+      return _storeRollingRecoveryBackupLocked(reason, minIntervalMs);
+    });
+    _rollingRecoveryBackupPending = request;
+    request.then(function(saved) {
+      if (_rollingRecoveryBackupPending === request) _rollingRecoveryBackupPending = null;
+      if (saved === false) {
+        if (_isOptionalRollingRecoveryBackupFailure()) {
+          _rollingRecoveryBackupStale = true;
+          showToast("⚠️ تعذر تحديث النسخة الدوّارة الآن؛ بقيت النسخة السابقة محفوظة.");
+        } else {
+          storageRecoveryRequired = true;
+          showAlertModal("تعذر التحقق من نسخة الاسترداد",
+            "تعذر إنشاء لقطة استرداد متسقة بعد انتظار قفل النوافذ. أوقفنا الكتابة اللاحقة لحماية البيانات.");
+        }
+      }
+    }).catch(function(error) {
+      if (_rollingRecoveryBackupPending === request) _rollingRecoveryBackupPending = null;
+      _rollingRecoveryBackupLastFailure = "lock_failed";
+      _rollingRecoveryBackupStale = true;
+      storageRecoveryRequired = true;
+      console.error("Rolling recovery backup could not acquire the shared lock:", error);
+      showAlertModal("تعذر تأمين نسخة الاسترداد",
+        "تعذر الحصول على قفل النوافذ لإنشاء لقطة استرداد. أوقفنا الكتابة اللاحقة لحماية البيانات.");
+    });
+    return false;
+  }
+
+  // Without Web Locks this build cannot start or recover task-linked Stopwatch
+  // transactions. Preserve the double-read snapshot fallback for other data.
+  return _storeRollingRecoveryBackupLocked(reason, minIntervalMs);
+}
+
+function _storeRollingRecoveryBackupLocked(reason, minIntervalMs) {
   _rollingRecoveryBackupLastFailure = null;
   var failureStage = "recovery_marker_read_failed";
+  var publication = null;
+
+  function rollbackRejectedPublication() {
+    if (!publication) return true;
+    var rejected = publication;
+    publication = null;
+    try {
+      var currentTarget = localStorage.getItem(rejected.targetKey);
+      if (currentTarget === rejected.candidateRaw) {
+        if (rejected.previousTargetRaw === null) localStorage.removeItem(rejected.targetKey);
+        else localStorage.setItem(rejected.targetKey, rejected.previousTargetRaw);
+      } else if (currentTarget !== rejected.previousTargetRaw) {
+        // Never overwrite a different value that may have been published by
+        // another actor after our candidate was written.
+        return false;
+      }
+      if (localStorage.getItem(rejected.targetKey) !== rejected.previousTargetRaw) return false;
+      if (localStorage.getItem(rejected.otherKey) !== rejected.previousOtherRaw) return false;
+      return true;
+    } catch (rollbackError) {
+      console.warn("Rejected rolling recovery publication could not be rolled back:", rollbackError);
+      return false;
+    }
+  }
+
   function fail(kind, error) {
+    if (publication && !rollbackRejectedPublication()) {
+      kind = "backup_rollback_failed";
+      storageRecoveryRequired = true;
+    }
     _rollingRecoveryBackupLastFailure = kind;
     _rollingRecoveryBackupStale = true;
     if (error) console.warn("Rolling recovery checkpoint failed (" + kind + "):", error);
     return false;
   }
-  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return fail("recovery_required");
+
+  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired)
+    return fail("recovery_required");
   if (typeof _rollingRecoveryCheckpointHold !== "undefined"
       && _rollingRecoveryCheckpointHold > 0) return true;
   if ((typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
       || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)
-      || Object.keys(typeof _secondaryStorageConflicts !== "undefined" ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
+      || Object.keys(typeof _secondaryStorageConflicts !== "undefined"
+        ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
     return fail("external_storage_conflict");
-  // A pending Stopwatch transaction must be completed before a mixed rolling
-  // snapshot can be published. Its durable journal lives in the timer record.
-  if (typeof _focusTimer !== "undefined" && _focusTimer && _focusTimer.pendingStopwatchTransaction) return true;
+
+  // During a transaction the caller deliberately holds the lock and the
+  // durable journal. Skip rolling publication until the journal is cleared.
+  if (typeof _focusTimer !== "undefined" && _focusTimer
+      && _focusTimer.pendingStopwatchTransaction) return true;
+
   try {
     var blockingKeys = [];
     if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
@@ -3166,8 +3236,6 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
     }
 
     failureStage = "snapshot_read_failed";
-    // LocalStorage has no multi-key transaction. Refuse a mixed snapshot if
-    // another tab changes any group while this snapshot is being assembled.
     var data = readSnapshot();
     var confirmationSnapshot = readSnapshot();
     for (var verifyIndex = 0; verifyIndex < snapshotKeys.length; verifyIndex++) {
@@ -3175,9 +3243,9 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       if (data[property] !== confirmationSnapshot[property]) return fail("snapshot_conflict");
     }
     if (typeof _mainStorageBaselineReady !== "undefined" && _mainStorageBaselineReady
-        && data.main !== _mainStorageBaselineRaw)
-      return fail("external_storage_conflict");
-    var trackedBaselines = typeof _secondaryStorageBaselines !== "undefined" ? _secondaryStorageBaselines : {};
+        && data.main !== _mainStorageBaselineRaw) return fail("external_storage_conflict");
+    var trackedBaselines = typeof _secondaryStorageBaselines !== "undefined"
+      ? _secondaryStorageBaselines : {};
     for (var baselineIndex = 0; baselineIndex < snapshotKeys.length; baselineIndex++) {
       var baselineEntry = snapshotKeys[baselineIndex];
       if (Object.prototype.hasOwnProperty.call(trackedBaselines, baselineEntry[1])
@@ -3217,9 +3285,21 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       targetKey = validA.createdAtMs < validB.createdAtMs
         ? ROLLING_BACKUP_A_KEY : ROLLING_BACKUP_B_KEY;
     }
+    var otherKey = targetKey === ROLLING_BACKUP_A_KEY
+      ? ROLLING_BACKUP_B_KEY : ROLLING_BACKUP_A_KEY;
+    var previousTargetRaw = targetKey === ROLLING_BACKUP_A_KEY ? rawA : rawB;
+    var previousOtherRaw = targetKey === ROLLING_BACKUP_A_KEY ? rawB : rawA;
 
-    // The checkpoint is supplemental: a quota/slot-write failure must not be
-    // confused with a failed primary transaction. The other rolling slot is kept.
+    // Record both previous slot values before publication. A rejected
+    // candidate is rolled back only when the target still contains our bytes.
+    publication = {
+      targetKey: targetKey,
+      otherKey: otherKey,
+      previousTargetRaw: previousTargetRaw,
+      previousOtherRaw: previousOtherRaw,
+      candidateRaw: candidateRaw
+    };
+
     failureStage = "backup_write_failed";
     try {
       localStorage.setItem(targetKey, candidateRaw);
@@ -3235,15 +3315,23 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
       return fail("backup_verification_failed", readbackError);
     }
     var verified = _parseRollingRecoveryBackup(verifiedRaw);
-    if (verifiedRaw !== candidateRaw || !verified
-        || verified.sequence !== candidate.sequence) {
+    if (verifiedRaw !== candidateRaw || !verified || verified.sequence !== candidate.sequence)
       return fail("backup_verification_failed");
-    }
+
     var finalSnapshot = readSnapshot();
     for (var finalIndex = 0; finalIndex < snapshotKeys.length; finalIndex++) {
       var finalProperty = snapshotKeys[finalIndex][0];
-      if (data[finalProperty] !== finalSnapshot[finalProperty]) return fail("snapshot_conflict");
+      if (data[finalProperty] !== finalSnapshot[finalProperty])
+        return fail("snapshot_conflict");
     }
+    if (finalSnapshot.focusTimer !== null) {
+      var finalTimer = JSON.parse(finalSnapshot.focusTimer);
+      if (!finalTimer || typeof finalTimer !== "object" || Array.isArray(finalTimer)
+          || finalTimer.pendingStopwatchTransaction)
+        return fail("snapshot_conflict");
+    }
+
+    publication = null;
     _rollingRecoveryBackupLastFailure = null;
     _rollingRecoveryBackupLastSuccessAt = now;
     _rollingRecoveryBackupStale = false;
@@ -3254,7 +3342,8 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
 }
 
 function _isOptionalRollingRecoveryBackupFailure() {
-  return _rollingRecoveryBackupLastFailure === "backup_write_failed"
+  return _rollingRecoveryBackupLastFailure === "lock_pending"
+    || _rollingRecoveryBackupLastFailure === "backup_write_failed"
     || _rollingRecoveryBackupLastFailure === "backup_verification_failed";
 }
 function _acquireRollingRecoveryCheckpointHold(enabled) {
@@ -3273,13 +3362,15 @@ function _completeRollingRecoveryCheckpoint(reason, title, message) {
       || _storeRollingRecoveryBackup(reason, 0)) return true;
   if (_isOptionalRollingRecoveryBackupFailure()) {
     _rollingRecoveryBackupStale = true;
+    var detail = _rollingRecoveryBackupLastFailure === "lock_pending"
+      ? " ستُلتقط بعد انتهاء معاملة النافذة الأخرى."
+      : " بقيت النسخة السابقة محفوظة وسيُعاد تحديثها لاحقًا.";
     showToast("⚠️ " + (title || "تم حفظ البيانات") +
-      "، لكن النسخة الاحتياطية الدوّارة لم تُحدّث. بقيت النسخة السابقة كما هي.");
+      "، لكن النسخة الدوّارة لم تُعتمد بعد." + detail);
     return true;
   }
   storageRecoveryRequired = true;
-  showAlertModal("تعذر التحقق من نسخة الاسترداد",
-    message || "لم نستطع قراءة اللقطة أو التحقق من اتساقها. أوقفنا الكتابة اللاحقة حتى تُراجع حالة التخزين.");
+  if (message) showAlertModal("تعذر التحقق من نسخة الاسترداد", message);
   return false;
 }
 
@@ -9211,18 +9302,39 @@ function _saveSessions(arr) {
   } catch (e) { return false; }
 }
 
+function _matchingFocusSessionRecords(phase) {
+  var start = Number.isFinite(_focusTimer.sessionStartAt) ? _focusTimer.sessionStartAt : null;
+  if (!Number.isFinite(start) || start < 0) return [];
+  var startDate = new Date(start);
+  if (!Number.isFinite(startDate.getTime())) return [];
+  var startedAt = startDate.toISOString();
+  return _loadSessions().filter(function(session) {
+    return session && session.startedAt === startedAt
+      && session.taskId === _focusTimer.taskId
+      && session.mode === _focusTimer.mode
+      && session.phase === phase;
+  });
+}
+
+function _hasAmbiguousLegacyFocusSession(phase) {
+  if (_focusTimer.taskId === null || _focusTimer.taskId === undefined) return false;
+  return _matchingFocusSessionRecords(phase).some(function(session) {
+    return !session.transactionId;
+  });
+}
+
 function _sessionAlreadyLogged(phase, durationSec) {
   if (!Number.isFinite(durationSec) || durationSec < 1) return false;
-  var start = Number.isFinite(_focusTimer.sessionStartAt)
-    ? _focusTimer.sessionStartAt : (Date.now() - durationSec * 1000);
-  if (!Number.isFinite(start) || start < 0) return false;
-  var startDate = new Date(start);
-  if (!Number.isFinite(startDate.getTime())) return false;
-  var startedAt = startDate.toISOString();
-  return _loadSessions().some(function(session) {
-    return session && session.startedAt === startedAt && session.taskId === _focusTimer.taskId
-      && session.mode === _focusTimer.mode && session.phase === phase
-      && session.durationSec === durationSec;
+  var rows = _matchingFocusSessionRecords(phase);
+  if (_focusTimer.taskId === null || _focusTimer.taskId === undefined) {
+    return rows.some(function(session) { return session.durationSec === durationSec; });
+  }
+  var task = tasks.find(function(item) { return item && item.id === _focusTimer.taskId; });
+  var transactionId = task && task.lastStopwatchTransactionId;
+  if (typeof transactionId !== "string" || transactionId.length < 8 || transactionId.length > 160)
+    return false;
+  return rows.some(function(session) {
+    return session.durationSec === durationSec && session.transactionId === transactionId;
   });
 }
 
@@ -9841,15 +9953,19 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
     var task = tasks.find(function(item) { return item && item.id === tx.taskId; });
     if (!task) throw new Error("The task referenced by the pending Stopwatch transaction no longer exists.");
     var actual = task.actual === undefined || task.actual === null ? null : task.actual;
-    var marker = task.lastStopwatchTransactionId || null;
-    if (marker === tx.id) {
+    var markerPresent = Object.prototype.hasOwnProperty.call(task, "lastStopwatchTransactionId")
+      && task.lastStopwatchTransactionId !== null;
+    var marker = markerPresent ? task.lastStopwatchTransactionId : null;
+    if (markerPresent && (typeof marker !== "string" || marker.length < 8 || marker.length > 160))
+      throw new Error("The task contains an invalid Stopwatch transaction marker.");
+    if (markerPresent && marker === tx.id) {
       if (actual !== tx.targetActual) throw new Error("The task transaction marker exists but the actual value differs from the target.");
-    } else if (!marker && actual === tx.previousActual) {
+    } else if (!markerPresent && actual === tx.previousActual) {
       task.actual = tx.targetActual;
       task.lastStopwatchTransactionId = tx.id;
       if (!saveData()) throw new Error("The task update and transaction ID could not be verified.");
     } else {
-      throw new Error(marker
+      throw new Error(markerPresent
         ? "The task is already linked to a different Stopwatch transaction."
         : "The task value is ambiguous: targetActual alone does not prove this transaction committed.");
     }
@@ -9890,11 +10006,39 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
 }
 
 function _withStopwatchTransactionLock(callback) {
+  if (typeof callback !== "function")
+    return Promise.reject(new Error("A Stopwatch lock callback is required."));
+
+  // Nested work in the current lock callback reuses the already-held lock.
+  if (typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0) {
+    try { return Promise.resolve(callback()); }
+    catch (e) { return Promise.reject(e); }
+  }
+
   if (typeof navigator === "undefined" || !navigator.locks
-      || typeof navigator.locks.request !== "function")
+      || typeof navigator.locks.request !== "function") {
     return Promise.reject(new Error("Web Locks API is unavailable; task-linked Stopwatch commits are disabled to prevent concurrent commits."));
-  try { return navigator.locks.request("timeTasksApp-stopwatch-transaction", { mode: "exclusive" }, callback); }
-  catch (e) { return Promise.reject(e); }
+  }
+
+  try {
+    return navigator.locks.request("timeTasksApp-stopwatch-transaction", { mode: "exclusive" }, function(lock) {
+      if (!lock) throw new Error("The exclusive Stopwatch Web Lock was not granted.");
+      _stopwatchTransactionLockDepth++;
+      var result;
+      try {
+        result = callback();
+      } catch (e) {
+        _stopwatchTransactionLockDepth = Math.max(0, _stopwatchTransactionLockDepth - 1);
+        throw e;
+      }
+      return Promise.resolve(result).finally(function() {
+        _stopwatchTransactionLockDepth = Math.max(0, _stopwatchTransactionLockDepth - 1);
+      });
+    });
+  } catch (e) {
+    return Promise.reject(e);
+  }
 }
 
 function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
@@ -9917,6 +10061,15 @@ function _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd) {
     }
     return;
   }
+
+  if (_focusTimer.taskId !== null && _focusTimer.taskId !== undefined
+      && _hasAmbiguousLegacyFocusSession("work")) {
+    storageRecoveryRequired = true;
+    showAlertModal("جلسة Stopwatch قديمة تحتاج إلى مراجعة",
+      "وجدنا جلسة مرتبطة بالمهمة نفسها دون معرّف معاملة يثبت ارتباطها بمدة المهمة. لم نُضف الدقائق ولم نُصفّر المؤقت؛ راجع قيمة المهمة وسجل الجلسة يدويًا قبل المتابعة.");
+    return;
+  }
+
   var alreadyLogged = _sessionAlreadyLogged("work", elapsedSec);
   var mainUpdateNeeded = !!task && !alreadyLogged && minutesToAdd > 0;
   var releaseHold = _acquireRollingRecoveryCheckpointHold(mainUpdateNeeded);
@@ -11094,7 +11247,7 @@ _loadFocusSettings();
 if (_focusTimer.pendingStopwatchTransaction) {
   if (typeof navigator !== "undefined" && navigator.locks
       && typeof navigator.locks.request === "function") {
-    navigator.locks.request("timeTasksApp-stopwatch-transaction", { mode: "exclusive" }, function() {
+    _withStopwatchTransactionLock(function() {
       return _recoverPendingStopwatchSave(false);
     }).catch(function(error) {
       storageRecoveryRequired = true;
