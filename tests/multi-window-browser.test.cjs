@@ -109,9 +109,15 @@ test('two real same-origin pages exchange storage events and block stale main/ti
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ serviceWorkers: 'block' });
     await context.addInitScript((initial) => {
-      localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
-      localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
-      localStorage.setItem('timeTasksApp_focusSessions', '[]');
+      if (localStorage.getItem('timeTasksApp_v1') === null) {
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+      }
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null) {
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+      }
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null) {
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+      }
     }, seed);
 
     const pageA = await context.newPage();
@@ -191,6 +197,105 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       'a stale timer action must not overwrite the other page’s committed timer');
 
     await context.close();
+
+    const recoveryContext = await browser.newContext({ serviceWorkers: 'block' });
+    await recoveryContext.addInitScript((initial) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null) {
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+      }
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null) {
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+      }
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null) {
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+      }
+    }, seed);
+    const recoveryPage = await recoveryContext.newPage();
+    await recoveryPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await recoveryPage.waitForFunction(
+      () => typeof window._applyStopwatchSave === 'function'
+        && window._mainStorageBaselineReady === true,
+      null,
+      { timeout: 20_000 }
+    );
+
+    const interrupted = await recoveryPage.evaluate(() => {
+      const task = {
+        id: 7011,
+        name: 'Crash recovery task',
+        type: 'معرفية',
+        status: 'pending',
+        expected: 15,
+        actual: 5,
+        plannedDate: todayStr(),
+        plannedTime: '',
+        completedAt: null,
+        createdAt: Date.now(),
+        projectId: null,
+        priority: null,
+        recurrence: null,
+        checklist: null
+      };
+      tasks.push(task);
+      appSettings.lastTaskId = task.id;
+      if (!saveData()) throw new Error('Could not seed the task record');
+
+      _focusTimer.mode = 'stopwatch';
+      _focusTimer.phase = 'work';
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = 125;
+      _focusElapsedRemainderMs = 0;
+      _focusTimer.startedAt = null;
+      _focusTimer.taskId = task.id;
+      _focusTimer.sessionStartAt = Date.now() - 125_000;
+      _focusTimer.awaitingConfirmation = false;
+      _focusTimer.pendingPhaseEndedAt = null;
+      _focusTimer.clockAdjusted = false;
+      if (!_saveFocusTimer()) throw new Error('Could not seed the paused Stopwatch');
+
+      // Simulate a process death at the exact boundary under review:
+      // task.actual is committed, but the focus-session row is not yet saved.
+      window._logSession = function() {
+        throw new Error('simulated abrupt process termination before session write');
+      };
+      _applyStopwatchSave(125, task, 3);
+
+      const committedMain = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timerRecord = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      return {
+        taskActual: committedMain.tasks.find(item => item.id === task.id).actual,
+        pendingJournal: !!timerRecord.pendingStopwatchTransaction,
+        sessionCount: sessions.length
+      };
+    });
+
+    assert.equal(interrupted.taskActual, 8);
+    assert.equal(interrupted.pendingJournal, true);
+    assert.equal(interrupted.sessionCount, 0);
+
+    // A real page reload re-creates the app runtime but keeps this BrowserContext's LocalStorage.
+    await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+    await recoveryPage.waitForFunction(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timerRecord = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      return main.tasks.find(item => item.id === 7011)?.actual === 8
+        && sessions.some(item => item.taskId === 7011 && item.durationSec === 125)
+        && timerRecord.pendingStopwatchTransaction === null;
+    }, null, { timeout: 20_000 });
+
+    const recovered = await recoveryPage.evaluate(() => ({
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 7011).actual,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+        .filter(item => item.taskId === 7011 && item.durationSec === 125),
+      journal: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')).pendingStopwatchTransaction
+    }));
+    assert.equal(recovered.taskActual, 8, 'the task update must not be applied twice after reload');
+    assert.equal(recovered.sessions.length, 1, 'the interrupted session must be recorded exactly once');
+    assert.equal(recovered.journal, null);
+    await recoveryContext.close();
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));
