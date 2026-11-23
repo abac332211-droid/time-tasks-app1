@@ -989,12 +989,18 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
 
         const retryPromise = retryStorageRecovery();
         const pendingPromise = _retryResetRecoveryPromise;
+        const lockStateWhileHeld = await navigator.locks.query();
         const waitingState = {
           hasPromise: !!pendingPromise && typeof pendingPromise.then === 'function',
           retryInFlight: _resetRecoveryInFlight,
           recoveryRequired: storageRecoveryRequired,
           writesAllowed: _storageWriteAllowed(),
           saveResult: saveData(),
+          markerStillPresent: localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null,
+          thoughtsStillPresent: localStorage.getItem(THOUGHTS_KEY) !== null,
+          pendingLockCount: (lockStateWhileHeld.pending || []).filter(lock =>
+            lock.name === 'timeTasksApp-stopwatch-transaction'
+          ).length,
           mainUnchanged: localStorage.getItem(STORAGE_KEY) !== null
         };
         releaseHolder();
@@ -1062,6 +1068,10 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
     assert.equal(outcome.waitingState.recoveryRequired, true);
     assert.equal(outcome.waitingState.writesAllowed, false);
     assert.equal(outcome.waitingState.saveResult, false);
+    assert.equal(outcome.waitingState.markerStillPresent, true);
+    assert.equal(outcome.waitingState.thoughtsStillPresent, true);
+    assert.ok(outcome.waitingState.pendingLockCount >= 1,
+      'retry must be queued behind the held Web Lock rather than recovering outside it');
     assert.equal(outcome.waitingState.mainUnchanged, true);
     assert.equal(outcome.successState.recovered, true);
     assert.equal(outcome.successState.retryInFlight, false);
