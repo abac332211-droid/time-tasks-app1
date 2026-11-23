@@ -105,6 +105,9 @@ function createRuntime(storage, options = {}) {
     _focusFallbackElapsedMs: 0,
     tasks: main.tasks,
     appSettings: main.settings || {},
+    _startupResetRecoveryInFlight: false,
+    _resetRecoveryInFlight: false,
+    _resetInFlight: false,
     _focusTimer: {
       mode: 'stopwatch',
       phase: 'work',
