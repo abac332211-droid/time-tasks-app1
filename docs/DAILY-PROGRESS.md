@@ -402,14 +402,6 @@
 - **إعادة PR PWA على رأس PR الأحدث آنذاك** — [run 45183997086](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183997086): فحص merge commit `2ef0f12e4d6baae926734f4c9608fea1afc3b1e4` الناتج عن دمج رأس PR `b8b5c6d18543de14d1bbc9c0a99e9a51b7dc2ad0` مع قاعدة PR `ba14adaaf09474b9d432d31569f5e5067d58193d`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. لا يُعد تشغيلًا مباشرًا على SHA الفرع.
 
 - **ملحوظة Android Debug:** نجح `Gradle BUILD SUCCESSFUL` وفحص Manifest لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`. لا تُحسب الاختبارات السبعة المتخطاة نجاحًا على Android، ولا يثبت هذا البناء اختبار Android WebView ميدانيًا.
-  1. two real same-origin pages exchange storage events and block stale main/timer writes
-  2. a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal
-  3. two same-origin pages cannot commit duplicate task-linked Stopwatch transactions
-  4. non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere
-  5. a rejected rolling snapshot is rolled back and cannot outrank the previous valid slot
-  6. real Chromium pages release Web Lock after owner callback throws synchronously
-  7. real Chromium pages release Web Lock after owner callback Promise rejects
-- Android Debug: **Gradle BUILD SUCCESSFUL**، واجتاز فحص Manifest وجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`. هذه نتائج بناء وفحص أذونات فقط؛ لا تُنسب الاختبارات السبعة المتخطاة إلى نجاح Android أو إلى اختبار WebView ميداني.
 
 ### الحالات الجديدة المسجلة في PWA/Chromium
 في كل من Push PWA وPR PWA:
