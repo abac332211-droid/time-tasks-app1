@@ -789,3 +789,74 @@ test('zero-minute transaction validator preserves a null target and validates pr
     ...valid, minutesToAdd: 0, targetActual: 0
   }), false);
 });
+
+
+test('failure to clear a pending transaction journal leaves it recoverable without duplicate minutes or session', async () => {
+  const storage = initialStorage();
+  const main = JSON.parse(storage.getItem('main'));
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const transactionId = 'focus-pending-journal-clear';
+  main.tasks[0].actual = 8;
+  main.tasks[0].lastStopwatchTransactionId = transactionId;
+  const tx = {
+    version: 1, id: transactionId, taskId: 7,
+    previousActual: 5, targetActual: 8, previousTransactionId: null,
+    minutesToAdd: 3, durationSec: 125, sessionStartAt: timer.sessionStartAt,
+    mode: 'stopwatch', phase: 'work', clockAdjusted: false,
+    elapsedRemainderMs: 0, completed: true, createdAt: Date.now()
+  };
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('main', JSON.stringify(main));
+  storage.setItem('focus-timer', JSON.stringify(timer));
+
+  const first = createRuntime(storage);
+  const saveTimer = first.sandbox._saveFocusTimer.bind(first.sandbox);
+  let saveCount = 0;
+  first.sandbox._saveFocusTimer = function() {
+    saveCount++;
+    if (saveCount === 2) return false;
+    return saveTimer();
+  };
+  const firstResult = await first.sandbox._withStopwatchTransactionLock(
+    () => first.sandbox._recoverPendingStopwatchSave(false)
+  );
+  assert.equal(firstResult, false);
+  assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction.id, transactionId,
+    'the durable journal stays present when its final clear cannot be verified');
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 1);
+
+  const second = createRuntime(storage);
+  const retryResult = await second.sandbox._withStopwatchTransactionLock(
+    () => second.sandbox._recoverPendingStopwatchSave(false)
+  );
+  assert.equal(retryResult, true);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
+  assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
+  const sessions = JSON.parse(storage.getItem('focus-sessions'));
+  assert.equal(sessions.length, 1, 'the already-logged transaction must not be logged twice');
+  assert.equal(sessions[0].transactionId, transactionId);
+});
+
+test('short-session discard resets under the transaction lock without task or session mutation', async () => {
+  const storage = initialStorage();
+  const runtime = createRuntime(storage);
+  const beforeTask = JSON.parse(storage.getItem('main')).tasks[0];
+  runtime.sandbox._focusTimer.baseElapsed = 30;
+  runtime.sandbox._focusTimer.running = false;
+  runtime.sandbox._focusTimer.startedAt = null;
+  runtime.sandbox._focusElapsedRemainderMs = 450;
+  assert.equal(runtime.sandbox._saveFocusTimer(), true);
+  const snapshot = runtime.sandbox._captureFocusTimerSnapshot();
+  assert.equal(Object.isFrozen(snapshot), true);
+
+  assert.equal(await runtime.sandbox._discardShortFocusSession({ snapshot }), true);
+  const afterTask = JSON.parse(storage.getItem('main')).tasks[0];
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  assert.equal(afterTask.actual, beforeTask.actual);
+  assert.equal(afterTask.lastStopwatchTransactionId, undefined);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
+  assert.equal(timer.baseElapsed, 0);
+  assert.equal(timer.pendingStopwatchTransaction, null);
+  assert.ok(runtime.rollingSnapshots.includes('focus-session-discard'));
+});
