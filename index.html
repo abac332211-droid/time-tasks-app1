@@ -5675,7 +5675,7 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
 }
 
 function buildBackupObject() {
-  if (storageRecoveryRequired)
+  if (typeof storageRecoveryRequired !== 'undefined' && storageRecoveryRequired)
     throw new Error("تعذر تصدير النسخة: توجد حالة استرداد أو تعارض تخزين غير محسوم.");
   if ((typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
       || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)

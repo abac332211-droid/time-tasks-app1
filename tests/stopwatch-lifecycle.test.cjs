@@ -129,6 +129,7 @@ function createStopwatchSaveHarness(options = {}) {
   };
   vm.runInNewContext(
     extractFunction('_withStopwatchTransactionLock') + '\n'
+      + extractFunction('_applyStopwatchSaveLocked') + '\n'
       + extractFunction('_applyStopwatchSave'), sandbox
   );
   return {
