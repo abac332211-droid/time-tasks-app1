@@ -10384,7 +10384,10 @@ function _commitFocusTaskSessionLocked(p) {
       ||!Number.isFinite(s.sessionStartAt)||s.sessionStartAt<0||!Number.isFinite(new Date(s.sessionStartAt).getTime())){
     showAlertModal("تعارض اللقطة","لم تعد حالة المؤقت تطابق اللقطة المجمدة أو أن بيانات الجلسة غير صالحة.");return false;
   }
-  if(taskId!==s.taskId){showAlertModal("تعارض المهمة","تغيّر ربط المهمة بعد تجميد المؤقت.");return false;}
+  if(taskId!==null&&taskId!==s.taskId){showAlertModal("تعارض المهمة","تغيّر ربط المهمة بعد تجميد المؤقت.");return false;}
+  if(taskId===null&&s.taskId!==null&&p.allowUnlinkedTaskSnapshotLink!==true){
+    showAlertModal("تعارض ربط المهمة","لا يمكن تجاوز ربط المهمة لجلسة عمل دون تفويض مسار استراحة غير مرتبطة.");return false;
+  }
   if(!Number.isInteger(minutes)||minutes<0||minutes>1000000){showToast("⚠️ قيمة الدقائق غير صالحة؛ أدخل عددًا صحيحًا غير سالب.");return false;}
   var linked=taskId!==null&&taskId!==undefined;
   if(linked&&(!Number.isInteger(taskId)||taskId<=0||(s.mode!=="stopwatch"&&s.mode!=="pomodoro")||s.phase!=="work"||!completed)){
@@ -10540,10 +10543,20 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
     var mainRaw=localStorage.getItem(STORAGE_KEY);
     if(!_mainStorageBaselineReady||_mainStorageExternalChangeObserved||mainRaw===null||mainRaw!==_mainStorageBaselineRaw)
       throw new Error("Main storage baseline is not ready or does not match.");
+    var mainRecord=JSON.parse(mainRaw);
+    if(!validateV2(mainRecord)||!Array.isArray(mainRecord.tasks)
+        ||JSON.stringify(mainRecord.tasks)!==JSON.stringify(tasks))
+      throw new Error("In-memory tasks do not match the verified main record.");
     var timerRaw=localStorage.getItem(FOCUS_TIMER_KEY);
     if(!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines,FOCUS_TIMER_KEY)
       ||_secondaryStorageConflicts[FOCUS_TIMER_KEY]||timerRaw!==_secondaryStorageBaselines[FOCUS_TIMER_KEY])
       throw new Error("Focus timer baseline is missing or changed.");
+    var sessionRaw=localStorage.getItem(FOCUS_SESSIONS_KEY);
+    if(!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines,FOCUS_SESSIONS_KEY))
+      _trackSecondaryStorageRead(FOCUS_SESSIONS_KEY,sessionRaw);
+    if(_secondaryStorageConflicts[FOCUS_SESSIONS_KEY]
+        ||sessionRaw!==_secondaryStorageBaselines[FOCUS_SESSIONS_KEY])
+      throw new Error("Focus sessions storage baseline is missing or changed.");
     var task=tasks.find(function(t){return t&&t.id===tx.taskId;});
     if(!task)throw new Error("Task referenced by transaction is missing.");
     var started=new Date(tx.sessionStartAt).toISOString();
@@ -10638,7 +10651,7 @@ function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
 }
 function finishTimer() {
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
-    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return;
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return Promise.resolve(false);
   }
   var snapshot=_freezeFocusTimerForDecision();if(!snapshot)return Promise.resolve(false);
   var elapsed=snapshot.baseElapsed;
@@ -10796,7 +10809,7 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
 
 function startTimerForTask(taskId) {
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
-    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return;
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return Promise.resolve(false);
   }
   _unlockAudioContext();
   if(_focusTimer.awaitingConfirmation){_showAwaySessionConfirmation();return Promise.resolve(false);}
