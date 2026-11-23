@@ -504,3 +504,141 @@ test('a checkpoint persists paused state when it is the first caller to detect a
   assert.equal(persisted.elapsedRemainderMs, 250);
   assert.equal(persisted.clockAdjusted, true);
 });
+
+
+function restoreFocusTimerForClockTest(h, stored, phaseTargetSec = 1_500) {
+  h.sandbox.localStorage = {
+    getItem: () => JSON.stringify(stored)
+  };
+  h.sandbox._trackSecondaryStorageRead = (_key, raw) => raw;
+  h.sandbox.tasks = [];
+  h.sandbox._focusTimerColdStartWasRunning = false;
+  h.sandbox._focusTimerSavedAtAtLoad = null;
+  h.sandbox._phaseTargetSec = () => phaseTargetSec;
+  vm.runInNewContext(extractFunction('_loadFocusTimer'), h.sandbox);
+  h.sandbox._loadFocusTimer();
+}
+
+test('the 120-second wall-clock drift threshold is strict and does not create a false adjustment', () => {
+  const h = createClockHarness();
+  h.clock.mono = 1_000;
+  h.clock.wall += 121_000; // Exactly 120 seconds beyond the monotonic expectation.
+
+  assert.equal(h.sandbox._getElapsedSec(), 1);
+  assert.equal(h.timer.clockAdjusted, false, 'the exact threshold is not a discontinuity');
+
+  h.clock.mono += 1;
+  h.clock.wall += 2;
+  assert.equal(h.sandbox._getElapsedSec(), 1);
+  assert.equal(h.timer.clockAdjusted, true, 'drift greater than 120 seconds is recorded');
+});
+
+test('cold start marks a backward wall-clock correction from the saved checkpoint and stays paused', () => {
+  const h = createClockHarness({ baseElapsed: 120 });
+  const now = h.clock.wall;
+  restoreFocusTimerForClockTest(h, {
+    mode: 'stopwatch',
+    phase: 'work',
+    running: true,
+    baseElapsed: 120,
+    elapsedRemainderMs: 500,
+    startedAt: now - 120_500,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: now - 120_500,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false,
+    savedAt: now + 10 * 60 * 1000
+  });
+
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.clockAdjusted, true);
+  assert.equal(h.timer.baseElapsed, 120);
+  assert.equal(h.sandbox._focusElapsedRemainderMs, 500);
+  assert.equal(h.sandbox._focusTimerSavedAtAtLoad, now + 10 * 60 * 1000);
+});
+
+test('cold start repairs a future sessionStartAt without inventing a future start date', () => {
+  const h = createClockHarness({ baseElapsed: 75 });
+  const now = h.clock.wall;
+  restoreFocusTimerForClockTest(h, {
+    mode: 'stopwatch',
+    phase: 'work',
+    running: false,
+    baseElapsed: 75,
+    elapsedRemainderMs: 250,
+    startedAt: null,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: now + 60 * 60 * 1000,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false,
+    savedAt: now
+  });
+
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.sessionStartAt, now - 75_000);
+  assert.ok(h.timer.sessionStartAt <= now, 'restored session start cannot remain in the future');
+  assert.equal(h.timer.clockAdjusted, true);
+});
+
+test('cold-start Pomodoro boundary remains pending for user confirmation and is not logged automatically', () => {
+  const h = createClockHarness({ baseElapsed: 1_500 });
+  const now = h.clock.wall;
+  let logged = 0;
+  h.sandbox._logSession = () => { logged++; return true; };
+  restoreFocusTimerForClockTest(h, {
+    mode: 'pomodoro',
+    phase: 'work',
+    running: true,
+    baseElapsed: 1_500,
+    elapsedRemainderMs: 0,
+    startedAt: now - 1_500_000,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: now - 1_500_000,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false,
+    savedAt: now
+  });
+  vm.runInNewContext(extractFunction('_finalizeFocusTimerColdStartRestore'), h.sandbox);
+  h.sandbox._finalizeFocusTimerColdStartRestore();
+
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.phase, 'work');
+  assert.equal(h.timer.awaitingConfirmation, true);
+  assert.equal(h.timer.pendingPhaseEndedAt, h.timer.sessionStartAt + 1_500_000);
+  assert.equal(logged, 0, 'cold start must not create a session before explicit confirmation');
+});
+
+test('failed cold-start persistence keeps Pomodoro paused and its phase awaiting confirmation', () => {
+  const h = createClockHarness({ baseElapsed: 1_500 });
+  const now = h.clock.wall;
+  h.clock.storageWriteResult = false;
+  restoreFocusTimerForClockTest(h, {
+    mode: 'pomodoro',
+    phase: 'work',
+    running: true,
+    baseElapsed: 1_500,
+    elapsedRemainderMs: 0,
+    startedAt: now - 1_500_000,
+    cyclePosition: 0,
+    taskId: null,
+    sessionStartAt: now - 1_500_000,
+    awaitingConfirmation: false,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false,
+    savedAt: now
+  });
+  vm.runInNewContext(extractFunction('_finalizeFocusTimerColdStartRestore'), h.sandbox);
+  h.sandbox._finalizeFocusTimerColdStartRestore();
+
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.phase, 'work');
+  assert.equal(h.timer.awaitingConfirmation, true);
+  assert.equal(h.timer.pendingPhaseEndedAt, h.timer.sessionStartAt + 1_500_000);
+  assert.equal(h.clock.writes.length, 2, 'both restore persistence attempts are observed as failed');
+});
