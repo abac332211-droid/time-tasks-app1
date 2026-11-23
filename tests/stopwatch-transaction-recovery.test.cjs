@@ -76,6 +76,9 @@ function createRuntime(storage, options = {}) {
     storageRecoveryRequired: false,
     _rollingRecoveryCheckpointHold: 0,
     _stopwatchTransactionLockDepth: 0,
+    _focusCommitInFlight: false,
+    _focusCommitWriteDepth: 0,
+    _focusCommitPendingPromise: null,
     _rollingRecoveryBackupPending: null,
     _rollingRecoveryBackupLastFailure: null,
     _mainStorageBaselineRaw: mainRaw,
@@ -168,6 +171,17 @@ function createRuntime(storage, options = {}) {
 
   const names = [
     '_trackSecondaryStorageRead',
+    '_isFocusCommitBlocked',
+    '_withFocusCommitWrite',
+    '_captureFocusTimerSnapshot',
+    '_focusTimerSnapshotMatchesState',
+    '_focusTimerSnapshotMatchesRecord',
+    '_focusCommitBaselinesMatch',
+    '_verifyFocusTimerResetAfterCommit',
+    '_pendingTxMatchesCommitRequest',
+    '_commitFocusTaskSession',
+    '_commitFocusTaskSessionLocked',
+    '_discardShortFocusSession',
     '_matchingFocusSessionRecords',
     '_hasAmbiguousLegacyFocusSession',
     '_pendingStopwatchWriteAllowed',
@@ -678,4 +692,93 @@ test('task-linked Stopwatch save fails closed when Web Locks is unavailable', as
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
   assert.ok(runtime.alerts.some(args => /تعذر تأمين عملية Stopwatch/.test(String(args[0]))));
+});
+
+
+test('zero-minute task-linked commit creates a transaction and preserves actual:null', async () => {
+  const storage = initialStorage();
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks[0].actual = null;
+  storage.setItem('main', JSON.stringify(main));
+  const runtime = createRuntime(storage);
+  assert.equal(await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 0), true);
+  const saved = JSON.parse(storage.getItem('main')).tasks[0];
+  const sessions = JSON.parse(storage.getItem('focus-sessions'));
+  assert.equal(saved.actual, null, 'zero minutes must not turn actual:null into zero');
+  assert.equal(typeof saved.lastStopwatchTransactionId, 'string');
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].transactionId, saved.lastStopwatchTransactionId);
+});
+
+test('invalid negative or fractional task minutes are rejected before writes', async () => {
+  for (const minutes of [-1, 1.5, NaN]) {
+    const storage = initialStorage();
+    const beforeMain = storage.getItem('main');
+    const beforeTimer = storage.getItem('focus-timer');
+    const runtime = createRuntime(storage);
+    assert.equal(await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], minutes), false);
+    assert.equal(storage.getItem('main'), beforeMain);
+    assert.equal(storage.getItem('focus-timer'), beforeTimer);
+    assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
+  }
+});
+
+test('second transaction recovers against previousTransactionId on the same task', async () => {
+  const storage = initialStorage();
+  const previousId = 'stopwatch-transaction-one';
+  const nextId = 'stopwatch-transaction-two';
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks[0].actual = 2;
+  main.tasks[0].lastStopwatchTransactionId = previousId;
+  storage.setItem('main', JSON.stringify(main));
+
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const tx = {
+    version: 1, id: nextId, taskId: 7,
+    previousActual: 2, targetActual: 5, previousTransactionId: previousId,
+    minutesToAdd: 3, durationSec: 125, sessionStartAt: timer.sessionStartAt,
+    mode: 'stopwatch', phase: 'work', clockAdjusted: false,
+    elapsedRemainderMs: 0, completed: true, createdAt: Date.now()
+  };
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+
+  const runtime = createRuntime(storage);
+  assert.equal(await runtime.sandbox._withStopwatchTransactionLock(
+    () => runtime.sandbox._recoverPendingStopwatchSave(false)
+  ), true);
+
+  const recoveredTask = JSON.parse(storage.getItem('main')).tasks[0];
+  const sessions = JSON.parse(storage.getItem('focus-sessions'));
+  assert.equal(recoveredTask.actual, 5);
+  assert.equal(recoveredTask.lastStopwatchTransactionId, nextId);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].transactionId, nextId);
+
+  assert.equal(await runtime.sandbox._withStopwatchTransactionLock(
+    () => runtime.sandbox._recoverPendingStopwatchSave(false)
+  ), true);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 5);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 1,
+    'a repeated recovery after journal clearance must not add task minutes or a session');
+});
+
+test('zero-minute transaction validator preserves a null target and validates previous ID', () => {
+  const storage = initialStorage();
+  const runtime = createRuntime(storage);
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const valid = {
+    version: 1, id: 'focus-transaction-zero', taskId: 7,
+    previousActual: null, targetActual: null, previousTransactionId: null,
+    minutesToAdd: 0, durationSec: 125, sessionStartAt: timer.sessionStartAt,
+    mode: 'pomodoro', phase: 'work', clockAdjusted: false,
+    elapsedRemainderMs: 999, completed: true, createdAt: Date.now()
+  };
+  assert.equal(runtime.sandbox._validatePendingStopwatchTransaction(valid), true);
+  assert.equal(runtime.sandbox._validatePendingStopwatchTransaction({
+    ...valid, previousTransactionId: ''
+  }), false);
+  assert.equal(runtime.sandbox._validatePendingStopwatchTransaction({
+    ...valid, minutesToAdd: 0, targetActual: 0
+  }), false);
 });
