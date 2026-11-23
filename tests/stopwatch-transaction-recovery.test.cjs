@@ -161,6 +161,7 @@ function createRuntime(storage, options = {}) {
     '_storageWriteAllowed',
     '_setMainStorageBaseline',
     '_acquireRollingRecoveryCheckpointHold',
+    '_parseStrictFocusSessionTimestamp',
     '_validateFocusSessionRecord',
     '_loadSessions',
     '_saveSessions',
