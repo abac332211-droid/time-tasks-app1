@@ -38,7 +38,8 @@ function createStopwatchSaveHarness(options = {}) {
     sessionStartAt: 1_700_000_000_000,
     awaitingConfirmation: false,
     pendingPhaseEndedAt: null,
-    clockAdjusted: false
+    clockAdjusted: false,
+    pendingStopwatchTransaction: null
   };
   let logged = !!options.alreadyLogged;
   let resetAttempts = 0;
@@ -52,6 +53,26 @@ function createStopwatchSaveHarness(options = {}) {
     tasks: task ? [task] : [],
     console: { error() {}, warn() {} },
     _sessionAlreadyLogged() { calls.push('alreadyLogged'); return logged; },
+    _validatePendingStopwatchTransaction: () => true,
+    _saveFocusTimer() { calls.push('saveTimer'); return true; },
+    _recoverPendingStopwatchSave(holdAlreadyAcquired) {
+      const transaction = timer.pendingStopwatchTransaction;
+      if (!transaction) return true;
+      if (!sandbox._logSession('work', transaction.durationSec, true)) {
+        sandbox.storageRecoveryRequired = true;
+        sandbox.showAlertModal("لم يكتمل استرداد Stopwatch", "تعذر تسجيل الجلسة.");
+        return false;
+      }
+      if (!sandbox._resetAfterSession()) return false;
+      timer.pendingStopwatchTransaction = null;
+      if (!sandbox._saveFocusTimer()) {
+        timer.pendingStopwatchTransaction = transaction;
+        sandbox.storageRecoveryRequired = true;
+        return false;
+      }
+      if (!holdAlreadyAcquired) sandbox._completeRollingRecoveryCheckpoint('stopwatch-transaction-recovery');
+      return true;
+    },
     _acquireRollingRecoveryCheckpointHold(required) {
       calls.push('hold:' + required);
       let released = false;
@@ -72,8 +93,8 @@ function createStopwatchSaveHarness(options = {}) {
     _logSession(...args) {
       calls.push('logSession');
       if (options.logResult === false) return false;
+      if (!logged) sandbox.loggedArgs = args;
       logged = true;
-      sandbox.loggedArgs = args;
       return true;
     },
     _completeRollingRecoveryCheckpoint(reason) {
@@ -123,8 +144,8 @@ test('Stopwatch save commits task time and session before resetting the paused t
   assert.equal(h.timer.baseElapsed, 0);
   assert.equal(h.timer.running, false);
   assert.ok(h.calls.indexOf('saveData') < h.calls.indexOf('logSession'));
-  assert.ok(h.calls.indexOf('logSession') < h.calls.indexOf('checkpoint:focus-session-commit'));
-  assert.ok(h.calls.indexOf('checkpoint:focus-session-commit') < h.calls.indexOf('reset'));
+  assert.ok(h.calls.indexOf('logSession') < h.calls.indexOf('reset'));
+  assert.ok(h.calls.indexOf('reset') < h.calls.indexOf('checkpoint:focus-session-commit'));
   assert.equal(h.releaseCalls, 1, 'checkpoint hold must be released exactly once');
   assert.ok(h.toasts.some(message => /أُضيفت 3 دقيقة/.test(message)));
 });
@@ -134,27 +155,31 @@ test('Stopwatch does not log a session or retain task minutes when the task save
 
   h.sandbox._applyStopwatchSave(125, h.task, 3);
 
-  assert.equal(h.task.actual, 5, 'in-memory task value must be rolled back');
+  assert.equal(h.task.actual, 5, 'the unverified main write must not remain as an in-memory commit');
   assert.equal(h.logged, false);
   assert.equal(h.saveCalls, 1);
   assert.equal(h.resetAttempts, 0);
   assert.equal(h.timer.baseElapsed, 125, 'the paused stopwatch time remains available');
+  assert.ok(h.timer.pendingStopwatchTransaction, 'the durable timer journal remains available for restart recovery');
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
   assert.equal(h.releaseCalls, 1);
-  assert.ok(h.toasts.some(message => /بقيت الجلسة متوقفة/.test(message)));
 });
 
-test('Stopwatch rolls task minutes back when session logging fails', () => {
+test('Stopwatch keeps committed task minutes and a pending journal when session logging fails', () => {
   const h = createStopwatchSaveHarness({ actual: 5, logResult: false });
 
   h.sandbox._applyStopwatchSave(125, h.task, 3);
 
-  assert.equal(h.task.actual, 5);
-  assert.equal(h.saveCalls, 2, 'the second primary save persists the rollback');
+  assert.equal(h.task.actual, 8, 'the verified task update remains committed while its session is pending');
+  assert.equal(h.saveCalls, 1, 'the task update is written once; recovery must not roll it back and re-add it');
   assert.equal(h.resetAttempts, 0, 'a failed session write must not reset the stopwatch');
   assert.equal(h.timer.baseElapsed, 125);
+  assert.ok(h.timer.pendingStopwatchTransaction, 'the persistent journal must remain until recovery completes');
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
   assert.equal(h.releaseCalls, 1);
-  assert.ok(h.calls.includes('checkpoint:transaction-rollback'));
-  assert.match(h.alerts[0][0], /فشل تسجيل الجلسة/);
+  assert.equal(h.calls.some(call => String(call).indexOf('checkpoint:') === 0), false,
+    'no rolling checkpoint may publish an incomplete transaction');
+  assert.match(h.alerts[0][0], /لم يكتمل استرداد Stopwatch/);
 });
 
 test('retry after a logged session but failed timer reset does not add the task minutes twice', () => {
@@ -172,8 +197,9 @@ test('retry after a logged session but failed timer reset does not add the task 
   assert.equal(h.task.actual, 8, 'already-logged retry must not add the same minutes again');
   assert.equal(h.resetAttempts, 2);
   assert.equal(h.timer.baseElapsed, 0);
-  assert.equal(h.releaseCalls, 2, 'each transaction releases its own checkpoint hold');
-  assert.ok(h.toasts.some(message => /استُكمل تصفير جلسة مسجلة سابقًا/.test(message)));
+  assert.equal(h.releaseCalls, 1, 'the retry replays the durable transaction without acquiring a second save hold');
+  assert.equal(h.timer.pendingStopwatchTransaction, null);
+  assert.ok(h.toasts.some(message => /استُكملت عملية Stopwatch المحفوظة دون تكرار/.test(message)));
 });
 
 test('an already logged Stopwatch session completes reset without changing task.actual', () => {
