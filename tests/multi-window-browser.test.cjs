@@ -696,3 +696,98 @@ test('a rejected rolling snapshot is rolled back and cannot outrank the previous
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+async function withBrowserPages(run) {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browserInstance;
+  try {
+    browserInstance = await chromium.launch({ headless: true });
+    const context = await browserInstance.newContext({ serviceWorkers: 'block' });
+    await context.addInitScript((initial) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, seed);
+    const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._mainStorageBaselineReady === true
+        && typeof window._withStopwatchTransactionLock === 'function',
+      null, { timeout: 20000 }
+    )));
+    await run({ pageA, pageB, context });
+    await context.close();
+  } finally {
+    if (browserInstance) await browserInstance.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+
+test('real Chromium pages release Web Lock after owner callback throws synchronously', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await pageA.evaluate(() => {
+      window.__ownerFailure = _withStopwatchTransactionLock(() => {
+        window.__ownerDepthDuringCallback = _stopwatchTransactionLockDepth;
+        throw new Error('chromium synchronous owner failure');
+      }).then(() => 'unexpected-success', error => error.message);
+    });
+    assert.equal(await pageA.evaluate(() => window.__ownerFailure),
+      'chromium synchronous owner failure');
+    const waiter = await pageB.evaluate(async () => _withStopwatchTransactionLock(() => ({
+      acquired: true,
+      depth: _stopwatchTransactionLockDepth
+    })));
+    assert.equal(waiter.acquired, true, 'the second real page must acquire the released browser lock');
+    assert.equal(waiter.depth, 1);
+    assert.equal(await pageA.evaluate(() => _stopwatchTransactionLockDepth), 0,
+      'the failed owner page must not retain its local ownership depth');
+    assert.equal(await pageB.evaluate(() => _stopwatchTransactionLockDepth), 0);
+  });
+});
+
+test('real Chromium pages release Web Lock after owner callback Promise rejects', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await pageA.evaluate(() => {
+      window.__ownerFailure = _withStopwatchTransactionLock(() => new Promise((_resolve, reject) => {
+        window.__rejectOwnerLock = () => reject(new Error('chromium owner Promise rejection'));
+      })).then(() => 'unexpected-success', error => error.message);
+    });
+    await pageA.waitForFunction(() => typeof window.__rejectOwnerLock === 'function',
+      null, { timeout: 5000 });
+    await pageB.evaluate(() => {
+      window.__waiterSettled = false;
+      window.__waiterPromise = _withStopwatchTransactionLock(() => ({
+        acquired: true,
+        depth: _stopwatchTransactionLockDepth
+      })).then(value => {
+        window.__waiterSettled = true;
+        return value;
+      });
+    });
+    assert.equal(await pageB.evaluate(() => window.__waiterSettled), false,
+      'the second page must wait while the first page owns the exclusive lock');
+    await pageA.evaluate(() => window.__rejectOwnerLock());
+    assert.equal(await pageA.evaluate(() => window.__ownerFailure),
+      'chromium owner Promise rejection');
+    const waiter = await pageB.evaluate(() => window.__waiterPromise);
+    assert.equal(waiter.acquired, true);
+    assert.equal(waiter.depth, 1);
+    assert.equal(await pageA.evaluate(() => _stopwatchTransactionLockDepth), 0,
+      'the rejected owner page must clear its ownership state before the waiter proceeds');
+    assert.equal(await pageB.evaluate(() => _stopwatchTransactionLockDepth), 0);
+  });
+});
