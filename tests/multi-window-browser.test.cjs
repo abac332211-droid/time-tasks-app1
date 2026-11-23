@@ -932,7 +932,10 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
         }));
         localStorage.setItem(THOUGHTS_KEY,
           '[{"id":2,"text":"retain marker on failure","createdAt":"2026-01-01T00:00:00Z"}]');
-        storageRecoveryRequired = true;
+        // Simulate a stale tab: the durable marker is visible, but this
+        // window has not yet received/processed the recovery-state update.
+        storageRecoveryRequired = false;
+        const staleWindowWriteBlocked = _storageWriteAllowed() === false;
         originalRemove = Storage.prototype.removeItem;
         Storage.prototype.removeItem = function(key) {
           if (String(key) === THOUGHTS_KEY) throw new Error('INJECTED_REMOVE_FAILURE');
@@ -947,6 +950,7 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
         }
         const failureState = {
           result: failedRetry,
+          staleWindowWriteBlocked,
           retryInFlight: _resetRecoveryInFlight,
           recoveryRequired: storageRecoveryRequired,
           markerPresent: localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
@@ -979,6 +983,8 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
     assert.equal(outcome.successState.recoveryRequired, false);
     assert.equal(outcome.successState.marker, null);
     assert.equal(outcome.successState.thoughts, null);
+    assert.equal(outcome.failureState.staleWindowWriteBlocked, true,
+      'the durable marker must block writes even before a stale window sets its memory flag');
     assert.equal(outcome.failureState.result, false);
     assert.equal(outcome.failureState.retryInFlight, false);
     assert.equal(outcome.failureState.recoveryRequired, true);
