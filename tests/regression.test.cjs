@@ -1476,92 +1476,57 @@ test('task search ignores malformed optional tags and checklist data safely', ()
 });
 
 
-function transitionDialogHarness({ saveResults = [true, true], logResult = false, checkpointResult = true } = {}) {
+function transitionDialogHarness({ commitResult = true, checkpointResult = true, initiallyRunning = true, switchResult = true } = {}) {
   const elements = Object.create(null);
   function element() {
-    return {
-      children: [],
-      classList: { add() {}, remove() {}, contains() { return false; } },
-      appendChild(child) { this.children.push(child); },
-      style: {},
-      innerHTML: '',
-      textContent: '',
-      focus() {}
-    };
+    return { children: [], classList: { add() {}, remove() {}, contains() { return false; } },
+      appendChild(child) { this.children.push(child); }, style: {}, innerHTML: '', textContent: '', focus() {} };
   }
   const document = {
     getElementById(id) { if (!elements[id]) elements[id] = element(); return elements[id]; },
-    createElement() { return element(); },
-    addEventListener() {},
-    removeEventListener() {},
-    querySelector() { return null; },
-    contains() { return true; }
+    createElement() { return element(); }, addEventListener() {}, removeEventListener() {},
+    querySelector() { return null; }, contains() { return true; }
   };
   const task = { id: 1, name: 'المهمة الحالية', actual: null };
-  const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: true, baseElapsed: 0, startedAt: 1, sessionStartAt: 1 };
-  const alerts = [];
-  const toasts = [];
-  const checkpoints = [];
-  let saveCalls = 0, resetCalls = 0, switchCalls = 0, renderCalls = 0;
+  const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: initiallyRunning,
+    baseElapsed: 120, startedAt: initiallyRunning ? 1000 : null, sessionStartAt: 1,
+    cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false };
+  const alerts = [], toasts = [], commits = [];
+  let freezeCalls = 0, switchCalls = 0, renderCalls = 0;
   const sandbox = {
-    _rollingRecoveryCheckpointHold: 0,
-    _acquireRollingRecoveryCheckpointHold(enabled) {
-      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
-      };
-    },
-    _completeRollingRecoveryCheckpoint(reason) {
-      return sandbox._storeRollingRecoveryBackup(reason, 0);
-    },
-    _modalKeyHandler: null,
-    storageRecoveryRequired: false,
-    document,
-    tasks: [task, { id: 2, name: 'المهمة التالية' }],
-    _focusTimer: timer,
+    _modalKeyHandler: null, storageRecoveryRequired: false, document,
+    tasks: [task, { id: 2, name: 'المهمة التالية' }], _focusTimer: timer,
     _focusElapsedRemainderMs: 0,
-    _getElapsedSec: () => 120,
-    _getFocusTimerElapsedParts: () => ({ seconds: 120, remainderMs: sandbox._focusElapsedRemainderMs || 0 }),
-    _stopDisplayTick: () => {},
-    _saveFocusTimer: () => checkpointResult,
-    _renderFocusTimer: () => {},
-    _formatDuration: (sec) => String(sec),
-    escapeHTML: (value) => String(value),
-    showAlertModal: (...args) => alerts.push(args),
-    showToast: (value) => toasts.push(value),
-    _setupModalFocusTrap: () => () => {},
-    _sessionAlreadyLogged: () => false,
-    saveData() {
-      const result = saveResults[Math.min(saveCalls++, saveResults.length - 1)];
-      if (result && sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('main-save');
-      return result;
+    _freezeFocusTimerForDecision() {
+      freezeCalls++;
+      if (!checkpointResult) { alerts.push(['تعذر حفظ حالة المؤقت', 'لم يتم تأكيد التجميد.']); return null; }
+      timer.running = false; timer.startedAt = null;
+      return Object.freeze({ mode: timer.mode, phase: timer.phase, taskId: timer.taskId, running: false,
+        baseElapsed: timer.baseElapsed, elapsedRemainderMs: 0, startedAt: null,
+        cyclePosition: timer.cyclePosition, sessionStartAt: timer.sessionStartAt,
+        awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false });
     },
-    _logSession() {
-      if (sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('session-save');
-      return logResult;
+    _commitFocusTaskSession(params) {
+      commits.push(params);
+      if (!commitResult) return Promise.resolve(false);
+      if (typeof params.onCommitted === 'function' && params.onCommitted() !== true) return Promise.resolve(false);
+      return Promise.resolve(true);
     },
-    _storeRollingRecoveryBackup(reason) {
-      checkpoints.push(reason);
-      return checkpointResult;
+    _discardShortFocusSession(params) {
+      if (typeof params.onDiscarded === 'function' && params.onDiscarded() !== true) return Promise.resolve(false);
+      return Promise.resolve(true);
     },
-    _resetAfterSession: () => { resetCalls++; return true; },
-    closeModal: () => {},
-    renderAll: () => { renderCalls++; },
-    renderFocusSessionsCard: () => {},
-    _startDisplayTick: () => {},
-    addEventListener() {},
+    _renderFocusTimer() { renderCalls++; }, _formatDuration: String, escapeHTML: String,
+    showAlertModal(...args) { alerts.push(args); }, showToast(message) { toasts.push(message); },
+    _setupModalFocusTrap: () => () => {}, closeModal() {},
+    _startDisplayTick() {}, _saveFocusTimer: () => true, _anchorFocusTimerClock() {},
+    _stopDisplayTick() {}, renderFocusSessionsCard() {},
     console
   };
   vm.runInNewContext(extractFunction('_showSessionTransitionDialog'), sandbox);
-  sandbox._showSessionTransitionDialog(2, () => { switchCalls++; });
-  const footer = elements.modalFooter;
-  return {
-    sandbox, task, timer, alerts, toasts, footer, checkpoints,
-    counts: () => ({ saveCalls, resetCalls, switchCalls, renderCalls })
-  };
+  sandbox._showSessionTransitionDialog(2, () => { switchCalls++; return switchResult; });
+  return { sandbox, task, timer, alerts, toasts, commits, elements,
+    counts: () => ({ freezeCalls, switchCalls, renderCalls }) };
 }
 
 test('transition save delegates a frozen snapshot and switches only after an explicit true callback', () => {
@@ -2921,16 +2886,6 @@ test('interrupted import treats only PRE_IMPORT cleanup failure as retained clea
   assert.equal(values.has(markerKey), false, 'recovery marker must be cleared');
   assert.equal(values.get(backupKey), JSON.stringify(previous),
     'the inert snapshot is retained for manual cleanup rather than replayed');
-});
-
-
-test('successful focus-session transaction checkpoints only after task and session writes complete', () => {
-  const harness = transitionDialogHarness({ saveResults: [true], logResult: true });
-  harness.footer.children[2].onclick();
-
-  assert.deepEqual(harness.checkpoints, ['focus-session-transition-commit']);
-  assert.equal(harness.sandbox._rollingRecoveryCheckpointHold, 0);
-  assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
 
 
