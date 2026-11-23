@@ -9039,10 +9039,13 @@ function _saveSessions(arr) {
 }
 
 function _sessionAlreadyLogged(phase, durationSec) {
-  if (durationSec < 1) return false;
+  if (!Number.isFinite(durationSec) || durationSec < 1) return false;
   var start = Number.isFinite(_focusTimer.sessionStartAt)
     ? _focusTimer.sessionStartAt : (Date.now() - durationSec * 1000);
-  var startedAt = new Date(start).toISOString();
+  if (!Number.isFinite(start) || start < 0) return false;
+  var startDate = new Date(start);
+  if (!Number.isFinite(startDate.getTime())) return false;
+  var startedAt = startDate.toISOString();
   var taskId = _focusTimer.taskId;
   var mode = _focusTimer.mode;
   return _loadSessions().some(function(session) {
@@ -9054,16 +9057,24 @@ function _sessionAlreadyLogged(phase, durationSec) {
 }
 
 function _logSession(phase, durationSec, completed, endedAtMs) {
+  if (!Number.isFinite(durationSec) || durationSec < 0) {
+    showToast("⚠️ بيانات زمن الجلسة غير صالحة؛ لم تُسجّل");
+    return false;
+  }
   if (durationSec < 1) return true;
   var arr = _loadSessions();
   var sessionStart = Number.isFinite(_focusTimer.sessionStartAt)
     ? _focusTimer.sessionStartAt : (Date.now() - durationSec * 1000);
-  if (!Number.isFinite(sessionStart) || sessionStart < 0
-      || !Number.isFinite(durationSec) || durationSec < 0) {
+  if (!Number.isFinite(sessionStart) || sessionStart < 0) {
     showToast("⚠️ بيانات زمن الجلسة غير صالحة؛ لم تُسجّل");
     return false;
   }
-  var sessionStartedAt = new Date(sessionStart).toISOString();
+  var sessionStartDate = new Date(sessionStart);
+  if (!Number.isFinite(sessionStartDate.getTime())) {
+    showToast("⚠️ تاريخ بداية الجلسة خارج النطاق؛ لم تُسجّل");
+    return false;
+  }
+  var sessionStartedAt = sessionStartDate.toISOString();
   if (arr.some(function(session) {
     return session && session.startedAt === sessionStartedAt && session.taskId === _focusTimer.taskId &&
       session.mode === _focusTimer.mode && session.phase === phase;
@@ -9075,6 +9086,11 @@ function _logSession(phase, durationSec, completed, endedAtMs) {
     if (task) taskName = task.name;
   }
   var computedEnd = sessionStart + durationSec * 1000;
+  var computedEndDate = new Date(computedEnd);
+  if (!Number.isFinite(computedEnd) || !Number.isFinite(computedEndDate.getTime())) {
+    showToast("⚠️ مدة الجلسة تتجاوز نطاق التاريخ؛ لم تُسجّل");
+    return false;
+  }
   var suppliedEnd = typeof endedAtMs === "number" && Number.isFinite(endedAtMs) ? endedAtMs : computedEnd;
   var sessionEnd = suppliedEnd;
   var clockAdjusted = _focusTimer.clockAdjusted === true;
@@ -9086,8 +9102,14 @@ function _logSession(phase, durationSec, completed, endedAtMs) {
     sessionEnd = computedEnd;
     clockAdjusted = true;
   }
+  var sessionEndDate = new Date(sessionEnd);
+  if (!Number.isFinite(sessionEndDate.getTime())) {
+    sessionEndDate = computedEndDate;
+    sessionEnd = computedEnd;
+    clockAdjusted = true;
+  }
   arr.push({ id: maxId + 1, mode: _focusTimer.mode, phase: phase, taskId: _focusTimer.taskId,
-    taskName: taskName, startedAt: sessionStartedAt, endedAt: new Date(sessionEnd).toISOString(),
+    taskName: taskName, startedAt: sessionStartedAt, endedAt: sessionEndDate.toISOString(),
     durationSec: durationSec, completed: !!completed,
     clockAdjusted: clockAdjusted || undefined });
   if (!_saveSessions(arr)) { showToast("⚠️ تعذر حفظ جلسة التركيز"); return false; }
