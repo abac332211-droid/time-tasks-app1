@@ -3906,11 +3906,6 @@ function toggleDarkMode() {
 }
 
 function retryStorageRecovery() {
-  if (!storageRecoveryRequired) {
-    showToast('✅ لا يوجد حظر حاليًّا');
-    return Promise.resolve(true);
-  }
-
   var resetPending = false;
   var rollingRestorePending = false;
   try {
@@ -3920,6 +3915,13 @@ function retryStorageRecovery() {
     storageRecoveryRequired = true;
     showAlertModal("تعذر قراءة حالة الاسترداد", "لم نتمكن من قراءة علامات الاسترداد. لم نغيّر البيانات.");
     return Promise.resolve(false);
+  }
+
+  // A durable reset marker blocks writes even in a stale window whose
+  // in-memory recovery flag has not yet observed the storage event.
+  if (!storageRecoveryRequired && !resetPending && !rollingRestorePending) {
+    showToast('✅ لا يوجد حظر حاليًّا');
+    return Promise.resolve(true);
   }
 
   if (resetPending) {
