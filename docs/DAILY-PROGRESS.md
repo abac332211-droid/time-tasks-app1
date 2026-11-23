@@ -387,11 +387,21 @@
 
 ### ملحق نتائج CI النهائية على الرأس `8b85862b5592a653a3dd2fb2b59acc80543d7c1e` — 23 نوفمبر 2026
 
-جميع التشغيلات الثلاثة اكتملت بنجاح وعلى SHA نفسه:
+**تصحيح ربط التشغيلات بالـSHA — هذه التشغيلات ليست كلها على commit واحد:**
 
-- **Push PWA** — [run 45183548503](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548503): **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل تثبيت Playwright/Chromium وتشغيل اختبارات المتصفح الحقيقية.
-- **PR PWA** — [run 45183561775](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183561775): **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل تثبيت Playwright/Chromium وتشغيل اختبارات المتصفح الحقيقية.
-- **Android Debug** — [run 45183548817](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548817): **260 ناجحًا، 0 فشل، 7 متخطاة من أصل 267**؛ سبب كل تخطٍ أن Playwright مثبت فقط في خطوة اختبار المتصفح المخصصة، ولم يُثبت في workflow Android Debug. الاختبارات السبعة المتخطاة هي:
+- **Push PWA** — [run 45183548503](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548503): فحص رأس فرع الإصلاح مباشرةً عند SHA `8b85862b5592a653a3dd2fb2b59acc80543d7c1e`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل تثبيت Playwright/Chromium وتشغيل اختبارات المتصفح الحقيقية.
+- **Android Debug** — [run 45183548817](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548817): فحص رأس فرع الإصلاح مباشرةً عند SHA نفسه `8b85862b5592a653a3dd2fb2b59acc80543d7c1e`؛ **260 ناجحًا، 0 فشل، 7 متخطاة من أصل 267**. سبب التخطي أن Playwright مثبت في خطوة اختبار المتصفح المخصصة، وليس في workflow Android Debug. الاختبارات السبعة المتخطاة هي:
+  1. two real same-origin pages exchange storage events and block stale main/timer writes
+  2. a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal
+  3. two same-origin pages cannot commit duplicate task-linked Stopwatch transactions
+  4. non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere
+  5. a rejected rolling snapshot is rolled back and cannot outrank the previous valid slot
+  6. real Chromium pages release Web Lock after owner callback throws synchronously
+  7. real Chromium pages release Web Lock after owner callback Promise rejects
+- **PR PWA** — [run 45183561775](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183561775): لم يفحص SHA الفرع مباشرةً؛ فحص merge commit `ae22808e2f931a8d6aaf8f58fc9b43741d31beb1` الناتج عن دمج رأس الفرع `8b85862b5592a653a3dd2fb2b59acc80543d7c1e` مع قاعدة PR `ba14adaaf09474b9d432d31569f5e5067d58193d`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل Chromium الفعلي.
+- **إعادة PR PWA على رأس PR الأحدث آنذاك** — [run 45183997086](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183997086): فحص merge commit `2ef0f12e4d6baae926734f4c9608fea1afc3b1e4` الناتج عن دمج رأس PR `b8b5c6d18543de14d1bbc9c0a99e9a51b7dc2ad0` مع قاعدة PR `ba14adaaf09474b9d432d31569f5e5067d58193d`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. لا يُعد تشغيلًا مباشرًا على SHA الفرع.
+
+- **ملحوظة Android Debug:** نجح `Gradle BUILD SUCCESSFUL` وفحص Manifest لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`. لا تُحسب الاختبارات السبعة المتخطاة نجاحًا على Android، ولا يثبت هذا البناء اختبار Android WebView ميدانيًا.
   1. two real same-origin pages exchange storage events and block stale main/timer writes
   2. a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal
   3. two same-origin pages cannot commit duplicate task-linked Stopwatch transactions
