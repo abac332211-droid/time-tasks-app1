@@ -43,7 +43,6 @@ function createStopwatchSaveHarness(options = {}) {
   let logged = !!options.alreadyLogged;
   let resetAttempts = 0;
   let releaseCalls = 0;
-  let released = false;
   let saveCalls = 0;
   const sandbox = {
     _focusTimer: timer,
@@ -55,6 +54,7 @@ function createStopwatchSaveHarness(options = {}) {
     _sessionAlreadyLogged() { calls.push('alreadyLogged'); return logged; },
     _acquireRollingRecoveryCheckpointHold(required) {
       calls.push('hold:' + required);
+      let released = false;
       return function() {
         if (released) return;
         released = true;
