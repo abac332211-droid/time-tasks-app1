@@ -1776,14 +1776,22 @@ function resetAllHarness(faults = {}) {
     migrationInProgress: 'migration-in-progress', resetInProgress: 'reset-in-progress',
     rollingBackupA: 'rolling-backup-a', rollingBackupB: 'rolling-backup-b',
     rollingRestoreInProgress: 'rolling-restore-in-progress',
+    rollingBackupGeneration: 'rolling-backup-generation',
     testFlag: 'test-flag', migrationArchive: 'migration-archive', testBackup: 'test-backup',
     thoughts: 'thoughts', projects: 'projects', focusTimer: 'focus-timer',
     focusSessions: 'focus-sessions', mentalInbox: 'mental-inbox',
     focusSettings: 'focus-settings', notifications: 'notifications'
   };
   const values = new Map(Object.entries(keys)
-    .filter(([name]) => name !== 'resetInProgress' && name !== 'rollingRestoreInProgress')
+    .filter(([name]) => !['resetInProgress', 'rollingRestoreInProgress', 'rollingBackupGeneration'].includes(name))
     .map(([, key]) => [key, 'old-value']));
+  const resetMain = JSON.stringify({
+    schemaVersion: 2, createdByVersion: 'test',
+    settings: {}, tasks: [], dailyLogs: []
+  });
+  values.set(keys.resetInProgress, JSON.stringify({
+    version: 1, main: resetMain, generation: 1
+  }));
   const removeCalls = [];
   const alerts = [];
   const toasts = [];
@@ -1797,6 +1805,7 @@ function resetAllHarness(faults = {}) {
     ROLLING_BACKUP_A_KEY: keys.rollingBackupA,
     ROLLING_BACKUP_B_KEY: keys.rollingBackupB,
     ROLLING_RESTORE_IN_PROGRESS_KEY: keys.rollingRestoreInProgress,
+    ROLLING_BACKUP_GENERATION_KEY: keys.rollingBackupGeneration,
     MIGRATION_ARCHIVE_KEY: keys.migrationArchive,
     BACKUP_KEY: keys.migrationArchive,
     TEST_FLAG_KEY: keys.testFlag,
@@ -1812,8 +1821,29 @@ function resetAllHarness(faults = {}) {
     createdByVersion: 'old',
     storageRecoveryRequired: false,
     _sessionsCache: [],
-    _focusTimer: {},
-    _awaySessionPromptOpen: false,
+    _focusTimer: {
+      mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 75,
+      startedAt: 1, cyclePosition: 2, taskId: 99, sessionStartAt: 1,
+      awaitingConfirmation: true, pendingPhaseEndedAt: 2,
+      clockAdjusted: true, pendingStopwatchTransaction: { id: 'pending' }
+    },
+    _focusElapsedRemainderMs: 500,
+    _focusTimerColdStartWasRunning: true,
+    _focusTimerSavedAtAtLoad: 1,
+    _focusTimerCheckpointAt: 1,
+    _awaySessionPromptOpen: true,
+    _secondaryStorageKeys: [
+      keys.projects, keys.thoughts, keys.mentalInbox, keys.focusSessions,
+      keys.focusTimer, keys.focusSettings, keys.notifications
+    ],
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _mainStorageExternalChangeObserved: true,
+    _focusTimerExternalConflict: true,
+    _focusTimerConflictNoticeShown: true,
+    _rollingRecoveryBackupEpoch: 0,
+    _invalidateRollingRecoveryBackupRequests() { this._rollingRecoveryBackupEpoch += 1; },
+    _clearFocusTimerClock() {},
     buildEmptyV2: () => ({
       schemaVersion: 2, createdByVersion: 'test',
       settings: {}, tasks: [], dailyLogs: []
@@ -1850,26 +1880,30 @@ function resetAllHarness(faults = {}) {
     renderAll: () => {}
   };
   vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n'
-      + extractFunction('resetAll'),
+    extractFunction('_readPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_resetSecondaryStorageTrackingAfterReset') + '\n'
+      + extractFunction('_recoverInterruptedReset'),
     sandbox
   );
-  return { keys, values, removeCalls, alerts, toasts, confirmations, sandbox, run: () => sandbox.resetAll() };
+  return {
+    keys, values, removeCalls, alerts, toasts, confirmations, sandbox,
+    run: () => sandbox._recoverInterruptedReset()
+  };
 }
 
-test('resetAll attempts every deletion and never reports full success when one key cannot be removed', () => {
+test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
-  harness.run();
+  assert.equal(harness.run(), false);
 
   assert.ok(harness.removeCalls.includes('focus-timer'));
   assert.ok(harness.removeCalls.includes('focus-sessions'));
   assert.ok(harness.removeCalls.includes('mental-inbox'));
   assert.equal(harness.values.get('projects'), 'old-value');
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
-  assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
-  assert.ok(harness.alerts.some((args) => /لم يكتمل حذف كل البيانات/.test(String(args[0]))));
-  assert.match(harness.confirmations[0].body, /النسخ الداخلية/);
+  assert.notEqual(harness.values.get(harness.keys.resetInProgress), undefined,
+    'the durable reset marker must remain available for retry after a failed deletion');
+  assert.equal(harness.values.get(harness.keys.rollingBackupGeneration), '1');
 });
 
 
