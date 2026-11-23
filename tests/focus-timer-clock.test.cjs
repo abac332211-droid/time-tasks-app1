@@ -124,7 +124,7 @@ test('fallback clock accumulates ordinary positive deltas when performance.now i
   assert.equal(h.sandbox._getElapsedSec(), 2);
 });
 
-test('fallback clock handles a backward wall-clock jump without negative time or catch-up freeze', () => {
+test('fallback clock pauses after a backward wall-clock jump and resumes only after explicit user action', () => {
   const h = createClockHarness({ performanceAvailable: false });
   h.clock.wall += 2_500;
   assert.equal(h.sandbox._getElapsedSec(), 2);
@@ -132,18 +132,33 @@ test('fallback clock handles a backward wall-clock jump without negative time or
   h.clock.wall -= 30 * 60 * 1000;
   assert.equal(h.sandbox._getElapsedSec(), 2);
   assert.equal(h.timer.clockAdjusted, true);
+  assert.equal(h.timer.running, false);
+  assert.equal(h.sandbox._focusElapsedRemainderMs, 500);
 
   h.clock.wall += 1_000;
-  assert.equal(h.sandbox._getElapsedSec(), 3);
+  assert.equal(h.sandbox._getElapsedSec(), 2, 'the paused clock must not resume by itself');
+
+  h.timer.running = true;
+  h.timer.startedAt = h.clock.wall;
+  h.sandbox._anchorFocusTimerClock(h.timer.startedAt, h.sandbox._focusElapsedRemainderMs);
+  h.clock.wall += 1_000;
+  assert.equal(h.sandbox._getElapsedSec(), 3, 'a manual resume starts a fresh fallback anchor');
 });
 
-test('fallback clock treats a large unexplained forward jump as a discontinuity, not elapsed time', () => {
+test('fallback clock pauses after a large unexplained forward jump until the user resumes', () => {
   const h = createClockHarness({ performanceAvailable: false });
   h.clock.wall += 30 * 60 * 1000;
 
   assert.equal(h.sandbox._getElapsedSec(), 0);
   assert.equal(h.timer.clockAdjusted, true);
+  assert.equal(h.timer.running, false);
 
+  h.clock.wall += 1_000;
+  assert.equal(h.sandbox._getElapsedSec(), 0, 'the timer must stay paused without user action');
+
+  h.timer.running = true;
+  h.timer.startedAt = h.clock.wall;
+  h.sandbox._anchorFocusTimerClock(h.timer.startedAt, h.sandbox._focusElapsedRemainderMs);
   h.clock.wall += 1_000;
   assert.equal(h.sandbox._getElapsedSec(), 1);
 });
@@ -436,14 +451,15 @@ test('pause captures sub-second elapsed time and failed pause restores the prior
 });
 
 
-test('an available but stalled monotonic clock pauses Pomodoro without logging or auto-transitioning after a long sleep', () => {
+test('a monotonic clock advancing only 1ms after Android sleep pauses Pomodoro without logging or auto-transitioning', () => {
   const h = createClockHarness({ baseElapsed: 40 });
   h.clock.mono = 1_750;
   h.clock.wall += 1_750;
   assert.equal(h.sandbox._getElapsedSec(), 41);
 
-  // Simulate a long Android sleep: Date.now advances, performance.now remains present and unchanged.
+  // Simulate Android sleep: wall time advances 30 minutes but performance.now advances only 1ms.
   h.clock.wall += 30 * 60 * 1000;
+  h.clock.mono += 1;
   let logged = 0;
   let confirmations = 0;
   let saved = 0;
@@ -473,7 +489,7 @@ test('an available but stalled monotonic clock pauses Pomodoro without logging o
   assert.match(alerts[0].message, /ابدأ/);
 });
 
-test('a stalled available monotonic clock also pauses Stopwatch and excludes the wall-clock gap', () => {
+test('Stopwatch pauses when performance.now advances only 1ms across a long sleep gap', () => {
   const h = createClockHarness();
   h.timer.mode = 'stopwatch';
   h.clock.mono = 2_250;
@@ -481,6 +497,7 @@ test('a stalled available monotonic clock also pauses Stopwatch and excludes the
   assert.equal(h.sandbox._getElapsedSec(), 2);
 
   h.clock.wall += 20 * 60 * 1000;
+  h.clock.mono += 1;
   const elapsed = h.sandbox._getFocusTimerElapsedParts();
 
   assert.equal(h.timer.running, false);
@@ -496,6 +513,7 @@ test('a checkpoint persists paused state when it is the first caller to detect a
   assert.equal(h.sandbox._getElapsedSec(), 2);
 
   h.clock.wall += 20 * 60 * 1000;
+  h.clock.mono += 1;
   assert.equal(h.sandbox._saveFocusTimer(), true);
 
   const persisted = JSON.parse(h.clock.writes.at(-1).raw);
