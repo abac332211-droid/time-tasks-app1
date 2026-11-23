@@ -880,3 +880,124 @@ test('commit baselines reject a mismatch between durable and in-memory transacti
   assert.equal(runtime.sandbox.storageRecoveryRequired, true,
     'a journal mismatch must block subsequent ordinary writes until recovery');
 });
+
+
+function installFinishTimer(runtime) {
+  const sandbox = runtime.sandbox;
+  const nodes = new Map();
+  function element(id) {
+    if (!nodes.has(id)) {
+      nodes.set(id, {
+        id, children: [], className: '', innerHTML: '', textContent: '',
+        classList: { remove() {}, add() {}, contains() { return false; } },
+        appendChild(child) { this.children.push(child); },
+        focus() {}
+      });
+    }
+    return nodes.get(id);
+  }
+  sandbox.document = {
+    getElementById: element,
+    createElement() { return element('created-' + nodes.size); },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  sandbox._formatDuration = (seconds) => String(seconds) + 's';
+  sandbox._setupModalFocusTrap = () => () => {};
+  sandbox._modalKeyHandler = null;
+  sandbox.closeModal = () => {};
+  vm.runInNewContext(
+    [extractFunction('_freezeFocusTimerForDecision'),
+      extractFunction('_applyTimerFinish'),
+      extractFunction('finishTimer')].join('\n'),
+    sandbox
+  );
+  return nodes;
+}
+
+test('finishTimer commits linked Stopwatch work through Web Locks and logs its transaction ID once', async () => {
+  const storage = initialStorage();
+  const runtime = createRuntime(storage);
+  const nodes = installFinishTimer(runtime);
+
+  runtime.sandbox.finishTimer();
+  const footer = nodes.get('modalFooter');
+  assert.equal(footer.children.length, 3);
+  footer.children[2].onclick();
+  const commitPromise = runtime.sandbox._focusCommitPendingPromise;
+  assert.ok(commitPromise, 'finishTimer save action must enter the shared async commit engine');
+  assert.equal(await commitPromise, true);
+
+  const main = JSON.parse(storage.getItem('main'));
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const sessions = JSON.parse(storage.getItem('focus-sessions'));
+  assert.equal(main.tasks[0].actual, 7);
+  assert.equal(typeof main.tasks[0].lastStopwatchTransactionId, 'string');
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].transactionId, main.tasks[0].lastStopwatchTransactionId);
+  assert.equal(timer.pendingStopwatchTransaction, null);
+  assert.equal(timer.baseElapsed, 0);
+});
+
+test('finishTimer logs a Pomodoro break against its task without modifying task actual or creating a task transaction', async () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  timer.mode = 'pomodoro';
+  timer.phase = 'shortBreak';
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const runtime = createRuntime(storage);
+  installFinishTimer(runtime);
+
+  const result = await runtime.sandbox.finishTimer();
+  assert.equal(result, true);
+  const main = JSON.parse(storage.getItem('main'));
+  const savedTimer = JSON.parse(storage.getItem('focus-timer'));
+  const sessions = JSON.parse(storage.getItem('focus-sessions'));
+  assert.equal(main.tasks[0].actual, 5);
+  assert.equal(main.tasks[0].lastStopwatchTransactionId, undefined);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].phase, 'shortBreak');
+  assert.equal(sessions[0].taskId, 7);
+  assert.equal(savedTimer.pendingStopwatchTransaction, null);
+  assert.equal(savedTimer.baseElapsed, 0);
+});
+
+test('startTimerForTask does not start the next timer when a short-session reset succeeds but the new timer save fails', async () => {
+  const storage = initialStorage();
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks.push({
+    id: 8, name: 'Next task', status: 'pending', type: 'معرفية',
+    expected: 20, actual: null, plannedDate: '2026-11-23',
+    plannedTime: '', completedAt: null, createdAt: Date.now()
+  });
+  storage.setItem('main', JSON.stringify(main));
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  timer.baseElapsed = 30;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const runtime = createRuntime(storage);
+  const sandbox = runtime.sandbox;
+  sandbox._getElapsedSec = () => 30;
+  sandbox._unlockAudioContext = () => {};
+  sandbox.isTaskDone = () => false;
+  sandbox.isTaskCancelled = () => false;
+  sandbox._clearFocusTimerClock = () => {};
+  sandbox._anchorFocusTimerClock = () => {};
+  sandbox._showAwaySessionConfirmation = () => {};
+  vm.runInNewContext(extractFunction('startTimerForTask'), sandbox);
+
+  const saveTimer = sandbox._saveFocusTimer.bind(sandbox);
+  let saves = 0;
+  sandbox._saveFocusTimer = function() {
+    saves++;
+    if (saves === 3) return false;
+    return saveTimer();
+  };
+
+  assert.equal(await sandbox.startTimerForTask(8), false);
+  const savedTimer = JSON.parse(storage.getItem('focus-timer'));
+  assert.equal(savedTimer.running, false);
+  assert.equal(savedTimer.baseElapsed, 0);
+  assert.equal(savedTimer.taskId, 7, 'the next task must not become active after its start save fails');
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
+  assert.equal(runtime.toasts.some((message) => String(message).includes('بدأت جلسة المهمة الجديدة')), false);
+});
