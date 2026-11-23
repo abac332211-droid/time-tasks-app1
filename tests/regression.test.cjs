@@ -1946,6 +1946,7 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
   vm.runInNewContext(
     extractFunction('_parseRollingRecoveryBackup') + '\n'
       + extractFunction('_getLatestRollingRecoveryBackup') + '\n'
+      + extractFunction('_storeRollingRecoveryBackupLocked') + '\n'
       + extractFunction('_storeRollingRecoveryBackup') + '\n'
       + extractFunction('_recoverInterruptedRollingRestore'),
     sandbox

@@ -569,6 +569,13 @@ test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopw
 
     await pageB.evaluate(() => {
       window._recoveryResult = null;
+      window._recoveryAlerts = [];
+      window._recoveryFlagsBefore = {
+        storageRecoveryRequired: storageRecoveryRequired,
+        mainExternal: _mainStorageExternalChangeObserved,
+        timerExternal: _focusTimerExternalConflict
+      };
+      window.showAlertModal = function() { window._recoveryAlerts.push(Array.from(arguments)); };
       window._recoveryPromise = _withStopwatchTransactionLock(function() {
         window._recoveryResult = _pendingStopwatchWriteAllowed()
           ? _recoverPendingStopwatchSave(false) : false;
@@ -579,7 +586,18 @@ test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopw
       'the second page must wait until the owner releases the exclusive lock');
     await pageA.evaluate(() => window._ownerLockRelease());
     await pageA.evaluate(() => window._ownerLockPromise);
-    assert.equal(await pageB.evaluate(() => window._recoveryPromise), true);
+    const recoveryOutcome = await pageB.evaluate(() => ({
+      result: window._recoveryPromise,
+      flagsBefore: window._recoveryFlagsBefore,
+      flagsAfter: {
+        storageRecoveryRequired: storageRecoveryRequired,
+        mainExternal: _mainStorageExternalChangeObserved,
+        timerExternal: _focusTimerExternalConflict,
+        lockDepth: _stopwatchTransactionLockDepth
+      },
+      alerts: window._recoveryAlerts
+    }));
+    assert.equal(recoveryOutcome.result, true, JSON.stringify(recoveryOutcome));
     const recovered = await pageB.evaluate(() => ({
       task: JSON.parse(localStorage.getItem(STORAGE_KEY)).tasks.find(item => item.id === 7041),
       sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]')

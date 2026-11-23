@@ -63,6 +63,7 @@ function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult
   vm.runInNewContext(
     extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' +
     extractFunction('_logSession') + '\n' +
+    extractFunction('_matchingFocusSessionRecords') + '\n' +
     extractFunction('_sessionAlreadyLogged'),
     sandbox
   );
