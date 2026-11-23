@@ -10296,7 +10296,10 @@ function _focusCommitBaselinesMatch(s) {
     }
     var mainData = JSON.parse(mainRaw);
     if (!validateV2(mainData) || !Array.isArray(mainData.tasks)
-        || JSON.stringify(mainData.tasks) !== JSON.stringify(tasks)) return null;
+        || JSON.stringify(mainData.tasks) !== JSON.stringify(tasks)) {
+      storageRecoveryRequired = true;
+      return null;
+    }
 
     var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
     if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines,FOCUS_TIMER_KEY)
@@ -10306,10 +10309,16 @@ function _focusCommitBaselinesMatch(s) {
       _focusTimerExternalConflict = true; return null;
     }
     var timerRecord = timerRaw === null ? null : JSON.parse(timerRaw);
-    if (!_focusTimerSnapshotMatchesRecord(s,timerRecord)) return null;
+    if (!_focusTimerSnapshotMatchesRecord(s,timerRecord)) {
+      storageRecoveryRequired = true;
+      return null;
+    }
     var durablePendingTransaction = timerRecord.pendingStopwatchTransaction || null;
     var memoryPendingTransaction = _focusTimer.pendingStopwatchTransaction || null;
-    if (JSON.stringify(durablePendingTransaction) !== JSON.stringify(memoryPendingTransaction)) return null;
+    if (JSON.stringify(durablePendingTransaction) !== JSON.stringify(memoryPendingTransaction)) {
+      storageRecoveryRequired = true;
+      return null;
+    }
 
     var sessionRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
     if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines,FOCUS_SESSIONS_KEY)) {
@@ -10317,7 +10326,9 @@ function _focusCommitBaselinesMatch(s) {
     }
     if (_secondaryStorageConflicts[FOCUS_SESSIONS_KEY]
         || sessionRaw !== _secondaryStorageBaselines[FOCUS_SESSIONS_KEY]) {
-      _secondaryStorageConflicts[FOCUS_SESSIONS_KEY] = true; return null;
+      _secondaryStorageConflicts[FOCUS_SESSIONS_KEY] = true;
+      storageRecoveryRequired = true;
+      return null;
     }
     _loadSessions();
     if (storageRecoveryRequired) return null;
