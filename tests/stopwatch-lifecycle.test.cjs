@@ -211,7 +211,7 @@ test('resetTimer uses the Stopwatch save decision at 60 seconds, not below it', 
   assert.deepEqual(outcomes[1], ['stopwatch-dialog', 60]);
 });
 
-function createStopwatchDialogHarness({ saveResult = true } = {}) {
+function createStopwatchDialogHarness({ saveResult = true, logResult = true } = {}) {
   const nodes = new Map();
   let nextElementId = 0;
   function element(name) {
@@ -251,8 +251,16 @@ function createStopwatchDialogHarness({ saveResult = true } = {}) {
     _renderFocusTimer: () => calls.push('renderTimer'),
     _formatDuration: (sec) => String(sec) + ' sec',
     escapeHTML: value => String(value),
-    _logSession: (...args) => { calls.push(['logSession', ...args]); return true; },
-    _resetAfterSession: () => { calls.push('reset'); return true; },
+    _logSession: (...args) => { calls.push(['logSession', ...args]); return logResult; },
+    _resetAfterSession: () => {
+      calls.push('reset');
+      if (logResult === false) return false;
+      timer.running = false;
+      timer.baseElapsed = 0;
+      timer.startedAt = null;
+      sandbox._focusElapsedRemainderMs = 0;
+      return true;
+    },
     closeModal: () => calls.push('closeModal'),
     renderFocusSessionsCard: () => calls.push('renderSessions'),
     showToast: message => calls.push(['toast', message]),
@@ -302,4 +310,50 @@ test('Stopwatch decision dialog restores the running timer when its pause checkp
   assert.ok(h.calls.includes('startTick'));
   assert.equal(h.nodes.get('modalOverlay'), undefined);
   assert.ok(h.calls.some(call => Array.isArray(call) && call[0] === 'alert'));
+});
+
+
+test('unlinked Stopwatch save records the frozen session before clearing the timer', () => {
+  const h = createStopwatchDialogHarness();
+  h.sandbox._showStopwatchSaveDialog(75);
+
+  const save = h.nodes.get('modalFooter').children[2];
+  save.onclick();
+
+  assert.deepEqual(
+    h.calls.find(call => Array.isArray(call) && call[0] === 'logSession'),
+    ['logSession', 'work', 75, true]
+  );
+  assert.ok(h.calls.indexOf('logSession') < h.calls.indexOf('reset'));
+  assert.ok(h.calls.includes('renderSessions'));
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.baseElapsed, 0);
+  assert.ok(h.calls.some(call => Array.isArray(call) && /حُفظت الجلسة/.test(call[1])));
+});
+
+test('unlinked Stopwatch save failure keeps the frozen session available and does not reset it', () => {
+  const h = createStopwatchDialogHarness({ logResult: false });
+  h.sandbox._showStopwatchSaveDialog(75);
+
+  const save = h.nodes.get('modalFooter').children[2];
+  save.onclick();
+
+  assert.ok(h.calls.some(call => Array.isArray(call) && call[0] === 'logSession'));
+  assert.equal(h.calls.includes('reset'), false);
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.baseElapsed, 75);
+  assert.ok(h.calls.some(call => Array.isArray(call) && /بقيت الجلسة متوقفة/.test(call[1])));
+});
+
+test('unlinked Stopwatch discard resets the timer without logging a session', () => {
+  const h = createStopwatchDialogHarness();
+  h.sandbox._showStopwatchSaveDialog(75);
+
+  const discard = h.nodes.get('modalFooter').children[1];
+  discard.onclick();
+
+  assert.equal(h.calls.some(call => Array.isArray(call) && call[0] === 'logSession'), false);
+  assert.ok(h.calls.includes('reset'));
+  assert.equal(h.timer.running, false);
+  assert.equal(h.timer.baseElapsed, 0);
 });
