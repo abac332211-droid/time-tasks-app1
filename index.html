@@ -3791,6 +3791,10 @@ function saveData() {
     showAlertModal("تنبيه الحفظ", "البيانات القديمة لم تُرحَّل بعد. استعدها من نسخة احتياطية، أو احذف كل البيانات من الإعدادات.");
     return false;
   }
+  if (typeof _isFocusCommitBlocked==="function" && _isFocusCommitBlocked()) {
+    showAlertModal("حفظ جلسة قيد التنفيذ","توجد عملية حفظ جلسة تركيز تنتظر التأكيد. انتظر اكتمالها قبل تعديل المهام.");
+    return false;
+  }
   if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined"
       || typeof MIGRATION_IN_PROGRESS_KEY !== "undefined"
       || typeof RESET_IN_PROGRESS_KEY !== "undefined"
@@ -3816,10 +3820,6 @@ function saveData() {
         "تعذر قراءة علامة الاستعادة أو الترحيل؛ أوقف التطبيق الحفظ حمايةً من الكتابة فوق حالة غير محسومة.");
       return false;
     }
-  }
-  if (typeof _isFocusCommitBlocked==="function" && _isFocusCommitBlocked()) {
-    showAlertModal("حفظ جلسة قيد التنفيذ","توجد عملية حفظ جلسة تركيز تنتظر التأكيد. انتظر اكتمالها قبل تعديل المهام.");
-    return false;
   }
   try {
     let raw;
