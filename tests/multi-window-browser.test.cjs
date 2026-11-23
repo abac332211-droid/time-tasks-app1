@@ -1023,6 +1023,12 @@ test('startup reset recovery waits for the shared lock and makes an older queued
     await startupPage.goto(appUrl);
     await startupPage.waitForFunction(() => _startupResetRecoveryInFlight === true,
       null, { timeout: 10000 });
+    await pageA.waitForFunction(async () => {
+      const state = await navigator.locks.query();
+      return (state.pending || []).some(lock =>
+        lock.name === 'timeTasksApp-stopwatch-transaction'
+      );
+    }, null, { timeout: 5000 });
     const startupWaiting = await startupPage.evaluate(() => ({
       recoveryInFlight: _startupResetRecoveryInFlight,
       writesAllowed: _storageWriteAllowed(),
@@ -1076,7 +1082,12 @@ test('startup reset recovery waits for the shared lock and makes an older queued
 test('Reset uses a documented best-effort path when Web Locks is unavailable', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
-  await withBrowserPages(async ({ pageA }) => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
+      null, { timeout: 20000 }
+    )));
+    await pageB.close();
     const state = await pageA.evaluate(async () => {
       const generationBefore = _readPersistedRollingBackupGeneration();
       Object.defineProperty(navigator, 'locks', {
