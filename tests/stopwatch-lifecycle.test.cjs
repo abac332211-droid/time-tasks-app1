@@ -22,7 +22,7 @@ function extractFunction(name) {
 
 function createStopwatchSaveHarness(options = {}) {
   const calls = [], alerts = [], toasts = [];
-  const task = options.task === null ? null : { id: 7, name: 'Stopwatch task', actual: options.actual ?? 5 };
+  const task = options.task === null ? null : { id: 7, name: 'Stopwatch task', actual: options.actual === undefined ? 5 : options.actual };
   const timer = {
     mode: 'stopwatch', phase: 'work', running: false, baseElapsed: 125, startedAt: null,
     cyclePosition: 0, taskId: task ? task.id : null, sessionStartAt: 1_700_000_000_000,
