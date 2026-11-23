@@ -61,7 +61,7 @@ function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult
     console
   };
   vm.runInNewContext(
-    extractFunction('_validateFocusSessionRecord') + '\n' +
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' +
     extractFunction('_logSession') + '\n' +
     extractFunction('_sessionAlreadyLogged'),
     sandbox
@@ -100,7 +100,7 @@ test('session loader preserves the exact corrupt source and locks storage instea
     console
   };
   vm.runInNewContext(
-    extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_loadSessions'),
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_loadSessions'),
     sandbox
   );
 
@@ -125,7 +125,7 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
     _storeRollingRecoveryBackup: () => true
   };
   vm.runInNewContext(
-    extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
     sandbox
   );
 
@@ -189,3 +189,59 @@ test('duplicate lookup safely returns false for an invalid session start timesta
   assert.doesNotThrow(() => { result = h.sandbox._sessionAlreadyLogged('work', 60); });
   assert.equal(result, false);
 });
+
+test('session record validation rejects impossible calendar dates instead of accepting Date.parse normalization', () => {
+  const impossibleDates = [
+    '2026-02-30T00:00:00.000Z',
+    '2026-04-31T00:00:00.000Z',
+    '2025-02-29T00:00:00.000Z'
+  ];
+  for (const invalidDate of impossibleDates) {
+    assert.equal(
+      hValidate(validSession({ startedAt: invalidDate })),
+      false,
+      'impossible start date must be rejected: ' + invalidDate
+    );
+    assert.equal(
+      hValidate(validSession({ endedAt: invalidDate })),
+      false,
+      'impossible end date must be rejected: ' + invalidDate
+    );
+  }
+});
+
+test('session record validation accepts February 29 in a leap year', () => {
+  assert.equal(hValidate(validSession({
+    startedAt: '2024-02-29T00:00:00.000Z',
+    endedAt: '2024-02-29T00:01:00.000Z'
+  })), true);
+});
+
+test('session and task IDs must be safe integers', () => {
+  assert.equal(hValidate(validSession({ id: Number.MAX_SAFE_INTEGER + 1 })), false);
+  assert.equal(hValidate(validSession({ taskId: Number.MAX_SAFE_INTEGER + 1 })), false);
+});
+
+test('session logging refuses to allocate an ID beyond Number.MAX_SAFE_INTEGER', () => {
+  const highestIdSession = validSession({
+    id: Number.MAX_SAFE_INTEGER,
+    startedAt: new Date(baseStart + 120_000).toISOString(),
+    endedAt: new Date(baseStart + 180_000).toISOString()
+  });
+  const h = createLogHarness({ initial: [highestIdSession] });
+
+  assert.equal(h.sandbox._logSession('work', 60, true, baseStart + 60_000), false);
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.saveCalls, 0, 'no write may occur when a unique safe ID cannot be allocated');
+  assert.ok(h.toasts.length > 0);
+});
+
+function hValidate(session) {
+  const sandbox = {};
+  vm.runInNewContext(
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' +
+    extractFunction('_validateFocusSessionRecord'),
+    sandbox
+  );
+  return sandbox._validateFocusSessionRecord(session);
+}
