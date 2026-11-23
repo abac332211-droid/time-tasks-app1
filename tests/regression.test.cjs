@@ -184,6 +184,33 @@ test('resume keeps the original sessionStartAt instead of drifting it forward', 
   assert.equal(typeof sandbox._focusTimer.startedAt, 'number');
 });
 
+test('focus commit guard blocks saveData and side-storage writes before reading storage', () => {
+  let reads = 0, writes = 0;
+  const sandbox = {
+    storageRecoveryRequired: false,
+    STORAGE_KEY: 'main',
+    IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+    RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+    _isFocusCommitBlocked: () => true,
+    localStorage: { getItem() { reads++; return null; }, setItem() { writes++; } },
+    showAlertModal() {}, showToast() {}, console
+  };
+  vm.runInNewContext([
+    extractFunction('saveData'),
+    extractFunction('_storageWriteAllowed'),
+    extractFunction('persistDailyLog')
+  ].join('\n'), sandbox);
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(reads, 0, 'saveData must block before reading recovery markers or data');
+  assert.equal(sandbox._storageWriteAllowed(), false);
+  assert.equal(reads, 0, '_storageWriteAllowed must stop before side-storage reads');
+  assert.equal(sandbox.persistDailyLog({ date: '2026-11-23' }), false);
+  assert.equal(reads, 0, 'daily log persistence must stop before reading main storage');
+  assert.equal(writes, 0);
+});
+
 test('saveData refuses to overwrite a malformed main record', () => {
   const original = '{broken-json';
   let stored = original;
