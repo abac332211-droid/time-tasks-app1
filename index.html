@@ -1670,29 +1670,27 @@ function _pendingStopwatchWriteAllowed() {
 }
 
 function _storageWriteAllowed() {
-  if (typeof _startupResetRecoveryInFlight !== "undefined" && _startupResetRecoveryInFlight) return false;
-  if (typeof _resetRecoveryInFlight !== "undefined" && _resetRecoveryInFlight) return false;
-  if (typeof _resetInFlight !== "undefined" && _resetInFlight) return false;
-  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
-  if (typeof _pendingStopwatchWriteAllowed === 'function' && !_pendingStopwatchWriteAllowed()) return false;
-  var blockingKeys = [];
-  if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
-  if (typeof MIGRATION_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(MIGRATION_IN_PROGRESS_KEY);
-  if (typeof RESET_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(RESET_IN_PROGRESS_KEY);
-  if (typeof ROLLING_RESTORE_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(ROLLING_RESTORE_IN_PROGRESS_KEY);
-  try {
-    for (var i = 0; i < blockingKeys.length; i++) {
-      if (localStorage.getItem(blockingKeys[i]) !== null) return false;
-    }
-    if (typeof _mainStorageBaselineReady !== "undefined" && _mainStorageBaselineReady) {
-      var currentMainRaw = localStorage.getItem(STORAGE_KEY);
-      if ((typeof _mainStorageExternalChangeObserved !== 'undefined' && _mainStorageExternalChangeObserved) || currentMainRaw !== _mainStorageBaselineRaw) return false;
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())return false;
+  if(typeof _startupResetRecoveryInFlight!=="undefined"&&_startupResetRecoveryInFlight)return false;
+  if(typeof _resetRecoveryInFlight!=="undefined"&&_resetRecoveryInFlight)return false;
+  if(typeof _resetInFlight!=="undefined"&&_resetInFlight)return false;
+  if(typeof storageRecoveryRequired!=="undefined"&&storageRecoveryRequired)return false;
+  if(typeof _pendingStopwatchWriteAllowed==="function"&&!_pendingStopwatchWriteAllowed())return false;
+  var keys=[];
+  if(typeof IMPORT_IN_PROGRESS_KEY!=="undefined")keys.push(IMPORT_IN_PROGRESS_KEY);
+  if(typeof MIGRATION_IN_PROGRESS_KEY!=="undefined")keys.push(MIGRATION_IN_PROGRESS_KEY);
+  if(typeof RESET_IN_PROGRESS_KEY!=="undefined")keys.push(RESET_IN_PROGRESS_KEY);
+  if(typeof ROLLING_RESTORE_IN_PROGRESS_KEY!=="undefined")keys.push(ROLLING_RESTORE_IN_PROGRESS_KEY);
+  try{
+    for(var i=0;i<keys.length;i++)if(localStorage.getItem(keys[i])!==null)return false;
+    if(typeof _mainStorageBaselineReady!=="undefined"&&_mainStorageBaselineReady){
+      var raw=localStorage.getItem(STORAGE_KEY);
+      if((typeof _mainStorageExternalChangeObserved!=="undefined"&&_mainStorageExternalChangeObserved)||raw!==_mainStorageBaselineRaw)return false;
     }
     return true;
-  } catch (e) {
-    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
-    console.error("Storage write blocked because recovery markers could not be read:", e);
-    return false;
+  }catch(e){
+    if(typeof storageRecoveryRequired!=="undefined")storageRecoveryRequired=true;
+    console.error("Storage write blocked because recovery markers could not be read:",e);return false;
   }
 }
 
@@ -2275,6 +2273,10 @@ function _generateRecurringTasksForToday() {
 
 // Persist generated occurrences as one operation; roll back in-memory mutations on failure.
 function _generateAndPersistRecurringTasks() {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var previousTasks = tasks.slice();
   var previousDates;
   try {
@@ -2914,6 +2916,10 @@ function loadData(options) {
 var _activeChecklistTaskId = null;
 
 function openChecklistModal(taskId) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var t = tasks.find(function(x) { return x.id === taskId; });
   if (!t) return;
   _activeChecklistTaskId = taskId;
@@ -3013,6 +3019,10 @@ function _renderChecklistModal() {
 }
 
 function _checklistToggle(idx) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var t = tasks.find(function(x) { return x.id === _activeChecklistTaskId; });
   if (!t || !t.checklist || !t.checklist[idx]) return;
   t.checklist[idx].done = !t.checklist[idx].done;
@@ -3020,6 +3030,10 @@ function _checklistToggle(idx) {
 }
 
 function _checklistDelete(idx) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var t = tasks.find(function(x) { return x.id === _activeChecklistTaskId; });
   if (!t || !t.checklist || !t.checklist[idx]) return;
   t.checklist.splice(idx, 1);
@@ -3027,6 +3041,10 @@ function _checklistDelete(idx) {
 }
 
 function _checklistAdd() {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var inp = document.getElementById('checklistAddInput');
   if (!inp) return;
   var val = inp.value.trim();
@@ -3799,6 +3817,10 @@ function saveData() {
       return false;
     }
   }
+  if (typeof _isFocusCommitBlocked==="function" && _isFocusCommitBlocked()) {
+    showAlertModal("حفظ جلسة قيد التنفيذ","توجد عملية حفظ جلسة تركيز تنتظر التأكيد. انتظر اكتمالها قبل تعديل المهام.");
+    return false;
+  }
   try {
     let raw;
     try {
@@ -4216,42 +4238,34 @@ function getOrCreateTodayLog() {
 }
 
 function persistDailyLog(log) {
-  if (storageRecoveryRequired) {
-    console.error("persistDailyLog: refusing write — data recovery required");
-    showToast("⚠️ تعذر الحفظ — البيانات القديمة لم تُرحَّل");
-    return;
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ حفظ جلسة التركيز — انتظر لحظة قبل حفظ سجل اليوم");return false;
   }
-  try {
-    if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
-      showToast("⚠️ توجد عملية استعادة أو ترحيل أو إعادة ضبط؛ أوقفنا حفظ سجل اليوم");
-      return;
+  if(storageRecoveryRequired){
+    console.error("persistDailyLog: refusing write — data recovery required");
+    showToast("⚠️ تعذر الحفظ — البيانات القديمة لم تُرحَّل");return false;
+  }
+  try{
+    if(typeof _storageWriteAllowed==="function"&&!_storageWriteAllowed()){
+      showToast("⚠️ توجد عملية استعادة أو معاملة جلسة؛ أوقفنا حفظ سجل اليوم");return false;
     }
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    if (_mainStorageBaselineReady
-        && (_mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw)) {
-      showToast("⚠️ تغيّرت البيانات في نافذة أخرى؛ أعد تحميل التطبيق قبل الحفظ");
-      return;
+    var raw=localStorage.getItem(STORAGE_KEY);if(!raw)return false;
+    if(_mainStorageBaselineReady&&(_mainStorageExternalChangeObserved||raw!==_mainStorageBaselineRaw)){
+      showToast("⚠️ تغيّرت البيانات في نافذة أخرى؛ أعد تحميل التطبيق قبل الحفظ");return false;
     }
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.dailyLogs)) return;
-    const idx = data.dailyLogs.findIndex(function(l) { return l.date === log.date; });
-    if (idx >= 0) data.dailyLogs[idx] = log;
-    else data.dailyLogs.push(log);
-    if (!validateV2(data)) {
-      console.error("persistDailyLog: refusing to write invalid data");
-      return;
-    }
-    var serializedDailyLogData = JSON.stringify(data);
-    localStorage.setItem(STORAGE_KEY, serializedDailyLogData);
-    _setMainStorageBaseline(serializedDailyLogData);
-    if (typeof _storeRollingRecoveryBackup === "function"
-        && !_storeRollingRecoveryBackup("daily-log-save", 0)) {
+    var data=JSON.parse(raw);if(!data||!Array.isArray(data.dailyLogs))return false;
+    var idx=data.dailyLogs.findIndex(function(l){return l.date===log.date;});
+    if(idx>=0)data.dailyLogs[idx]=log;else data.dailyLogs.push(log);
+    if(!validateV2(data))return false;
+    var serialized=JSON.stringify(data);localStorage.setItem(STORAGE_KEY,serialized);
+    if(localStorage.getItem(STORAGE_KEY)!==serialized){storageRecoveryRequired=true;_mainStorageBaselineReady=false;return false;}
+    _setMainStorageBaseline(serialized);
+    if(typeof _storeRollingRecoveryBackup==="function"&&!_storeRollingRecoveryBackup("daily-log-save",0))
       console.warn("Daily log saved, but its rolling recovery checkpoint could not be refreshed.");
-    }
-  } catch (e) {
-    console.error("Failed to persist daily log:", e);
-    showToast("⚠️ تعذر حفظ تقييم اليوم — تحقق من مساحة التخزين");
+    return true;
+  }catch(e){
+    console.error("Failed to persist daily log:",e);
+    showToast("⚠️ تعذر حفظ تقييم اليوم — تحقق من مساحة التخزين");return false;
   }
 }
 
@@ -4608,6 +4622,10 @@ function deleteMentalItem(id) {
 }
 
 function convertMentalItemToTask(id) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var arr = _loadMentalInbox();
   var m = arr.find(function(x) { return x.id === id; });
   if (!m || m.resolvedAt || m.convertedTaskId) return;
@@ -4966,6 +4984,10 @@ function openSOSModal() {
 }
 
 function showBreakdownTool() {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   document.getElementById('modalTitle').textContent = '🔨 تفكيك المهمة';
   const bodyEl = document.getElementById('modalBody');
   bodyEl.innerHTML = '<p style="margin:0 0 10px;font-size:13px;line-height:1.6;">'
@@ -4992,6 +5014,9 @@ function showBreakdownTool() {
   addBtn.className = 'btn-primary';
   addBtn.textContent = 'أضف كمهام';
   addBtn.onclick = function() {
+    if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+      showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
+    }
     if (addBtn.disabled) return;
     addBtn.disabled = true;
 
@@ -5240,6 +5265,10 @@ function openShutdownModal() {
 }
 
 function performShutdown() {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   const rows = document.querySelectorAll('.shutdown-task-row');
   const tomorrow = (function() {
     const parts = todayStr().split('-');
@@ -5308,6 +5337,10 @@ function performShutdown() {
 /* ============ Tasks CRUD ============ */
 
 function saveTask() {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   const name = document.getElementById("taskName").value.trim();
   const type = document.getElementById("taskType").value;
   const expected = Number(document.getElementById("taskExpected").value);
@@ -5362,6 +5395,9 @@ function saveTask() {
         "⚠️ تأكيد إلغاء الإنجاز",
         "كانت المهمة منجزة بمدة فعلية سابقة.<br>تفريغ حقل المدة الفعلية سيُلغي الإنجاز.<br>هل تريد المتابعة؟",
         function() {
+          if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+            showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
+          }
           _pendingUncompleteConfirm = true;
           saveTask();
         },
@@ -5452,6 +5488,10 @@ function clearForm() {
 }
 
 function editTask(id) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   const t = tasks.find(function(x) { return x.id === id; });
   if (!t) return;
   editingId = id;
@@ -5497,6 +5537,10 @@ function cancelEdit() {
 }
 
 function reviveTask(id) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   const t = tasks.find(function(x) { return x.id === id; });
   if (!t || !isTaskCancelled(t)) return;
   const _old = { status: t.status, actual: t.actual, completedAt: t.completedAt };
@@ -5512,6 +5556,10 @@ function reviveTask(id) {
 }
 
 function toggleTask(id) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   const t = tasks.find(function(x) { return x.id === id; });
   if (!t) return;
   if (isTaskCancelled(t)) return;
@@ -5531,6 +5579,9 @@ function toggleTask(id) {
           const n = Number(valStr);
           if (!Number.isFinite(n) || n < 1) { showAlertModal("تنبيه", "المدة الفعلية يجب أن تكون دقيقة واحدة على الأقل"); return; }
           _newActual = Math.floor(n);
+        }
+        if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+          showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
         }
         const _old = { actual: t.actual, status: t.status, completedAt: t.completedAt };
         t.actual = _newActual;
@@ -5563,7 +5614,14 @@ function toggleTask(id) {
 }
 
 function deleteTask(id) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   showConfirmModal("حذف المهمة", "هل أنت متأكد من حذف هذه المهمة نهائيًا؟", function() {
+    if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+      showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
+    }
     const _snap = tasks.slice();
     var _oldFocusTaskId = _focusTimer.taskId;
     tasks = tasks.filter(function(x) { return x.id !== id; });
@@ -5588,6 +5646,10 @@ function deleteTask(id) {
 }
 
 function quickAdd() {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   const nameInput = document.getElementById("quickName");
   const expectedInput = document.getElementById("quickExpected");
   const name = nameInput.value.trim();
@@ -10467,6 +10529,59 @@ function _commitFocusTaskSessionLocked(p) {
   renderFocusSessionsCard();return true;
 }
 
+
+function _discardShortFocusSession(params) {
+  if(!params||!params.snapshot)return Promise.resolve(false);
+  if(_focusCommitInFlight){showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");return Promise.resolve(false);}
+  if(_startupResetRecoveryInFlight||_resetRecoveryInFlight||_resetInFlight){
+    showToast("⏳ هناك عملية استرداد أو حذف قيد التنفيذ");return Promise.resolve(false);
+  }
+  if(storageRecoveryRequired||_focusTimerExternalConflict){
+    showAlertModal("الحفظ محمي","توجد حالة استرداد أو تعارض غير محسوم؛ لم نصفر المؤقت.");return Promise.resolve(false);
+  }
+  var s=params.snapshot;
+  if(!params.allowLong&&s.baseElapsed>=60){
+    showAlertModal("جلسة ليست قصيرة","لا يمكن إلغاء جلسة بلغت دقيقة أو أكثر عبر مسار الإلغاء القصير.");return Promise.resolve(false);
+  }
+  _focusCommitInFlight=true;
+  var releaseHold=_acquireRollingRecoveryCheckpointHold(true);
+  _renderFocusTimer();
+  var pending=_withStopwatchTransactionLock(function(){
+    if(!_focusTimerSnapshotMatchesState(s)){
+      showAlertModal("تعارض اللقطة","تغيّرت حالة المؤقت بعد تجميدها؛ لم نصفر الحالة الأحدث.");return false;
+    }
+    var baseline=_focusCommitBaselinesMatch(s);
+    if(!baseline){showAlertModal("تعارض خط الأساس","لم نتحقق من خطوط أساس المهام والمؤقت والجلسات؛ لم نصفر المؤقت.");return false;}
+    if(baseline.timerRecord.pendingStopwatchTransaction||_focusTimer.pendingStopwatchTransaction){
+      storageRecoveryRequired=true;showAlertModal("معاملة معلّقة","توجد معاملة مؤقت غير مستردة؛ لم نصفر المؤقت.");return false;
+    }
+    var reset=_withFocusCommitWrite(function(){return _resetAfterSession();});
+    if(!reset||!_verifyFocusTimerResetAfterCommit()){
+      showAlertModal("تعذر تأكيد تصفير المؤقت","لم نثبت نجاح reset في التخزين؛ لم نبدأ مهمة جديدة ولم نعلن إغلاق الاستراحة.");return false;
+    }
+    releaseHold();
+    if(!_completeRollingRecoveryCheckpoint("focus-session-discard","أُلغيت الجلسة","تم تصفير المؤقت، لكن تعذر التحقق من لقطة الاسترداد الدوّارة."))return false;
+    if(typeof params.onDiscarded==="function"){
+      var next=_withFocusCommitWrite(function(){return params.onDiscarded();});
+      if(next!==true){showAlertModal("تم التصفير ولم يبدأ الانتقال","أُلغيت الجلسة دون تسجيل، لكن callback بدء الجلسة التالية لم يُرجع true.");return false;}
+    }
+    if(params.successToast)showToast(params.successToast);
+    renderFocusSessionsCard();
+    return true;
+  }).catch(function(e){
+    if(_focusTimer&&_focusTimer.pendingStopwatchTransaction)storageRecoveryRequired=true;
+    console.error("Focus short-session discard failed:",e);
+    showAlertModal("تعذر تأمين تصفير المؤقت","تعذر الحصول على قفل النوافذ؛ لم نتابع تصفير الجلسة.");
+    return false;
+  }).finally(function(){
+    releaseHold();_focusCommitInFlight=false;
+    if(_focusCommitPendingPromise===pending)_focusCommitPendingPromise=null;
+    _renderFocusTimer();
+  });
+  _focusCommitPendingPromise=pending;
+  return pending;
+}
+
 function _validatePendingStopwatchTransaction(tx) {
   if(!tx||typeof tx!=="object"||Array.isArray(tx))return false;
   if(tx.version!==1||typeof tx.id!=="string"||tx.id.length<8||tx.id.length>160)return false;
@@ -11432,6 +11547,10 @@ function cancelProjectEdit() {
 }
 
 function deleteProject(id) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var projectsBefore = _loadProjects();
   var project = projectsBefore.find(function(item) { return item.id === id; });
   if (!project) return;
@@ -11439,6 +11558,9 @@ function deleteProject(id) {
   var message = "سيتم حذف المشروع " +
     (linkedTasks.length ? "وفصل " + linkedTasks.length + " مهمة عنه. " : "") + "متابعة؟";
   showConfirmModal("🗑️ حذف المشروع", message, function() {
+    if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+      showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
+    }
     var oldMainRaw, oldProjectRaw;
     try {
       oldMainRaw = localStorage.getItem(STORAGE_KEY);
@@ -11612,6 +11734,10 @@ function renderProjects() {
 }
 
 function addTaskToProject(projectId) {
+  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
+  }
+
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === projectId; });
   if (!p) return;
@@ -11622,6 +11748,9 @@ function addTaskToProject(projectId) {
   showPromptModal("➕ مهمة في «" + p.name + "»", "اكتب اسم المهمة:", "", "اسم المهمة", function(val) {
     var name = String(val || "").trim();
     if (!name) { showToast("⚠️ اكتب اسم المهمة"); return; }
+    if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
+      showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
+    }
     var _snap = tasks.slice();
     tasks.push({ id: getNextTaskId(), name: name.slice(0, 500), type: "معرفية", status: "pending", expected: 30, actual: null, plannedDate: todayStr(), plannedTime: "", completedAt: null, createdAt: Date.now(), projectId: projectId });
     if (!saveData()) { tasks = _snap; showToast("⚠️ تعذر الحفظ"); return; }
