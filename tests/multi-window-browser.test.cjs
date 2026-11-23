@@ -394,7 +394,8 @@ test('a stale page refuses manual and rolling backups while another page has a p
         pending: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')).pendingStopwatchTransaction
       };
     });
-    assert.ok(result.exportError && /نافذة أخرى|تغير سجل المهام|تغيرت بيانات|معاملة Stopwatch معلقة/.test(result.exportError));
+    assert.ok(result.exportError && /نافذة أخرى|تغير سجل المهام|تغيرت بيانات|معاملة Stopwatch معلقة/.test(result.exportError),
+      JSON.stringify(result));
     assert.equal(result.rollingSaved, false);
     assert.equal(result.rollingFailure, 'external_storage_conflict');
     assert.equal(result.storageUnchanged, true);

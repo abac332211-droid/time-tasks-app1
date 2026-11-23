@@ -3343,6 +3343,10 @@ function _storeRollingRecoveryBackupLocked(reason, minIntervalMs) {
 
 function _isOptionalRollingRecoveryBackupFailure() {
   return _rollingRecoveryBackupLastFailure === "lock_pending"
+    || _rollingRecoveryBackupLastFailure === "external_storage_conflict"
+    || _rollingRecoveryBackupLastFailure === "snapshot_conflict"
+    || _rollingRecoveryBackupLastFailure === "pending_stopwatch_transaction"
+    || _rollingRecoveryBackupLastFailure === "operation_in_progress"
     || _rollingRecoveryBackupLastFailure === "backup_write_failed"
     || _rollingRecoveryBackupLastFailure === "backup_verification_failed";
 }
