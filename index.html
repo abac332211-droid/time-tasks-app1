@@ -9391,8 +9391,10 @@ function _logSession(phase, durationSec, completed, endedAtMs, transactionId) {
       return false;
     }
     if (transactionId && !existing.transactionId) {
-      existing.transactionId = transactionId;
-      if (!_saveSessions(arr)) { storageRecoveryRequired = true; return false; }
+      storageRecoveryRequired = true;
+      showAlertModal("جلسة قديمة بلا هوية معاملة",
+        "تطابقت هوية الجلسة القديمة، لكن لا يوجد معرّف محفوظ يثبت ارتباطها بهذه المعاملة. لم نعدّل السجل أو نتبنّه وأبقينا سجل الاسترداد.");
+      return false;
     }
     return true;
   }
@@ -9956,6 +9958,17 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
       throw new Error("The task record changed in another window; recovery cannot trust a stale task snapshot.");
     var task = tasks.find(function(item) { return item && item.id === tx.taskId; });
     if (!task) throw new Error("The task referenced by the pending Stopwatch transaction no longer exists.");
+    var expectedSessionStart = new Date(tx.sessionStartAt).toISOString();
+    var legacySessionRows = _loadSessions().filter(function(session) {
+      return session && !session.transactionId
+        && session.startedAt === expectedSessionStart
+        && session.taskId === tx.taskId
+        && session.mode === tx.mode
+        && session.phase === tx.phase;
+    });
+    if (legacySessionRows.length) {
+      throw new Error("A legacy focus session matches this Stopwatch transaction identity but has no saved transaction ID; recovery is ambiguous.");
+    }
     var actual = task.actual === undefined || task.actual === null ? null : task.actual;
     var markerPresent = Object.prototype.hasOwnProperty.call(task, "lastStopwatchTransactionId")
       && task.lastStopwatchTransactionId !== null;
@@ -10029,14 +10042,9 @@ function _withStopwatchTransactionLock(callback) {
     return navigator.locks.request("timeTasksApp-stopwatch-transaction", { mode: "exclusive" }, function(lock) {
       if (!lock) throw new Error("The exclusive Stopwatch Web Lock was not granted.");
       _stopwatchTransactionLockDepth++;
-      var result;
-      try {
-        result = callback();
-      } catch (e) {
-        _stopwatchTransactionLockDepth = Math.max(0, _stopwatchTransactionLockDepth - 1);
-        throw e;
-      }
-      return Promise.resolve(result).finally(function() {
+      // A single finally path releases page-local ownership for both synchronous
+      // throws and asynchronous Promise rejections before the browser releases the lock.
+      return Promise.resolve().then(callback).finally(function() {
         _stopwatchTransactionLockDepth = Math.max(0, _stopwatchTransactionLockDepth - 1);
       });
     });

@@ -494,6 +494,181 @@ test('invalid present task transaction marker is not treated as an absent legacy
   assert.equal(restarted.sandbox.storageRecoveryRequired, true);
 });
 
+
+test('recovery does not adopt an exact legacy session when task.actual is previousActual', async () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const tx = {
+    version: 1, id: 'stopwatch-legacy-previous-actual', taskId: 7,
+    previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
+    sessionStartAt: timer.sessionStartAt, mode: 'stopwatch', phase: 'work',
+    clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+  };
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const legacy = [{
+    id: 41, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt: new Date(tx.sessionStartAt).toISOString(),
+    endedAt: new Date(tx.sessionStartAt + 125000).toISOString(),
+    durationSec: 125, completed: true
+  }];
+  const legacyRaw = JSON.stringify(legacy);
+  storage.setItem('focus-sessions', legacyRaw);
+  const mainBefore = storage.getItem('main');
+  const timerBefore = storage.getItem('focus-timer');
+  const runtime = createRuntime(storage);
+
+  const recovered = await runtime.sandbox._withStopwatchTransactionLock(
+    () => runtime.sandbox._recoverPendingStopwatchSave(false)
+  );
+
+  assert.equal(recovered, false, 'an identity/length match without transaction identity is not proof of commit');
+  assert.equal(storage.getItem('main'), mainBefore, 'previousActual and the absent task marker remain untouched');
+  assert.equal(storage.getItem('focus-sessions'), legacyRaw, 'the legacy session is not edited, deleted, or replaced');
+  assert.equal(storage.getItem('focus-timer'), timerBefore, 'the pending journal and paused timer remain durable');
+  assert.equal(runtime.sandbox.tasks[0].actual, 5);
+  assert.equal(runtime.sandbox.tasks[0].lastStopwatchTransactionId, undefined);
+  assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125, 'the Stopwatch is not reset');
+  assert.equal(runtime.sandbox._focusTimer.pendingStopwatchTransaction.id, tx.id);
+  assert.equal(runtime.sandbox.storageRecoveryRequired, true);
+});
+
+test('recovery does not adopt an exact legacy session when task.actual is targetActual', async () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const tx = {
+    version: 1, id: 'stopwatch-legacy-target-actual', taskId: 7,
+    previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
+    sessionStartAt: timer.sessionStartAt, mode: 'stopwatch', phase: 'work',
+    clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+  };
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks[0].actual = tx.targetActual;
+  main.tasks[0].lastStopwatchTransactionId = tx.id;
+  storage.setItem('main', JSON.stringify(main));
+  const legacy = [{
+    id: 42, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt: new Date(tx.sessionStartAt).toISOString(),
+    endedAt: new Date(tx.sessionStartAt + 125000).toISOString(),
+    durationSec: 125, completed: true
+  }];
+  const legacyRaw = JSON.stringify(legacy);
+  storage.setItem('focus-sessions', legacyRaw);
+  const mainBefore = storage.getItem('main');
+  const timerBefore = storage.getItem('focus-timer');
+  const runtime = createRuntime(storage);
+
+  const recovered = await runtime.sandbox._withStopwatchTransactionLock(
+    () => runtime.sandbox._recoverPendingStopwatchSave(false)
+  );
+
+  assert.equal(recovered, false, 'a task marker does not retroactively prove a legacy session identity');
+  assert.equal(storage.getItem('main'), mainBefore, 'the already committed targetActual is preserved without rollback');
+  assert.equal(storage.getItem('focus-sessions'), legacyRaw, 'the legacy session remains byte-for-byte unchanged');
+  assert.equal(storage.getItem('focus-timer'), timerBefore, 'the pending journal and timer remain unchanged');
+  assert.equal(runtime.sandbox.tasks[0].actual, 8, 'the valid task total is neither incremented nor rolled back');
+  assert.equal(runtime.sandbox.tasks[0].lastStopwatchTransactionId, tx.id);
+  assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125, 'the Stopwatch is not reset');
+  assert.equal(runtime.sandbox._focusTimer.pendingStopwatchTransaction.id, tx.id);
+  assert.equal(runtime.sandbox.storageRecoveryRequired, true);
+});
+
+test('recovery accepts an existing session only when its saved transaction ID and details match', async () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const tx = {
+    version: 1, id: 'stopwatch-valid-session-replay', taskId: 7,
+    previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
+    sessionStartAt: timer.sessionStartAt, mode: 'stopwatch', phase: 'work',
+    clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+  };
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const main = JSON.parse(storage.getItem('main'));
+  main.tasks[0].actual = tx.targetActual;
+  main.tasks[0].lastStopwatchTransactionId = tx.id;
+  storage.setItem('main', JSON.stringify(main));
+  const session = {
+    id: 43, mode: tx.mode, phase: tx.phase, taskId: tx.taskId, taskName: 'Stopwatch task',
+    startedAt: new Date(tx.sessionStartAt).toISOString(),
+    endedAt: new Date(tx.sessionStartAt + tx.durationSec * 1000).toISOString(),
+    durationSec: tx.durationSec, completed: true, transactionId: tx.id
+  };
+  storage.setItem('focus-sessions', JSON.stringify([session]));
+  const runtime = createRuntime(storage);
+
+  assert.equal(await runtime.sandbox._withStopwatchTransactionLock(
+    () => runtime.sandbox._recoverPendingStopwatchSave(false)
+  ), true);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, tx.targetActual);
+  assert.deepEqual(JSON.parse(storage.getItem('focus-sessions'))[0], session);
+  const recoveredTimer = JSON.parse(storage.getItem('focus-timer'));
+  assert.equal(recoveredTimer.pendingStopwatchTransaction, null);
+  assert.equal(recoveredTimer.baseElapsed, 0);
+  assert.equal(runtime.sandbox.storageRecoveryRequired, false);
+});
+
+function createSharedWebLockManager() {
+  let tail = Promise.resolve();
+  return {
+    request(name, _options, callback) {
+      const run = tail.then(() => callback({ name, mode: 'exclusive' }));
+      tail = run.catch(() => {});
+      return run;
+    }
+  };
+}
+
+test('Web Lock ownership is released after a synchronous callback throw before the next page acquires it', async () => {
+  const owner = createRuntime(initialStorage());
+  const waiter = createRuntime(initialStorage());
+  const locks = createSharedWebLockManager();
+  owner.sandbox.navigator.locks = locks;
+  waiter.sandbox.navigator.locks = locks;
+
+  const failed = owner.sandbox._withStopwatchTransactionLock(() => {
+    assert.equal(owner.sandbox._stopwatchTransactionLockDepth, 1);
+    throw new Error('intentional synchronous callback failure');
+  });
+  const acquired = waiter.sandbox._withStopwatchTransactionLock(() => {
+    assert.equal(owner.sandbox._stopwatchTransactionLockDepth, 0,
+      'the previous page must not retain its local ownership flag');
+    assert.equal(waiter.sandbox._stopwatchTransactionLockDepth, 1);
+    return 'waiter-acquired';
+  });
+
+  await assert.rejects(failed, /intentional synchronous callback failure/);
+  assert.equal(await acquired, 'waiter-acquired');
+  assert.equal(owner.sandbox._stopwatchTransactionLockDepth, 0);
+  assert.equal(waiter.sandbox._stopwatchTransactionLockDepth, 0);
+});
+
+test('Web Lock ownership is released after a rejected callback Promise before the next page acquires it', async () => {
+  const owner = createRuntime(initialStorage());
+  const waiter = createRuntime(initialStorage());
+  const locks = createSharedWebLockManager();
+  owner.sandbox.navigator.locks = locks;
+  waiter.sandbox.navigator.locks = locks;
+
+  const failed = owner.sandbox._withStopwatchTransactionLock(() => {
+    assert.equal(owner.sandbox._stopwatchTransactionLockDepth, 1);
+    return Promise.reject(new Error('intentional callback Promise rejection'));
+  });
+  const acquired = waiter.sandbox._withStopwatchTransactionLock(() => {
+    assert.equal(owner.sandbox._stopwatchTransactionLockDepth, 0,
+      'the previous page must not retain its local ownership flag');
+    assert.equal(waiter.sandbox._stopwatchTransactionLockDepth, 1);
+    return 'waiter-acquired';
+  });
+
+  await assert.rejects(failed, /intentional callback Promise rejection/);
+  assert.equal(await acquired, 'waiter-acquired');
+  assert.equal(owner.sandbox._stopwatchTransactionLockDepth, 0);
+  assert.equal(waiter.sandbox._stopwatchTransactionLockDepth, 0);
+});
+
 test('task-linked Stopwatch save fails closed when Web Locks is unavailable', async () => {
   const storage = initialStorage();
   const runtime = createRuntime(storage);
