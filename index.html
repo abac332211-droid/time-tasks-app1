@@ -8174,6 +8174,8 @@ function _getFocusTimerElapsedParts() {
       // the wall/monotonic gap, not only an exactly frozen monotonic reading.
       if (Number.isFinite(previousMonotonicSample)
           && Number.isFinite(previousWallSample)
+          && monotonicDeltaSinceSample >= 0
+          && monotonicDeltaSinceSample <= 5000
           && wallDeltaSinceSample - monotonicDeltaSinceSample > 120000) {
         // A present but frozen monotonic source cannot prove time spent in device sleep.
         // Keep the last trusted sample, pause, and require the user to resume explicitly.
