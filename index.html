@@ -5581,6 +5581,9 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
 }
 
 function buildBackupObject() {
+  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction) {
+    throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
+  }
   const raw = localStorage.getItem(STORAGE_KEY);
   const data = raw ? JSON.parse(raw) : buildEmptyV2();
   if (!data || typeof data !== "object" || Array.isArray(data)
