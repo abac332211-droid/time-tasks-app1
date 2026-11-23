@@ -391,7 +391,7 @@ test('restored pending Pomodoro confirmation is presented after initialization',
   const normalizedHtml = html.replace(/\r\n/g, '\n');
   const initTimer = normalizedHtml.lastIndexOf('_renderFocusTimer();');
   const pendingPrompt = normalizedHtml.indexOf(
-    'if (_focusTimer.awaitingConfirmation) {\n  setTimeout(function() { _showAwaySessionConfirmation(); }, 300);\n}',
+    'if (!storageRecoveryRequired && _focusTimer.awaitingConfirmation) {\n    setTimeout(function() { _showAwaySessionConfirmation(); }, 300);\n  }',
     initTimer
   );
   assert.notEqual(initTimer, -1);
