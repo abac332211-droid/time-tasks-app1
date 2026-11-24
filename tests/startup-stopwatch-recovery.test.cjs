@@ -499,3 +499,54 @@ test('timer and task write gates remain closed after startup recovery failure', 
   assert.equal(sandbox._isTaskWriteBlocked(), false,
     'the validated recovery callback must be able to write while it owns the lock');
 });
+
+
+test('failed locked forensic snapshot writes retain exact raw bytes in the queue and retry under lock', () => {
+  for (const failureMode of ['throw', 'readback-mismatch']) {
+    const storage = makeStorage({});
+    const originalSet = storage.setItem.bind(storage);
+    let injected = true;
+    storage.setItem = function(key, value) {
+      if (injected && String(key).startsWith('mentalInbox_corrupt_')) {
+        injected = false;
+        if (failureMode === 'throw') throw new Error('INJECTED_FORENSIC_WRITE_FAILURE');
+        return originalSet(key, String(value) + ':mismatch');
+      }
+      return originalSet(key, value);
+    };
+    const sandbox = {
+      localStorage: storage,
+      _stopwatchTransactionLockDepth: 1,
+      _pendingCorruptStorageSnapshots: [],
+      storageRecoveryRequired: false,
+      console: { error() {}, warn() {} },
+      Date,
+      JSON
+    };
+    runExtracted('_preserveCorruptStorageSnapshot', sandbox,
+      ['_queuePendingCorruptStorageSnapshot']);
+    runExtracted('_flushPendingCorruptStorageSnapshotsInsideLock', sandbox,
+      ['_queuePendingCorruptStorageSnapshot', '_preserveCorruptStorageSnapshot']);
+
+    const raw = '{broken forensic source — retain byte-for-byte}';
+    assert.equal(sandbox._preserveCorruptStorageSnapshot('mentalInbox', raw), false,
+      failureMode + ': failed first preservation must not report success');
+    assert.deepEqual(
+      sandbox._pendingCorruptStorageSnapshots,
+      [{ baseKey: 'mentalInbox', raw }],
+      failureMode + ': exact raw bytes must remain queued after a locked write failure'
+    );
+    assert.equal(sandbox.storageRecoveryRequired, true,
+      failureMode + ': failed forensic preservation must keep recovery required');
+
+    storage.setItem = originalSet;
+    assert.equal(sandbox._flushPendingCorruptStorageSnapshotsInsideLock(), true,
+      failureMode + ': a later locked flush should verify the preserved raw bytes');
+    assert.deepEqual(sandbox._pendingCorruptStorageSnapshots, []);
+    const preserved = Array.from(storage.values.entries())
+      .filter(([key]) => key.startsWith('mentalInbox_corrupt_'))
+      .map(([, value]) => value);
+    assert.ok(preserved.includes(raw),
+      failureMode + ': a verified forensic copy must preserve the original raw string');
+  }
+});
