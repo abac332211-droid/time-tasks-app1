@@ -371,7 +371,7 @@ test('D-03.1 startup remains read-only across every localStorage key while the S
   }
 });
 
-for (const recoveryMarker of ['import', 'rolling']) {
+for (const recoveryMarker of ['import', 'rolling', 'migration']) {
   test('D-03 refuses ' + recoveryMarker + ' recovery when a Stopwatch journal is also pending', {
     skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
   }, async () => {
@@ -398,7 +398,10 @@ for (const recoveryMarker of ['import', 'rolling']) {
         timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
         marker: localStorage.getItem(marker === 'import'
-          ? 'timeTasksApp_importInProgress' : 'timeTasksApp_rollingRestoreInProgress'),
+          ? 'timeTasksApp_importInProgress'
+          : marker === 'rolling'
+            ? 'timeTasksApp_rollingRestoreInProgress'
+            : 'timeTasksApp_migrationInProgress'),
         importSnapshot: localStorage.getItem('timeTasksApp_preImportBackup'),
         backupA: localStorage.getItem('timeTasksApp_recoveryBackupA'),
         writes: window.__startupStorageWrites.slice()
@@ -412,6 +415,7 @@ for (const recoveryMarker of ['import', 'rolling']) {
       assert.ok(blocked.marker);
       if (recoveryMarker === 'import') assert.ok(blocked.importSnapshot);
       if (recoveryMarker === 'rolling') assert.ok(blocked.backupA);
+      if (recoveryMarker === 'migration') assert.equal(blocked.marker, '1');
       assert.deepEqual(blocked.writes, [],
         'journal+group marker overlap must fail before any storage mutation');
     } finally {
