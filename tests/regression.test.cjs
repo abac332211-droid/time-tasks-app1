@@ -2220,6 +2220,41 @@ test('_recoverInterruptedResetWithLock does not run post-recovery load after a f
   assert.equal(callbackCalls, 0);
 });
 
+
+test('resetAll refuses before publishing its marker when a Stopwatch journal or another recovery marker exists', async () => {
+  const scenarios = [
+    {
+      name: 'pending Stopwatch journal',
+      probe: {
+        error: null,
+        expectedTx: { id: 'pending-reset-conflict-0001' },
+        blockingMarkers: { reset: false, rollingRestore: false, import: false, migration: false }
+      }
+    },
+    {
+      name: 'existing collective restore marker',
+      probe: {
+        error: null,
+        expectedTx: null,
+        blockingMarkers: { reset: false, rollingRestore: true, import: false, migration: false }
+      }
+    }
+  ];
+  for (const scenario of scenarios) {
+    const harness = resetAllHarness();
+    harness.sandbox._probeStartupStopwatchRecovery = () => scenario.probe;
+    const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    assert.equal(await harness.run(), false, scenario.name + ' must block Reset');
+    const after = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    assert.deepEqual(after, before, scenario.name + ' must not alter any stored key');
+    assert.equal(harness.values.has(harness.keys.resetInProgress), false,
+      scenario.name + ' must not publish RESET_IN_PROGRESS_KEY');
+    assert.deepEqual(harness.removeCalls, [],
+      scenario.name + ' must not begin deleting collections');
+    assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  }
+});
+
 test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', async () => {
   const faults = { throwOnRemoveKey: 'projects' };
   const harness = resetAllHarness(faults);
