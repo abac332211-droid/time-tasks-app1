@@ -345,6 +345,7 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
   let lockCalls = 0;
   const sandbox = {
     localStorage: storage,
+    navigator: { locks: { request() {} } },
     FOCUS_TIMER_KEY: 'timer',
     RESET_IN_PROGRESS_KEY: 'reset',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore',
