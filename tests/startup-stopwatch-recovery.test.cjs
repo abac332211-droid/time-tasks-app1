@@ -182,6 +182,26 @@ test('startup probe fails closed for an empty-but-present timer record and leave
 });
 
 
+
+test('normal startup initialization refuses persisted work without owning the Stopwatch lock', () => {
+  const calls = [];
+  const sandbox = {
+    _stopwatchTransactionLockDepth: 0,
+    storageRecoveryRequired: false,
+    _appInitCompleted: true,
+    loadData() { calls.push('loadData'); return true; },
+    renderAll() { calls.push('renderAll'); },
+    _renderFocusTimer() { calls.push('renderTimer'); },
+    console: { error() {} }
+  };
+  runExtracted('_completeNormalStartupInit', sandbox);
+  assert.equal(sandbox._completeNormalStartupInit({ dataAlreadyLoaded: true }), false);
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.equal(sandbox._appInitCompleted, false);
+  assert.deepEqual(calls, [],
+    'normal startup must not heal, generate recurring tasks, render or save outside the lock');
+});
+
 test('pending journal presence is not reduced to JavaScript truthiness', () => {
   for (const journalValue of ['', false, 0, {}, 'malformed']) {
     const raw = JSON.stringify({
