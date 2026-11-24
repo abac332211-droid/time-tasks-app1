@@ -205,8 +205,8 @@ async function startBrowserContext(options = {}) {
         nativeSetItem.call(localStorage, 'timeTasksApp_preImportBackup', JSON.stringify(importRollback));
         nativeSetItem.call(localStorage, 'timeTasksApp_importInProgress', '1');
       } else if (recoveryMarker === 'rolling') {
-        nativeSetItem.call(localStorage, 'timeTasksApp_rollingBackupA', JSON.stringify(rollingRecord));
-        nativeSetItem.call(localStorage, 'timeTasksApp_rollingBackupGeneration', '7');
+        nativeSetItem.call(localStorage, 'timeTasksApp_recoveryBackupA', JSON.stringify(rollingRecord));
+        nativeSetItem.call(localStorage, 'timeTasksApp_recoveryBackupGeneration', '7');
         nativeSetItem.call(localStorage, 'timeTasksApp_rollingRestoreInProgress',
           JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
       }
