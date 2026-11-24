@@ -381,6 +381,145 @@ test('D-03.1 startup remains read-only across every localStorage key while the S
   }
 });
 
+test('D-02 task-linked save waits for real startup and records every persistence attempt', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+
+    const result = await page.evaluate(async () => {
+      const task = tasks.find(item => item && item.id === 7011);
+      const snapshot = _captureFocusTimerSnapshot();
+      const diagnostics = { methods: [], storage: [] };
+      const getMainActual = () => {
+        try {
+          const record = JSON.parse(localStorage.getItem('timeTasksApp_v1') || '{}');
+          const current = Array.isArray(record.tasks)
+            ? record.tasks.find(item => item && item.id === 7011) : null;
+          return current ? current.actual : null;
+        } catch (_error) { return null; }
+      };
+      const getPendingTransactionId = () => {
+        try {
+          const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer') || '{}');
+          return timer.pendingStopwatchTransaction
+            ? timer.pendingStopwatchTransaction.id : null;
+        } catch (_error) { return 'unreadable'; }
+      };
+      const originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        const name = String(key);
+        const beforeActual = getMainActual();
+        const beforeTransactionId = getPendingTransactionId();
+        const lockDepth = window._stopwatchTransactionLockDepth;
+        let outcome = 'success';
+        try {
+          return originalSetItem.call(this, key, value);
+        } catch (error) {
+          outcome = 'throw: ' + String(error && error.message ? error.message : error);
+          throw error;
+        } finally {
+          diagnostics.storage.push({
+            operation: 'set',
+            key: name,
+            lockDepth,
+            beforeActual,
+            afterActual: getMainActual(),
+            beforeTransactionId,
+            afterTransactionId: getPendingTransactionId(),
+            outcome
+          });
+        }
+      };
+      const wrapMethod = name => {
+        const original = window[name];
+        window[name] = function() {
+          const entry = {
+            method: name,
+            lockDepth: window._stopwatchTransactionLockDepth,
+            storedActualBefore: getMainActual(),
+            inMemoryActualBefore: (tasks.find(item => item && item.id === 7011) || {}).actual
+          };
+          let returned;
+          try {
+            returned = original.apply(this, arguments);
+            entry.returnValue = returned;
+            return returned;
+          } catch (error) {
+            entry.error = String(error && error.message ? error.message : error);
+            throw error;
+          } finally {
+            entry.storedActualAfter = getMainActual();
+            entry.inMemoryActualAfter = (tasks.find(item => item && item.id === 7011) || {}).actual;
+            entry.pendingTransactionId = getPendingTransactionId();
+            diagnostics.methods.push(entry);
+          }
+        };
+      };
+      if (!task || !snapshot) {
+        return { ready: false, reason: 'task_or_timer_snapshot_missing', diagnostics };
+      }
+      wrapMethod('saveData');
+      wrapMethod('_saveFocusTimer');
+      wrapMethod('_saveSessions');
+      const saveResult = await _applyStopwatchSave(snapshot.baseElapsed, task, 3, snapshot);
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const savedTask = main.tasks.find(item => item && item.id === 7011);
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      return {
+        ready: true,
+        saveResult,
+        appInitCompleted: window._appInitCompleted,
+        storageRecoveryRequired,
+        finalActual: savedTask && savedTask.actual,
+        taskTransactionId: savedTask && savedTask.lastStopwatchTransactionId,
+        pendingTransaction: timer.pendingStopwatchTransaction,
+        sessions,
+        diagnostics
+      };
+    });
+
+    console.log('D02_TASK_LINKED_SAVE_DIAGNOSTICS=' + JSON.stringify(result));
+    assert.equal(result.ready, true, 'the initialized app must expose the task and frozen timer snapshot');
+    assert.equal(result.appInitCompleted, true);
+    assert.equal(result.storageRecoveryRequired, false);
+    assert.equal(result.saveResult, true);
+    assert.equal(result.finalActual, 8);
+    assert.equal(result.pendingTransaction, null);
+    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions[0].transactionId, result.taskTransactionId);
+    assert.ok(result.diagnostics.methods.some(entry =>
+      entry.method === 'saveData'
+        && entry.lockDepth > 0
+        && entry.storedActualBefore === 5
+        && entry.inMemoryActualBefore === 8
+        && entry.storedActualAfter === 8
+        && entry.returnValue === true),
+    'saveData must commit actual=8 and report success while owning the lock');
+    assert.ok(result.diagnostics.methods.some(entry =>
+      entry.method === '_saveFocusTimer' && entry.lockDepth > 0),
+    'timer journal writes must occur under the Stopwatch lock');
+    assert.ok(result.diagnostics.methods.some(entry =>
+      entry.method === '_saveSessions' && entry.lockDepth > 0),
+    'session writes must occur under the Stopwatch lock');
+    assert.ok(result.diagnostics.storage.some(entry =>
+      entry.key === 'timeTasksApp_v1'
+        && entry.lockDepth > 0
+        && entry.beforeActual === 5
+        && entry.afterActual === 8),
+    'the actual localStorage main-record mutation must be visible in the attempt log');
+    assert.ok(result.diagnostics.storage.every(entry => entry.lockDepth > 0),
+      'every recorded localStorage write in the transaction must be protected by the lock');
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
 for (const recoveryMarker of ['reset', 'import', 'rolling', 'migration']) {
   test('D-03 refuses ' + recoveryMarker + ' recovery when a Stopwatch journal is also pending', {
     skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
