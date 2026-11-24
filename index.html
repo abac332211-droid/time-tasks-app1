@@ -1585,7 +1585,9 @@ function _hasPersistedPendingStopwatchTransaction() {
     if (raw === null) return false;
     var timerRecord = JSON.parse(raw);
     if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return true;
-    return !!timerRecord.pendingStopwatchTransaction;
+    return Object.prototype.hasOwnProperty.call(timerRecord, "pendingStopwatchTransaction")
+      && timerRecord.pendingStopwatchTransaction !== null
+      && timerRecord.pendingStopwatchTransaction !== undefined;
   } catch (e) {
     return true;
   }
