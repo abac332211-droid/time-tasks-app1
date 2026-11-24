@@ -11568,7 +11568,8 @@ function _setupRecurringTaskRefresh() {
   _recurringTaskRefreshInterval = setInterval(function() {
     if (storageRecoveryRequired
         || (typeof _startupStopwatchRecoveryInFlight !== "undefined" && _startupStopwatchRecoveryInFlight)
-        || _startupResetRecoveryInFlight || !_appInitCompleted
+        || (typeof _startupResetRecoveryInFlight !== "undefined" && _startupResetRecoveryInFlight)
+        || (typeof _appInitCompleted !== "undefined" && !_appInitCompleted)
         || document.visibilityState !== "visible") return;
     try {
       var generatedCount = _generateAndPersistRecurringTasks();
