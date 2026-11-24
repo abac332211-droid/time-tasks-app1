@@ -4720,7 +4720,7 @@ var MENTAL_INBOX_KEY = "timeTasksApp_mentalInbox";
 var _pendingCorruptStorageSnapshots = [];
 
 function _queuePendingCorruptStorageSnapshot(baseKey, raw) {
-  if (typeof baseKey !== "string" || typeof raw !== "string" || raw.length === 0) return false;
+  if (typeof baseKey !== "string" || !baseKey || typeof raw !== "string") return false;
   if (!Array.isArray(_pendingCorruptStorageSnapshots)) _pendingCorruptStorageSnapshots = [];
   var alreadyQueued = _pendingCorruptStorageSnapshots.some(function(item) {
     return item && item.baseKey === baseKey && item.raw === raw;
