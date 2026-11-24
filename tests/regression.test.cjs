@@ -1818,6 +1818,21 @@ function resetAllHarness(faults = {}) {
     tasks: [{ id: 99 }],
     createdByVersion: 'old',
     storageRecoveryRequired: false,
+    _hasPersistedPendingStopwatchTransaction: () => false,
+    _probeStartupStopwatchRecovery: () => ({
+      error: null,
+      pending: false,
+      expectedTx: null,
+      markerValues: {
+        reset: null, rollingRestore: null, import: null, migration: null
+      },
+      blockingMarkers: {
+        reset: false, rollingRestore: false, import: false, migration: false
+      },
+      timerRaw: null,
+      mainRaw: null,
+      bootPersistedGeneration: 0
+    }),
     _sessionsCache: [],
     _focusTimer: {
       mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 75,
