@@ -2668,8 +2668,13 @@ function migrateV1ToV2() {
   }
 
   try {
+    const migrationMarkerRaw = localStorage.getItem(MIGRATION_IN_PROGRESS_KEY);
+    if (migrationMarkerRaw !== null && migrationMarkerRaw !== "1") {
+      report.error = "invalid_or_unknown_migration_marker";
+      return report;
+    }
+    const pendingMigration = migrationMarkerRaw === "1";
     const raw = localStorage.getItem(STORAGE_KEY);
-    const pendingMigration = localStorage.getItem(MIGRATION_IN_PROGRESS_KEY) === "1";
 
     if (raw === null && !pendingMigration) {
       const empty = buildEmptyV2();
@@ -7248,7 +7253,12 @@ function _recoverInterruptedImport() {
   var marker;
   try { marker = localStorage.getItem(IMPORT_IN_PROGRESS_KEY); }
   catch (e) { return false; }
-  if (!marker) return true;
+  if (marker === null) return true;
+  if (marker !== "1") {
+    if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
+    console.error("Import recovery refused an invalid or unknown marker value.");
+    return false;
+  }
   if (!(typeof _stopwatchTransactionLockDepth === "number"
       && _stopwatchTransactionLockDepth > 0)) {
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
