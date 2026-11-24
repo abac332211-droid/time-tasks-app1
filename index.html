@@ -4730,7 +4730,7 @@ function _queuePendingCorruptStorageSnapshot(baseKey, raw) {
 }
 
 function _preserveCorruptStorageSnapshot(baseKey, raw) {
-  if (typeof baseKey !== "string" || typeof raw !== "string" || raw.length === 0) return false;
+  if (typeof baseKey !== "string" || !baseKey || typeof raw !== "string") return false;
   var ownsStopwatchLock = typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (!ownsStopwatchLock) {
