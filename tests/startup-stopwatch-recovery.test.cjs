@@ -363,7 +363,7 @@ test('timer and task write gates remain closed after startup recovery failure', 
     _isFocusCommitBlocked() { return false; }
   };
   runExtracted('_isTimerControlBlocked', sandbox);
-  runExtracted('_isTaskWriteBlocked', sandbox);
+  runExtracted('_isTaskWriteBlocked', sandbox, ['_isStartupStopwatchBlocked']);
 
   assert.equal(sandbox._isTimerControlBlocked(), true);
   assert.equal(sandbox._isTaskWriteBlocked(), true);
