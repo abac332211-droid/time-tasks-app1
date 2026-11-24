@@ -93,6 +93,70 @@ const seed = {
   }
 };
 
+async function waitForSafeStartup(page, label, timeout = 20000) {
+  let waitError = null;
+  try {
+    await page.waitForFunction(() =>
+      window._appInitCompleted === true || window._startupStopwatchRecoveryFailed === true,
+      null, { timeout }
+    );
+  } catch (error) {
+    waitError = error && error.message ? error.message : String(error);
+  }
+  const state = await page.evaluate(async () => {
+    let lockState = null;
+    try { lockState = navigator.locks && navigator.locks.query
+      ? await navigator.locks.query() : null; } catch (error) {
+      lockState = { error: String(error) };
+    }
+    let startupPromise = "not-created";
+    try {
+      if (window._startupStopwatchRecoveryPromise) {
+        startupPromise = await Promise.race([
+          Promise.resolve(window._startupStopwatchRecoveryPromise).then(
+            value => ({ status: "resolved", value }),
+            error => ({ status: "rejected", error: String(error) })
+          ),
+          new Promise(resolve => setTimeout(() => resolve("pending"), 100))
+        ]);
+      }
+    } catch (error) { startupPromise = { error: String(error) }; }
+    const read = key => {
+      try { return localStorage.getItem(key); } catch (error) { return "READ_ERROR:" + String(error); }
+    };
+    return {
+      appInitCompleted: window._appInitCompleted,
+      storageRecoveryRequired: window.storageRecoveryRequired,
+      startupInFlight: window._startupStopwatchRecoveryInFlight,
+      startupFailed: window._startupStopwatchRecoveryFailed,
+      startupPromise,
+      mainBaselineReady: window._mainStorageBaselineReady,
+      mainBaselineRaw: window._mainStorageBaselineRaw,
+      mainRaw: read("timeTasksApp_v1"),
+      timerRaw: read("timeTasksApp_focusTimer"),
+      markerReset: read("timeTasksApp_resetInProgress"),
+      markerRolling: read("timeTasksApp_rollingRestoreInProgress"),
+      markerImport: read("timeTasksApp_importInProgress"),
+      markerMigration: read("timeTasksApp_migrationInProgress"),
+      pendingForensicCount: Array.isArray(window._pendingCorruptStorageSnapshots)
+        ? window._pendingCorruptStorageSnapshots.length : null,
+      rollingBackupFailure: window._rollingRecoveryBackupLastFailure,
+      mainExternalChange: window._mainStorageExternalChangeObserved,
+      timerExternalChange: window._focusTimerExternalConflict,
+      lockState
+    };
+  });
+  assert.equal(state.appInitCompleted, true,
+    label + " did not reach safe startup. waitError=" + waitError
+      + " diagnostics=" + JSON.stringify(state));
+  assert.equal(state.storageRecoveryRequired, false,
+    label + " completed startup while storage recovery remained required: "
+      + JSON.stringify(state));
+  assert.equal(state.mainBaselineReady, true,
+    label + " did not establish the main storage baseline: " + JSON.stringify(state));
+  return state;
+}
+
 test('two real same-origin pages exchange storage events and block stale main/timer writes', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
@@ -336,8 +400,11 @@ test('a stale page refuses manual and rolling backups while another page has a p
     }, initial);
     const pageA = await context.newPage(), pageB = await context.newPage();
     await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
+    await Promise.all([pageA, pageB].map((page, index) =>
+      waitForSafeStartup(page, 'backup page ' + (index + 1))
+    ));
     await Promise.all([pageA, pageB].map(page => page.waitForFunction(
-      () => window._mainStorageBaselineReady === true && typeof window.buildBackupObject === 'function',
+      () => typeof window.buildBackupObject === 'function',
       null, { timeout: 20000 }
     )));
     const pendingId = await pageA.evaluate(async () => {
@@ -614,14 +681,11 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
     const pageA = await setupPage('pageA');
     const pageB = await setupPage('pageB');
     const pages = [pageA, pageB];
+    await Promise.all(pages.map((page, index) =>
+      waitForSafeStartup(page, 'Stopwatch diagnostic page ' + (index + 1))
+    ));
     await Promise.all(pages.map(page => page.waitForFunction(() =>
-      window._appInitCompleted === true
-        && typeof storageRecoveryRequired !== 'undefined'
-        && storageRecoveryRequired === false
-        && window._startupStopwatchRecoveryInFlight !== true
-        && window._startupStopwatchRecoveryFailed !== true
-        && window._mainStorageBaselineReady === true
-        && window.__stopwatchDiagnosticReady === true
+      window.__stopwatchDiagnosticReady === true
         && typeof window.__runStopwatchCommitAfterBarrier === 'function',
       null, { timeout: 20000 }
     )));
@@ -721,9 +785,11 @@ test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopw
     const pageA = await context.newPage();
     const pageB = await context.newPage();
     await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
+    await Promise.all([pageA, pageB].map((page, index) =>
+      waitForSafeStartup(page, 'lock ownership page ' + (index + 1))
+    ));
     await Promise.all([pageA, pageB].map(page => page.waitForFunction(
-      () => window._mainStorageBaselineReady === true
-        && typeof window._pendingStopwatchWriteAllowed === 'function',
+      () => typeof window._pendingStopwatchWriteAllowed === 'function',
       null, { timeout: 20000 }
     )));
     const tx = {
@@ -1128,6 +1194,7 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
         pending: _focusTimer.pendingStopwatchTransaction
       },
       externalMain: _mainStorageExternalChangeObserved,
+      mainWriteAllowed: _storageWriteAllowed(),
       externalTimer: _focusTimerExternalConflict,
       timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY],
       timerWriteAllowed: _secondaryStorageWriteAllowed(FOCUS_TIMER_KEY)
@@ -1171,7 +1238,13 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
       taskId: null,
       pending: null
     }, 'the second reset window must also clear stale in-memory timer state');
-    assert.equal(otherWindowState.externalMain, false);
+    if (otherWindowState.externalMain) {
+      assert.equal(otherWindowState.mainWriteAllowed, false,
+        'a late cross-window main-data event must keep the second page write gate closed');
+    } else {
+      assert.equal(otherWindowState.mainWriteAllowed, true,
+        'a page without a late external-main event must have a synchronized write gate');
+    }
     if (otherWindowState.externalTimer) {
       // A late cross-window storage event is a new conflict, not the stale
       // pre-reset flag. It must keep the secondary timer write gate closed.
@@ -1222,11 +1295,11 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
         await acquired;
 
         const retryPromise = retryStorageRecovery();
-        const pendingPromise = _retryResetRecoveryPromise;
+        const pendingPromise = _stopwatchRetryRecoveryPromise;
         const lockStateWhileHeld = await navigator.locks.query();
         const waitingState = {
           hasPromise: !!pendingPromise && typeof pendingPromise.then === 'function',
-          retryInFlight: _resetRecoveryInFlight,
+          retryInFlight: _startupStopwatchRecoveryInFlight,
           recoveryRequired: storageRecoveryRequired,
           writesAllowed: _storageWriteAllowed(),
           saveResult: saveData(),
@@ -1242,7 +1315,7 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
         const recovered = await retryPromise;
         const successState = {
           recovered,
-          retryInFlight: _resetRecoveryInFlight,
+          retryInFlight: _startupStopwatchRecoveryInFlight,
           recoveryRequired: storageRecoveryRequired,
           marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
           thoughts: localStorage.getItem(THOUGHTS_KEY),
@@ -1276,7 +1349,7 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
         const failureState = {
           result: failedRetry,
           staleWindowWriteBlocked,
-          retryInFlight: _resetRecoveryInFlight,
+          retryInFlight: _startupStopwatchRecoveryInFlight,
           recoveryRequired: storageRecoveryRequired,
           markerPresent: localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
         };
@@ -1360,7 +1433,7 @@ test('startup reset recovery waits for the shared lock and makes an older queued
     const startupPage = await context.newPage();
     const appUrl = await pageA.evaluate(() => location.href);
     await startupPage.goto(appUrl);
-    await startupPage.waitForFunction(() => _startupResetRecoveryInFlight === true,
+    await startupPage.waitForFunction(() => _startupStopwatchRecoveryInFlight === true,
       null, { timeout: 10000 });
     await pageA.waitForFunction(async () => {
       const state = await navigator.locks.query();
@@ -1369,7 +1442,7 @@ test('startup reset recovery waits for the shared lock and makes an older queued
       );
     }, null, { timeout: 5000 });
     const startupWaiting = await startupPage.evaluate(() => ({
-      recoveryInFlight: _startupResetRecoveryInFlight,
+      recoveryInFlight: _startupStopwatchRecoveryInFlight,
       writesAllowed: _storageWriteAllowed(),
       appInitCompleted: _appInitCompleted
     }));
@@ -1418,17 +1491,19 @@ test('startup reset recovery waits for the shared lock and makes an older queued
   });
 });
 
-test('Reset uses a documented best-effort path when Web Locks is unavailable', {
+test('Reset refuses to mutate storage when Web Locks is unavailable', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
-    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
-      () => window._appInitCompleted === true && window._rollingRecoveryBackupPending === null,
-      null, { timeout: 20000 }
-    )));
+    await Promise.all([pageA, pageB].map((page, index) =>
+      waitForSafeStartup(page, 'no-Web-Locks page ' + (index + 1))
+    ));
     await pageB.close();
     const state = await pageA.evaluate(async () => {
       const generationBefore = _readPersistedRollingBackupGeneration();
+      const mainBefore = localStorage.getItem(STORAGE_KEY);
+      const timerBefore = localStorage.getItem(FOCUS_TIMER_KEY);
+      const sessionsBefore = localStorage.getItem(FOCUS_SESSIONS_KEY);
       Object.defineProperty(navigator, 'locks', {
         configurable: true,
         value: undefined
@@ -1439,17 +1514,24 @@ test('Reset uses a documented best-effort path when Web Locks is unavailable', {
         generationBefore,
         generationAfter: _readPersistedRollingBackupGeneration(),
         marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
-        main: JSON.parse(localStorage.getItem(STORAGE_KEY)),
+        mainBefore,
+        mainAfter: localStorage.getItem(STORAGE_KEY),
+        timerBefore,
+        timerAfter: localStorage.getItem(FOCUS_TIMER_KEY),
+        sessionsBefore,
+        sessionsAfter: localStorage.getItem(FOCUS_SESSIONS_KEY),
         resetInFlight: _resetInFlight,
         recoveryRequired: storageRecoveryRequired
       };
     });
-    assert.equal(state.result, true);
-    assert.equal(state.generationAfter, state.generationBefore + 1);
+    assert.equal(state.result, false,
+      'Reset must fail closed instead of using an unprotected fallback');
+    assert.equal(state.generationAfter, state.generationBefore);
     assert.equal(state.marker, null);
-    assert.deepEqual(state.main.tasks, []);
-    assert.deepEqual(state.main.dailyLogs, []);
+    assert.equal(state.mainAfter, state.mainBefore);
+    assert.equal(state.timerAfter, state.timerBefore);
+    assert.equal(state.sessionsAfter, state.sessionsBefore);
     assert.equal(state.resetInFlight, false);
-    assert.equal(state.recoveryRequired, false);
+    assert.equal(state.recoveryRequired, true);
   });
 });
