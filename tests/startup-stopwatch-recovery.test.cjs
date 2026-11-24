@@ -407,6 +407,7 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
     storageRecoveryRequired: false,
     _startupStopwatchRecoveryInFlight: false,
     _startupStopwatchRecoveryFailed: false,
+    _pendingCorruptStorageSnapshots: [],
     _appInitCompleted: true,
     _startupStopwatchRecoveryExpectedTx: null,
     _stopwatchRetryRecoveryPromise: null,
