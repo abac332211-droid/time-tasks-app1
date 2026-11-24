@@ -327,6 +327,28 @@ test('D-03.2 two same-origin tabs recover one transaction once and the waiter pr
     assert.equal(result.sessions[0].taskId, runtime.seed.tx.taskId);
     assert.equal(result.sessions[0].durationSec, runtime.seed.tx.durationSec);
     assert.equal(result.timer.pendingStopwatchTransaction, null);
+
+    // D-02 remains active after the sibling window synchronizes: a later
+    // external write must invalidate the stale page's main-storage baseline.
+    const writer = await pageA.evaluate(() => {
+      appSettings.themeMode = 'dark';
+      appSettings.darkMode = true;
+      const saved = saveData();
+      return { saved, raw: localStorage.getItem('timeTasksApp_v1') };
+    });
+    assert.equal(writer.saved, true);
+    await pageB.waitForFunction(() => window._mainStorageExternalChangeObserved === true);
+    const stale = await pageB.evaluate(() => {
+      const before = localStorage.getItem('timeTasksApp_v1');
+      appSettings.themeMode = 'light';
+      appSettings.darkMode = false;
+      const saved = saveData();
+      return { saved, before, after: localStorage.getItem('timeTasksApp_v1') };
+    });
+    assert.equal(stale.saved, false);
+    assert.equal(stale.after, stale.before,
+      'the stale page must not overwrite the later synchronized main-data write');
+    assert.equal(stale.before, writer.raw);
   } finally {
     await closeBrowserContext(runtime);
   }
