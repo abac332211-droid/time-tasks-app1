@@ -1356,12 +1356,14 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
 
         // The fixture is isolated to this browser context; clean it after the
         // assertions have captured the intentionally failed recovery state.
-        const cleanup = await _recoverInterruptedResetWithLock({ keepRecoveryLock: false });
-        if (cleanup) {
-          storageRecoveryRequired = false;
-          loadData();
-          _captureMainStorageBaseline();
-        }
+        const cleanup = await _recoverInterruptedResetWithLock(
+          { keepRecoveryLock: false },
+          function() {
+            storageRecoveryRequired = false;
+            if (!loadData()) return false;
+            return _captureMainStorageBaseline();
+          }
+        );
         return { waitingState, successState, failureState, cleanup };
       } finally {
         if (originalRemove) Storage.prototype.removeItem = originalRemove;
@@ -1464,7 +1466,7 @@ test('startup reset recovery waits for the shared lock and makes an older queued
     });
     await pageA.evaluate(() => window.__releaseStartupLock());
     await pageA.evaluate(() => window.__startupLockHolder);
-    const startupRecovered = await startupPage.evaluate(() => _startupResetRecoveryPromise);
+    const startupRecovered = await startupPage.evaluate(() => _startupStopwatchRecoveryPromise);
     await startupPage.waitForFunction(() => _appInitCompleted === true,
       null, { timeout: 20000 });
     await pageA.waitForFunction(() => _rollingRecoveryBackupPending === null,
