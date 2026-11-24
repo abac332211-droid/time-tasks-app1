@@ -4666,16 +4666,22 @@ var MENTAL_INBOX_KEY = "timeTasksApp_mentalInbox";
 
 var _pendingCorruptStorageSnapshots = [];
 
+function _queuePendingCorruptStorageSnapshot(baseKey, raw) {
+  if (typeof baseKey !== "string" || typeof raw !== "string" || raw.length === 0) return false;
+  if (!Array.isArray(_pendingCorruptStorageSnapshots)) _pendingCorruptStorageSnapshots = [];
+  var alreadyQueued = _pendingCorruptStorageSnapshots.some(function(item) {
+    return item && item.baseKey === baseKey && item.raw === raw;
+  });
+  if (!alreadyQueued) _pendingCorruptStorageSnapshots.push({ baseKey: baseKey, raw: raw });
+  return true;
+}
+
 function _preserveCorruptStorageSnapshot(baseKey, raw) {
   if (typeof baseKey !== "string" || typeof raw !== "string" || raw.length === 0) return false;
   var ownsStopwatchLock = typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (!ownsStopwatchLock) {
-    if (!Array.isArray(_pendingCorruptStorageSnapshots)) _pendingCorruptStorageSnapshots = [];
-    var alreadyQueued = _pendingCorruptStorageSnapshots.some(function(item) {
-      return item && item.baseKey === baseKey && item.raw === raw;
-    });
-    if (!alreadyQueued) _pendingCorruptStorageSnapshots.push({ baseKey: baseKey, raw: raw });
+    _queuePendingCorruptStorageSnapshot(baseKey, raw);
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
     return false;
   }
@@ -4708,6 +4714,7 @@ function _preserveCorruptStorageSnapshot(baseKey, raw) {
     }
     localStorage.setItem(snapshotKey, raw);
     if (localStorage.getItem(snapshotKey) !== raw) {
+      _queuePendingCorruptStorageSnapshot(baseKey, raw);
       if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
       console.error("Corrupt storage snapshot read-back mismatch:", baseKey);
       return false;
@@ -4733,6 +4740,7 @@ function _preserveCorruptStorageSnapshot(baseKey, raw) {
     removePendingItem();
     return true;
   } catch (e) {
+    _queuePendingCorruptStorageSnapshot(baseKey, raw);
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
     console.warn("Could not preserve corrupt storage snapshot:", baseKey, e);
     return false;
