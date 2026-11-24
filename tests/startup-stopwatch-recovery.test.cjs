@@ -444,7 +444,8 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
       lockCalls++;
       return Promise.resolve().then(callback);
     },
-    _recoverPendingStopwatchSaveFromStartup() {
+    _runStorageRecoveryCoordinatorInsideLock(probe) {
+      assert.ok(probe.expectedTx, 'coordinator must receive the durable Stopwatch journal');
       const timer = JSON.parse(storage.getItem('timer'));
       timer.pendingStopwatchTransaction = null;
       storage.setItem('timer', JSON.stringify(timer));
@@ -452,11 +453,6 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
       _startupStopwatchRecoveryFailed = false;
       _appInitCompleted = true;
       return { ok: true, recoveredBySibling: false };
-    },
-    _runStorageRecoveryCoordinatorInsideLock(probe) {
-      return _recoverPendingStopwatchSaveFromStartup(
-        probe.expectedTx, probe.bootPersistedGeneration, probe
-      );
     },
     showToast() {},
     showAlertModal() {},
