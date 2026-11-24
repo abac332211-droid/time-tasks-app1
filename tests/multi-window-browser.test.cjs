@@ -126,7 +126,8 @@ async function waitForSafeStartup(page, label, timeout = 20000) {
     };
     return {
       appInitCompleted: window._appInitCompleted,
-      storageRecoveryRequired: window.storageRecoveryRequired,
+      storageRecoveryRequired: typeof storageRecoveryRequired === 'undefined'
+        ? 'undefined' : storageRecoveryRequired,
       startupInFlight: window._startupStopwatchRecoveryInFlight,
       startupFailed: window._startupStopwatchRecoveryFailed,
       startupPromise,
