@@ -2141,6 +2141,60 @@ test('failed interrupted rolling-backup restoration preserves its marker and ver
   assert.equal(harness.values.get(harness.keys.restoreMarker), rawMarker);
 });
 
+test('_recoverInterruptedResetWithLock keeps the lock through the post-recovery load callback', async () => {
+  const events = [];
+  const sandbox = {
+    navigator: { locks: { request() { throw new Error('the helper must delegate to the shared lock wrapper'); } } },
+    _stopwatchTransactionLockDepth: 0,
+    _withStopwatchTransactionLock(callback) {
+      this._stopwatchTransactionLockDepth++;
+      let result;
+      try { result = callback(); }
+      finally { this._stopwatchTransactionLockDepth--; }
+      return Promise.resolve(result);
+    },
+    _recoverInterruptedReset(options) {
+      events.push({ stage: 'recover', depth: this._stopwatchTransactionLockDepth,
+        keepRecoveryLock: options.keepRecoveryLock });
+      return true;
+    }
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedResetWithLock'), sandbox);
+  const result = await sandbox._recoverInterruptedResetWithLock({ keepRecoveryLock: true }, function(recovered) {
+    events.push({ stage: 'afterRecovery', depth: sandbox._stopwatchTransactionLockDepth, recovered });
+    assert.equal(sandbox._stopwatchTransactionLockDepth, 1,
+      'loadData and reset verification must remain inside the same lock');
+    return true;
+  });
+  assert.equal(result, true);
+  assert.deepEqual(events.map(event => event.stage), ['recover', 'afterRecovery']);
+  assert.equal(events[0].depth, 1);
+  assert.equal(events[0].keepRecoveryLock, true);
+  assert.equal(events[1].depth, 1);
+  assert.equal(sandbox._stopwatchTransactionLockDepth, 0);
+});
+
+test('_recoverInterruptedResetWithLock does not run post-recovery load after a failed replay', async () => {
+  let callbackCalls = 0;
+  const sandbox = {
+    navigator: { locks: { request() { throw new Error('the helper must delegate to the shared lock wrapper'); } } },
+    _stopwatchTransactionLockDepth: 0,
+    _withStopwatchTransactionLock(callback) {
+      this._stopwatchTransactionLockDepth++;
+      try { return Promise.resolve(callback()); }
+      finally { this._stopwatchTransactionLockDepth--; }
+    },
+    _recoverInterruptedReset: () => false
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedResetWithLock'), sandbox);
+  const result = await sandbox._recoverInterruptedResetWithLock({}, function() {
+    callbackCalls++;
+    return true;
+  });
+  assert.equal(result, false);
+  assert.equal(callbackCalls, 0);
+});
+
 test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', async () => {
   const faults = { throwOnRemoveKey: 'projects' };
   const harness = resetAllHarness(faults);

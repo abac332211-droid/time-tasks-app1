@@ -3707,19 +3707,23 @@ function _withResetTransactionLock(callback) {
   }
 }
 
-function _recoverInterruptedResetWithLock(options) {
+function _recoverInterruptedResetWithLock(options, afterRecovery) {
   var opts = {
     fromResetTransaction: false,
     keepRecoveryLock: !!(options && options.keepRecoveryLock)
   };
+  function recoverAndContinue() {
+    var recovered = _recoverInterruptedReset(opts);
+    if (recovered !== true) return false;
+    if (typeof afterRecovery === "function") return afterRecovery(recovered);
+    return recovered;
+  }
   if (typeof navigator !== "undefined" && navigator.locks
       && typeof navigator.locks.request === "function") {
-    return _withStopwatchTransactionLock(function() {
-      return _recoverInterruptedReset(opts);
-    });
+    return _withStopwatchTransactionLock(recoverAndContinue);
   }
   try {
-    return Promise.resolve(_recoverInterruptedReset(opts));
+    return Promise.resolve(recoverAndContinue());
   } catch (e) {
     return Promise.reject(e);
   }
@@ -4149,19 +4153,21 @@ function retryStorageRecovery() {
     storageRecoveryRequired = true;
     _resetRecoveryInFlight = true;
     var resetSucceeded = false;
-    var resetRetry = _recoverInterruptedResetWithLock({ keepRecoveryLock: true })
-      .then(function(recovered) {
-        if (recovered !== true || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null)
-          throw new Error("Reset recovery did not complete and clear its marker.");
-        if (!loadData({ keepRecoveryLock: true })) throw new Error("Reset data could not be reloaded.");
-        var raw = localStorage.getItem(STORAGE_KEY);
-        var data = raw === null ? null : JSON.parse(raw);
-        if (!data || !validateV2(data) || data.tasks.length !== 0 || data.dailyLogs.length !== 0)
-          throw new Error("Reset main record did not validate as empty.");
-        if (!_captureMainStorageBaseline()) throw new Error("Could not refresh main storage baseline.");
-        if (typeof _loadFocusTimer === "function") _loadFocusTimer();
-        if (typeof _loadFocusSettings === "function") _loadFocusSettings();
-        resetSucceeded = true;
+    var resetRetry = _recoverInterruptedResetWithLock({ keepRecoveryLock: true }, function(recovered) {
+      if (recovered !== true || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null)
+        throw new Error("Reset recovery did not complete and clear its marker.");
+      if (!loadData({ keepRecoveryLock: true })) throw new Error("Reset data could not be reloaded.");
+      var raw = localStorage.getItem(STORAGE_KEY);
+      var data = raw === null ? null : JSON.parse(raw);
+      if (!data || !validateV2(data) || data.tasks.length !== 0 || data.dailyLogs.length !== 0)
+        throw new Error("Reset main record did not validate as empty.");
+      if (!_captureMainStorageBaseline()) throw new Error("Could not refresh main storage baseline.");
+      if (typeof _loadFocusTimer === "function") _loadFocusTimer();
+      if (typeof _loadFocusSettings === "function") _loadFocusSettings();
+      resetSucceeded = true;
+      return true;
+    }).then(function(recovered) {
+        if (recovered !== true) throw new Error("Reset recovery returned no verified success.");
         showToast("✅ اكتمل تنظيف إعادة الضبط — أعد التحميل");
         setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
         return true;
@@ -12596,17 +12602,19 @@ try {
 if (_startupResetMarkerPresent) {
   storageRecoveryRequired = true;
   _startupResetRecoveryInFlight = true;
-  _startupResetRecoveryPromise = _recoverInterruptedResetWithLock({ keepRecoveryLock: true })
-    .then(function(recovered) {
-      if (recovered !== true || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null)
-        throw new Error("Startup reset recovery did not clear and verify its marker.");
-      // Keep the recovery lock logically raised while the empty V2 record is
-      // loaded and the main baseline is refreshed.
-      if (!loadData({ keepRecoveryLock: true }))
-        throw new Error("Startup reset recovery data could not be loaded.");
-      if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
-          || !_captureMainStorageBaseline())
-        throw new Error("Startup reset recovery final verification failed.");
+  _startupResetRecoveryPromise = _recoverInterruptedResetWithLock({ keepRecoveryLock: true }, function(recovered) {
+    if (recovered !== true || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null)
+      throw new Error("Startup reset recovery did not clear and verify its marker.");
+    // Keep replay, load, and baseline verification under the same lock. A
+    // released lock must never be followed by a restore write from loadData().
+    if (!loadData({ keepRecoveryLock: true }))
+      throw new Error("Startup reset recovery data could not be loaded.");
+    if (localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
+        || !_captureMainStorageBaseline())
+      throw new Error("Startup reset recovery final verification failed.");
+    return true;
+  }).then(function(recovered) {
+      if (recovered !== true) throw new Error("Startup Reset recovery returned no verified success.");
       _startupResetRecoveryInFlight = false;
       storageRecoveryRequired = false;
       _completeNormalStartupInit({ dataAlreadyLoaded: true });
