@@ -1872,18 +1872,11 @@ function resetAllHarness(faults = {}) {
     _setMainStorageBaseline: () => {},
     _captureMainStorageBaseline: () => true,
     _withStopwatchTransactionLock(callback) {
-      this._stopwatchTransactionLockDepth = (this._stopwatchTransactionLockDepth || 0) + 1;
-      let result;
-      try { result = callback(); }
-      catch (error) {
-        this._stopwatchTransactionLockDepth--;
-        throw error;
-      }
-      if (result && typeof result.then === 'function') {
-        return result.finally(() => { this._stopwatchTransactionLockDepth--; });
-      }
-      this._stopwatchTransactionLockDepth--;
-      return Promise.resolve(result);
+      const sandbox = this;
+      sandbox._stopwatchTransactionLockDepth = (sandbox._stopwatchTransactionLockDepth || 0) + 1;
+      return Promise.resolve().then(callback).finally(() => {
+        sandbox._stopwatchTransactionLockDepth = Math.max(0, sandbox._stopwatchTransactionLockDepth - 1);
+      });
     },
     loadData: () => true,
     _loadFocusTimer: () => {},
@@ -1979,7 +1972,6 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     _rollingRecoveryBackupEpoch: 0,
     _rollingRecoveryBackupPending: null,
     _rollingRecoveryCheckpointHold: 0,
-    _stopwatchTransactionLockDepth: 0,
     _rollingRecoveryBackupStale: false,
     _rollingRecoveryBackupLastFailure: null,
     _rollingRecoveryBackupLastSuccessAt: null,

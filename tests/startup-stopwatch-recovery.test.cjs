@@ -324,7 +324,37 @@ test('vanished journal without transaction or reset proof keeps recovery locked 
     IMPORT_IN_PROGRESS_KEY: 'import',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore',
     MIGRATION_IN_PROGRESS_KEY: 'migration',
+    FOCUS_TIMER_KEY: 'timer',
+    STORAGE_KEY: 'main',
     storageRecoveryRequired: false,
+    _probeStartupStopwatchRecovery() {
+      const markerValues = {
+        reset: storage.getItem('reset'),
+        rollingRestore: storage.getItem('rolling-restore'),
+        import: storage.getItem('import'),
+        migration: storage.getItem('migration')
+      };
+      const timerRaw = storage.getItem('timer');
+      const timerObj = timerRaw === null ? null : JSON.parse(timerRaw);
+      const tx = timerObj && timerObj.pendingStopwatchTransaction
+        ? timerObj.pendingStopwatchTransaction : null;
+      return {
+        pending: Object.values(markerValues).some(value => value !== null) || !!tx,
+        error: null,
+        blockingMarkers: {
+          reset: markerValues.reset !== null,
+          rollingRestore: markerValues.rollingRestore !== null,
+          import: markerValues.import !== null,
+          migration: markerValues.migration !== null
+        },
+        markerValues, timerRaw, timerObj, expectedTx: tx,
+        bootPersistedGeneration: 9,
+        mainRaw: storage.getItem('main'),
+        mainData: null
+      };
+    },
+    _flushPendingCorruptStorageSnapshotsInsideLock() { return true; },
+    _finishStartupInitializationInsideLock() { return true; },
     _readAndValidateResyncBundle() {
       return {
         timerObj: { mode: 'stopwatch', pendingStopwatchTransaction: null },
@@ -377,12 +407,38 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
     storageRecoveryRequired: false,
     _startupStopwatchRecoveryInFlight: false,
     _startupStopwatchRecoveryFailed: false,
+    _appInitCompleted: true,
+    _startupStopwatchRecoveryExpectedTx: null,
     _stopwatchRetryRecoveryPromise: null,
     _startupResetRecoveryInFlight: false,
     _resetRecoveryInFlight: false,
     _focusCommitInFlight: false,
     _validatePendingStopwatchTransaction(value) { return value && value.id === tx.id; },
     _readPersistedRollingBackupGeneration() { return 9; },
+    _probeStartupStopwatchRecovery() {
+      const markerValues = {
+        reset: storage.getItem('reset'),
+        rollingRestore: storage.getItem('rolling-restore'),
+        import: storage.getItem('import'),
+        migration: storage.getItem('migration')
+      };
+      const timerRaw = storage.getItem('timer');
+      const timerObj = timerRaw === null ? null : JSON.parse(timerRaw);
+      const currentTx = timerObj && timerObj.pendingStopwatchTransaction
+        ? timerObj.pendingStopwatchTransaction : null;
+      return {
+        pending: Object.values(markerValues).some(value => value !== null) || !!currentTx,
+        error: null,
+        blockingMarkers: {
+          reset: markerValues.reset !== null,
+          rollingRestore: markerValues.rollingRestore !== null,
+          import: markerValues.import !== null,
+          migration: markerValues.migration !== null
+        },
+        markerValues, timerRaw, timerObj, expectedTx: currentTx,
+        bootPersistedGeneration: 9, mainRaw: 'main', mainData: null
+      };
+    },
     _withStopwatchTransactionLock(callback) {
       lockCalls++;
       return Promise.resolve().then(callback);
@@ -391,7 +447,15 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
       const timer = JSON.parse(storage.getItem('timer'));
       timer.pendingStopwatchTransaction = null;
       storage.setItem('timer', JSON.stringify(timer));
+      storageRecoveryRequired = false;
+      _startupStopwatchRecoveryFailed = false;
+      _appInitCompleted = true;
       return { ok: true, recoveredBySibling: false };
+    },
+    _runStorageRecoveryCoordinatorInsideLock(probe) {
+      return _recoverPendingStopwatchSaveFromStartup(
+        probe.expectedTx, probe.bootPersistedGeneration, probe
+      );
     },
     showToast() {},
     showAlertModal() {},
