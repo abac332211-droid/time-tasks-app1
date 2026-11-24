@@ -388,14 +388,15 @@ test('cold-start finalization runs after focus settings are loaded', () => {
 });
 
 test('restored pending Pomodoro confirmation is presented after initialization', () => {
-  const normalizedHtml = html.replace(/\r\n/g, '\n');
-  const initTimer = normalizedHtml.lastIndexOf('_renderFocusTimer();');
-  const pendingPrompt = normalizedHtml.indexOf(
+  const initSource = extractTopLevelSource('_completeNormalStartupInit');
+  const initTimer = initSource.lastIndexOf('_renderFocusTimer();');
+  const pendingPrompt = initSource.indexOf(
     'if (!storageRecoveryRequired && _focusTimer.awaitingConfirmation) {\n    setTimeout(function() { _showAwaySessionConfirmation(); }, 300);\n  }',
     initTimer
   );
   assert.notEqual(initTimer, -1);
-  assert.ok(pendingPrompt > initTimer);
+  assert.ok(pendingPrompt > initTimer,
+    'the restored Pomodoro confirmation must be queued after the timer is rendered during initialization');
 });
 
 
