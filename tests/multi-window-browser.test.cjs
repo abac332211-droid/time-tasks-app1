@@ -441,13 +441,30 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
     const pageA = await context.newPage(), pageB = await context.newPage();
     await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
     await Promise.all([pageA, pageB].map(page => page.waitForFunction(
-      () => window._mainStorageBaselineReady === true && typeof window._applyStopwatchSave === 'function',
+      () => window._appInitCompleted === true
+        && window._mainStorageBaselineReady === true
+        && typeof window._applyStopwatchSave === 'function'
+        && tasks.some(item => item.id === 7031)
+        && _focusTimer.taskId === 7031,
       null, { timeout: 20000 }
     )));
-    await Promise.all([
-      pageA.evaluate(async () => await _applyStopwatchSave(125, tasks.find(item => item.id === 7031), 3)),
-      pageB.evaluate(async () => await _applyStopwatchSave(125, tasks.find(item => item.id === 7031), 3))
-    ]);
+    const operationResults = await Promise.all([pageA, pageB].map(page => page.evaluate(async () => {
+      const task = tasks.find(item => item.id === 7031);
+      const before = {
+        initialized: window._appInitCompleted,
+        actual: task && task.actual,
+        timerTaskId: _focusTimer.taskId,
+        timerElapsed: _focusTimer.baseElapsed,
+        mainBaselineReady: window._mainStorageBaselineReady
+      };
+      const result = await _applyStopwatchSave(125, task, 3);
+      return { result, before, pending: !!_focusTimer.pendingStopwatchTransaction,
+        recoveryRequired: storageRecoveryRequired };
+    })));
+    assert.equal(operationResults.filter(item => item.result === true).length, 1,
+      'exactly one window must commit the task-linked transaction: ' + JSON.stringify(operationResults));
+    assert.equal(operationResults.filter(item => item.result === false).length, 1,
+      'the competing window must reject its stale snapshot: ' + JSON.stringify(operationResults));
     const state = await pageA.evaluate(() => ({
       task: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks.find(item => item.id === 7031),
       sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')

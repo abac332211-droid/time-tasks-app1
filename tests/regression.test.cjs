@@ -190,6 +190,7 @@ test('focus commit guard blocks saveData and side-storage writes before reading 
     storageRecoveryRequired: false,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -248,6 +249,7 @@ test('saveData refuses writes while an import recovery marker remains', () => {
     storageRecoveryRequired: false,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     localStorage: {
       getItem: (key) => key === 'import-in-progress' ? '1' : original,
       setItem: () => { writes++; }
@@ -863,6 +865,7 @@ test('startup restores a valid snapshot when backup import was interrupted', () 
   let restored = null;
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: {
       getItem: (key) => store.has(key) ? store.get(key) : null,
@@ -887,6 +890,7 @@ test('startup does not touch storage when no import is in progress', () => {
   let restoreCalled = false;
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: 'importing',
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: 'rollback',
     localStorage: { getItem: (key) => store.has(key) ? store.get(key) : null },
     _restoreStorageSnapshot: () => { restoreCalled = true; return true; },
@@ -904,6 +908,7 @@ test('startup preserves an invalid rollback snapshot and blocks recovery', () =>
   const store = new Map([[markerKey, '1'], [backupKey, '{broken-json']]);
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: { getItem: (key) => store.has(key) ? store.get(key) : null },
     validateV2: () => true,
@@ -1789,6 +1794,7 @@ function resetAllHarness(faults = {}) {
     STORAGE_KEY: keys.main,
     PRE_IMPORT_KEY: keys.preImport,
     IMPORT_IN_PROGRESS_KEY: keys.importInProgress,
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: keys.migrationInProgress,
     RESET_IN_PROGRESS_KEY: keys.resetInProgress,
     ROLLING_BACKUP_A_KEY: keys.rollingBackupA,
@@ -2100,6 +2106,7 @@ test('interrupted rolling-backup restoration is replayed from its durable slot m
   };
   harness.values.set(harness.keys.backupA, JSON.stringify(record));
   harness.values.set(harness.keys.restoreMarker, JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
+  harness.sandbox._stopwatchTransactionLockDepth = 1;
   assert.equal(harness.sandbox._recoverInterruptedRollingRestore(), true);
   assert.equal(harness.values.get('main'), rollingState('saved').main);
   assert.equal(harness.values.get('projects'), rollingState('saved').projects);
@@ -2128,6 +2135,7 @@ test('failed interrupted rolling-backup restoration preserves its marker and ver
   const rawMarker = JSON.stringify({ version: 1, slot: 'a', sequence: 3 });
   harness.values.set(harness.keys.backupA, rawRecord);
   harness.values.set(harness.keys.restoreMarker, rawMarker);
+  harness.sandbox._stopwatchTransactionLockDepth = 1;
   assert.equal(harness.sandbox._recoverInterruptedRollingRestore(), false);
   assert.equal(harness.values.get(harness.keys.backupA), rawRecord);
   assert.equal(harness.values.get(harness.keys.restoreMarker), rawMarker);
@@ -2258,6 +2266,7 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
   const sandbox = {
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2312,6 +2321,7 @@ test('daily-log save refuses writes during migration, import, reset, and rolling
     const sandbox = {
       STORAGE_KEY: 'main',
       IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
       MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
       RESET_IN_PROGRESS_KEY: 'reset-in-progress',
       ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2352,6 +2362,7 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
   for (const markerKey of markerKeys) {
     const sandbox = {
       IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
       MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
       RESET_IN_PROGRESS_KEY: 'reset-in-progress',
       ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2364,6 +2375,7 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
 
   const readFailure = {
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2377,6 +2389,7 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
   const staleBaseline = {
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2860,6 +2873,7 @@ test('interrupted import keeps both control keys when recovery-marker deletion f
   ]);
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
@@ -2896,6 +2910,7 @@ test('interrupted import treats only PRE_IMPORT cleanup failure as retained clea
   ]);
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },

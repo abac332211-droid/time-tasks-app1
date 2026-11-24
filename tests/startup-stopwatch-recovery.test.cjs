@@ -145,6 +145,29 @@ test('read-only startup probe finds a pending transaction without writing or mig
   assert.ok(storage.reads.includes('main'), 'the probe must read the main V2 record');
 });
 
+test('startup probe keeps import and rolling-restore markers pending while inspecting a visible journal', () => {
+  for (const marker of ['import', 'rolling-restore']) {
+    const tx = pendingTransaction();
+    const main = mainRecord();
+    const storage = makeStorage({
+      reset: null,
+      'rolling-restore': marker === 'rolling-restore' ? '1' : null,
+      'import': marker === 'import' ? '1' : null,
+      migration: null,
+      main: JSON.stringify(main),
+      timer: JSON.stringify({ pendingStopwatchTransaction: tx, mode: 'stopwatch' })
+    });
+    const sandbox = makeProbeSandbox(storage, tx);
+    runExtracted('_probeStartupStopwatchRecovery', sandbox);
+    const result = sandbox._probeStartupStopwatchRecovery();
+    assert.equal(result.pending, true);
+    assert.equal(result.error, null);
+    assert.equal(result.blockingMarkers[marker === 'import' ? 'import' : 'rollingRestore'], true);
+    assert.deepEqual(asPlain(result.expectedTx), tx);
+    assert.equal(storage.writes.length, 0);
+  }
+});
+
 test('startup probe fails closed for an empty-but-present timer record and leaves all bytes untouched', () => {
   const storage = makeStorage({ timer: '', main: JSON.stringify(mainRecord()) });
   const sandbox = makeProbeSandbox(storage);

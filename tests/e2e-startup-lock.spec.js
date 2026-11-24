@@ -157,9 +157,36 @@ async function startBrowserContext(options = {}) {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const seed = makeSeed(options);
-    await context.addInitScript(({ initial, withoutLocks }) => {
+    const importRollback = options.recoveryMarker === 'import' ? {
+      main: JSON.stringify(seed.main),
+      focusSessions: '[]',
+      focusTimer: JSON.stringify(seed.timer),
+      mentalInbox: null,
+      thoughts: null,
+      projects: null,
+      focusSettings: null,
+      notifications: null
+    } : null;
+    const rollingRecord = options.recoveryMarker === 'rolling' ? {
+      formatVersion: 1,
+      sequence: 7,
+      createdAtMs: Date.now(),
+      reason: 'e2e-startup-marker',
+      data: {
+        main: JSON.stringify(seed.main),
+        focusSessions: '[]',
+        focusTimer: JSON.stringify(seed.timer),
+        mentalInbox: null,
+        thoughts: null,
+        projects: null,
+        focusSettings: null,
+        notifications: null
+      }
+    } : null;
+    await context.addInitScript(({ initial, withoutLocks, corruptSecondaryKey, recoveryMarker, importRollback, rollingRecord }) => {
       const nativeSetItem = Storage.prototype.setItem;
       const nativeRemoveItem = Storage.prototype.removeItem;
+      const nativeClear = Storage.prototype.clear;
 
       // Seed through the native methods before recording application writes.
       if (localStorage.getItem('timeTasksApp_v1') === null) {
@@ -171,6 +198,18 @@ async function startBrowserContext(options = {}) {
       if (localStorage.getItem('timeTasksApp_focusSessions') === null) {
         nativeSetItem.call(localStorage, 'timeTasksApp_focusSessions', '[]');
       }
+      if (corruptSecondaryKey) {
+        nativeSetItem.call(localStorage, corruptSecondaryKey, '{broken-secondary');
+      }
+      if (recoveryMarker === 'import') {
+        nativeSetItem.call(localStorage, 'timeTasksApp_preImportBackup', JSON.stringify(importRollback));
+        nativeSetItem.call(localStorage, 'timeTasksApp_importInProgress', '1');
+      } else if (recoveryMarker === 'rolling') {
+        nativeSetItem.call(localStorage, 'timeTasksApp_rollingBackupA', JSON.stringify(rollingRecord));
+        nativeSetItem.call(localStorage, 'timeTasksApp_rollingBackupGeneration', '7');
+        nativeSetItem.call(localStorage, 'timeTasksApp_rollingRestoreInProgress',
+          JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
+      }
 
       window.__startupStorageWrites = [];
       Storage.prototype.setItem = function(key, value) {
@@ -181,6 +220,10 @@ async function startBrowserContext(options = {}) {
         window.__startupStorageWrites.push({ operation: 'remove', key: String(key) });
         return nativeRemoveItem.call(this, key);
       };
+      Storage.prototype.clear = function() {
+        window.__startupStorageWrites.push({ operation: 'clear', key: '*' });
+        return nativeClear.call(this);
+      };
 
       if (withoutLocks) {
         Object.defineProperty(navigator, 'locks', {
@@ -188,7 +231,14 @@ async function startBrowserContext(options = {}) {
           value: undefined
         });
       }
-    }, { initial: seed, withoutLocks: options.withoutLocks === true });
+    }, {
+      initial: seed,
+      withoutLocks: options.withoutLocks === true,
+      corruptSecondaryKey: options.corruptSecondaryKey || null,
+      recoveryMarker: options.recoveryMarker || null,
+      importRollback,
+      rollingRecord
+    });
     return { server, browser, context, appUrl, seed };
   } catch (error) {
     if (browser) await browser.close();
@@ -244,10 +294,10 @@ async function releaseStopwatchLock(page) {
   });
 }
 
-test('D-03.1 startup remains read-only and blocks writes while the Stopwatch lock is held', {
+test('D-03.1 startup remains read-only across every localStorage key while the Stopwatch lock is held', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
-  const runtime = await startBrowserContext();
+  const runtime = await startBrowserContext({ corruptSecondaryKey: 'timeTasksApp_mentalInbox' });
   let controller;
   let appPage;
   try {
@@ -278,11 +328,14 @@ test('D-03.1 startup remains read-only and blocks writes while the Stopwatch loc
     assert.equal(beforeRelease.timerBlocked, true);
     assert.equal(beforeRelease.saveResult, false);
     assert.deepEqual(
-      beforeRelease.writesAfter.filter(item => item.key === MAIN_KEY || item.key === TIMER_KEY),
+      beforeRelease.writesAfter,
       [],
-      'neither load/migration nor timer persistence may write protected keys while recovery waits'
+      'no localStorage key may be set, removed or cleared while startup recovery waits for the lock'
     );
 
+    await controller.evaluate(() => {
+      localStorage.setItem('timeTasksApp_mentalInbox', '[]');
+    });
     await releaseStopwatchLock(controller);
     await waitForStartupSuccess(appPage);
     const afterRelease = await appPage.evaluate(() => ({
@@ -293,11 +346,60 @@ test('D-03.1 startup remains read-only and blocks writes while the Stopwatch loc
     assert.equal(afterRelease.main.tasks[0].actual, 8);
     assert.equal(afterRelease.sessions.length, 1);
     assert.equal(afterRelease.timer.pendingStopwatchTransaction, null);
+    assert.ok(afterRelease.main, 'startup recovered after the corrupted secondary record was repaired');
   } finally {
     if (controller) await releaseStopwatchLock(controller).catch(() => {});
     await closeBrowserContext(runtime);
   }
 });
+
+for (const recoveryMarker of ['import', 'rolling']) {
+  test('D-03 marker recovery (' + recoveryMarker + ') is serialized with a pending Stopwatch journal', {
+    skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  }, async () => {
+    const runtime = await startBrowserContext({ recoveryMarker });
+    let controller;
+    let appPage;
+    try {
+      controller = await runtime.context.newPage();
+      await controller.goto(runtime.appUrl + 'hold-lock.html');
+      await holdStopwatchLock(controller);
+
+      appPage = await runtime.context.newPage();
+      await appPage.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+      await appPage.waitForFunction(() => window._startupStopwatchRecoveryInFlight === true);
+
+      const waiting = await appPage.evaluate(() => ({
+        writes: window.__startupStorageWrites.slice(),
+        initialized: window._appInitCompleted,
+        inFlight: window._startupStopwatchRecoveryInFlight
+      }));
+      assert.equal(waiting.initialized, false);
+      assert.equal(waiting.inFlight, true);
+      assert.deepEqual(waiting.writes, [],
+        'marker recovery must not replace any storage group before acquiring the lock');
+
+      await releaseStopwatchLock(controller);
+      await waitForStartupSuccess(appPage);
+      const recovered = await appPage.evaluate(marker => ({
+        main: JSON.parse(localStorage.getItem('timeTasksApp_v1')),
+        timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        marker: localStorage.getItem(marker === 'import'
+          ? 'timeTasksApp_importInProgress' : 'timeTasksApp_rollingRestoreInProgress'),
+        importSnapshot: localStorage.getItem('timeTasksApp_preImportBackup')
+      }), recoveryMarker);
+      assert.equal(recovered.main.tasks[0].actual, 8);
+      assert.equal(recovered.sessions.length, 1);
+      assert.equal(recovered.timer.pendingStopwatchTransaction, null);
+      assert.equal(recovered.marker, null);
+      if (recoveryMarker === 'import') assert.equal(recovered.importSnapshot, null);
+    } finally {
+      if (controller) await releaseStopwatchLock(controller).catch(() => {});
+      await closeBrowserContext(runtime);
+    }
+  });
+}
 
 test('D-03.2 two same-origin tabs recover one transaction once and the waiter proves the sibling commit', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
