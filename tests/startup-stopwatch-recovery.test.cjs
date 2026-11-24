@@ -531,9 +531,9 @@ test('failed locked forensic snapshot writes retain exact raw bytes in the queue
     const raw = '{broken forensic source — retain byte-for-byte}';
     assert.equal(sandbox._preserveCorruptStorageSnapshot('mentalInbox', raw), false,
       failureMode + ': failed first preservation must not report success');
-    assert.deepEqual(
-      sandbox._pendingCorruptStorageSnapshots,
-      [{ baseKey: 'mentalInbox', raw }],
+    assert.equal(
+      JSON.stringify(sandbox._pendingCorruptStorageSnapshots),
+      JSON.stringify([{ baseKey: 'mentalInbox', raw }]),
       failureMode + ': exact raw bytes must remain queued after a locked write failure'
     );
     assert.equal(sandbox.storageRecoveryRequired, true,
