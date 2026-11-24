@@ -463,7 +463,7 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
     JSON,
     console: { error() {} }
   };
-  runExtracted('retryStorageRecovery', sandbox);
+  runExtracted('retryStorageRecovery', sandbox, ['_runStorageRecoveryCoordinatorWithFreshProbeRetry']);
 
   sandbox.retryStorageRecovery();
   const pendingPromise = sandbox._stopwatchRetryRecoveryPromise;
