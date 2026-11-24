@@ -624,6 +624,54 @@ test('empty raw forensic values are queued unchanged and preserved under the loc
     'the empty raw string must be preserved byte-for-byte and read-back verified');
 });
 
+test('forensic snapshot preservation performs no localStorage write or deletion without the Stopwatch lock', () => {
+  const storage = makeStorage({
+    mentalInbox_corrupt_1: 'old snapshot 1',
+    mentalInbox_corrupt_2: 'old snapshot 2',
+    mentalInbox_corrupt_3: 'old snapshot 3',
+    mentalInbox_corrupt_4: 'old snapshot 4'
+  });
+  const sandbox = {
+    localStorage: storage,
+    _stopwatchTransactionLockDepth: 0,
+    _pendingCorruptStorageSnapshots: [],
+    storageRecoveryRequired: false,
+    console: { error() {}, warn() {} },
+    Date,
+    JSON
+  };
+  runExtracted('_preserveCorruptStorageSnapshot', sandbox,
+    ['_queuePendingCorruptStorageSnapshot']);
+  runExtracted('_flushPendingCorruptStorageSnapshotsInsideLock', sandbox,
+    ['_queuePendingCorruptStorageSnapshot', '_preserveCorruptStorageSnapshot']);
+
+  const raw = '{broken but non-empty forensic source}';
+  assert.equal(sandbox._preserveCorruptStorageSnapshot('mentalInbox', raw), false);
+  assert.deepEqual(storage.writes, [],
+    'without lock ownership neither setItem nor removeItem may be called');
+  assert.deepEqual(Array.from(storage.values.keys()).sort(), [
+    'mentalInbox_corrupt_1',
+    'mentalInbox_corrupt_2',
+    'mentalInbox_corrupt_3',
+    'mentalInbox_corrupt_4'
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sandbox._pendingCorruptStorageSnapshots)), [
+    { baseKey: 'mentalInbox', raw }
+  ]);
+  assert.equal(sandbox.storageRecoveryRequired, true);
+
+  sandbox._stopwatchTransactionLockDepth = 1;
+  assert.equal(sandbox._flushPendingCorruptStorageSnapshotsInsideLock(), true);
+  assert.ok(storage.writes.some(write => write.key.startsWith('mentalInbox_corrupt_')
+    && Object.prototype.hasOwnProperty.call(write, 'value')),
+    'the queued forensic bytes may be written after lock acquisition');
+  assert.ok(storage.writes.some(write => write.remove === true),
+    'pruning old forensic snapshots may occur only during the locked flush');
+  assert.ok(Array.from(storage.values.values()).includes(raw),
+    'the exact source must be present after verified locked preservation');
+  assert.equal(sandbox._pendingCorruptStorageSnapshots.length, 0);
+});
+
 test('failed locked forensic snapshot writes retain exact raw bytes in the queue and retry under lock', () => {
   for (const failureMode of ['throw', 'readback-mismatch']) {
     const storage = makeStorage({});
