@@ -4205,7 +4205,7 @@ function retryStorageRecovery() {
         });
       } else {
         renderAll();
-        _renderFocusTimer();
+        if (typeof _renderFocusTimer === "function") _renderFocusTimer();
         _appInitCompleted = true;
       }
       showToast("✅ اكتمل استرداد معاملة Stopwatch — أعد التحميل");
@@ -4219,7 +4219,7 @@ function retryStorageRecovery() {
       showAlertModal("تعذر تأمين استرداد Stopwatch",
         "بقيت الحماية مفعّلة وسجل المعاملة محفوظًا ما لم يثبت تحقق الاسترداد.");
       renderAll();
-      _renderFocusTimer();
+      if (typeof _renderFocusTimer === "function") _renderFocusTimer();
       return false;
     }).finally(function() {
       _startupStopwatchRecoveryInFlight = false;
@@ -11172,7 +11172,7 @@ function _runPostRecoveryPersistedInitInsideLock() {
     generatedCount = generated;
     _finalizeFocusTimerColdStartRestore();
     if (typeof _storeRollingRecoveryBackup === "function"
-        && !_storeRollingRecoveryBackup("startup", 60 * 1000)) {
+        && _storeRollingRecoveryBackup("startup", 60 * 1000) === false) {
       return { ok: false, reason: "startup_backup_failed", generatedCount: generatedCount };
     }
     return { ok: true, generatedCount: generatedCount };
