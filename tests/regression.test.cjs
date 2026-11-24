@@ -2900,6 +2900,11 @@ test('loadData blocks migration and normal loading when interrupted import recov
     tasks: [{ id: 77, name: 'must not be replaced' }],
     storageRecoveryRequired: false,
     _stopwatchTransactionLockDepth: 1,
+    _probeStartupStopwatchRecovery: () => ({
+      error: null,
+      expectedTx: null,
+      blockingMarkers: { reset: false, rollingRestore: false, import: false, migration: false }
+    }),
     _recoverInterruptedReset: () => true,
     _recoverInterruptedRollingRestore: () => true,
     _recoverInterruptedImport: () => false,
@@ -2917,6 +2922,107 @@ test('loadData blocks migration and normal loading when interrupted import recov
   assert.equal(sandbox.storageRecoveryRequired, true);
   assert.equal(sandbox.tasks[0].id, 77, 'in-memory task state must not be replaced by fallback data');
   assert.equal(alerts.length, 1);
+});
+
+
+test('loadData refuses a pending Stopwatch journal before any collective recovery or migration', () => {
+  const calls = [];
+  const writes = [];
+  const tx = { id: 'pending-load-data-tx-0001', taskId: 77 };
+  const sandbox = {
+    storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
+    _probeStartupStopwatchRecovery() {
+      calls.push('probe');
+      return {
+        error: null,
+        pending: true,
+        expectedTx: tx,
+        blockingMarkers: { reset: true, rollingRestore: false, import: false, migration: false }
+      };
+    },
+    _recoverInterruptedReset() { calls.push('reset'); return true; },
+    _recoverInterruptedRollingRestore() { calls.push('rolling'); return true; },
+    _recoverInterruptedImport() { calls.push('import'); return true; },
+    migrateV1ToV2() { calls.push('migration'); return { success: true }; },
+    localStorage: {
+      getItem(key) { calls.push('read:' + key); return null; },
+      setItem(key, value) { writes.push(['set', key, String(value)]); },
+      removeItem(key) { writes.push(['remove', key]); }
+    },
+    showAlertModal() {},
+    console
+  };
+  vm.runInNewContext(extractFunction('loadData'), sandbox);
+  assert.equal(sandbox.loadData(), false);
+  assert.deepEqual(calls, ['probe'],
+    'the read-only journal/marker probe must be the first and only recovery step');
+  assert.deepEqual(writes, [],
+    'loadData must not replay a collective restore or migration while the journal exists');
+  assert.equal(sandbox.storageRecoveryRequired, true);
+});
+
+test('direct collective restore entry points refuse to overwrite a pending Stopwatch journal', () => {
+  const cases = [
+    {
+      name: '_restoreStorageSnapshot',
+      source: extractFunction('_restoreStorageSnapshot'),
+      snapshot: {
+        main: null, focusSessions: null, focusTimer: null, mentalInbox: null,
+        thoughts: null, projects: null, focusSettings: null, notifications: null
+      },
+      marker: null
+    },
+    {
+      name: '_recoverInterruptedReset',
+      source: extractFunction('_recoverInterruptedReset'),
+      snapshot: null,
+      marker: ['reset-key', JSON.stringify({ version: 1, main: '{}' })]
+    },
+    {
+      name: '_recoverInterruptedRollingRestore',
+      source: extractFunction('_recoverInterruptedRollingRestore'),
+      snapshot: null,
+      marker: ['rolling-key', '{"version":1,"slot":"a","sequence":1}']
+    },
+    {
+      name: '_recoverInterruptedImport',
+      source: extractFunction('_recoverInterruptedImport'),
+      snapshot: null,
+      marker: ['import-key', '1']
+    }
+  ];
+  for (const entry of cases) {
+    const writes = [];
+    const values = new Map(entry.marker ? [entry.marker] : []);
+    const sandbox = {
+      _stopwatchTransactionLockDepth: 1,
+      storageRecoveryRequired: false,
+      RESET_IN_PROGRESS_KEY: 'reset-key',
+      ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-key',
+      IMPORT_IN_PROGRESS_KEY: 'import-key',
+      _hasPersistedPendingStopwatchTransaction: () => true,
+      localStorage: {
+        getItem(key) { return values.has(key) ? values.get(key) : null; },
+        setItem(key, value) { writes.push(['set', key, String(value)]); values.set(key, String(value)); },
+        removeItem(key) { writes.push(['remove', key]); values.delete(key); }
+      },
+      console
+    };
+    if (entry.name === '_restoreStorageSnapshot') {
+      sandbox._setMainStorageBaseline = () => {};
+      sandbox._invalidateProjectsCache = () => {};
+    }
+    vm.runInNewContext(entry.source, sandbox);
+    const result = entry.name === '_restoreStorageSnapshot'
+      ? sandbox._restoreStorageSnapshot(entry.snapshot)
+      : sandbox[entry.name]();
+    assert.equal(result, false, entry.name + ' must refuse the transaction conflict');
+    assert.deepEqual(writes, [], entry.name + ' must refuse before its first write');
+    assert.equal(sandbox.storageRecoveryRequired, true,
+      entry.name + ' must preserve the recovery-required state');
+    if (entry.marker) assert.equal(values.get(entry.marker[0]), entry.marker[1]);
+  }
 });
 
 test('interrupted import keeps both control keys when recovery-marker deletion fails', () => {
