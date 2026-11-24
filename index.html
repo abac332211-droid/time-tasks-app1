@@ -3335,6 +3335,14 @@ function _storeRollingRecoveryBackup(reason, minIntervalMs) {
 }
 
 function _storeRollingRecoveryBackupLocked(reason, minIntervalMs, expectedGeneration) {
+  if (!(typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0)) {
+    _rollingRecoveryBackupLastFailure = "lock_not_held";
+    _rollingRecoveryBackupStale = true;
+    storageRecoveryRequired = true;
+    console.error("Rolling recovery snapshot publication requires the Stopwatch Web Lock.");
+    return false;
+  }
   if (expectedGeneration === undefined) expectedGeneration = _readPersistedRollingBackupGeneration();
   if (expectedGeneration === null
       || _readPersistedRollingBackupGeneration() !== expectedGeneration) return false;
