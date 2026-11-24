@@ -7221,10 +7221,24 @@ function showImportPreview(obj) {
             RESET_IN_PROGRESS_KEY, ROLLING_RESTORE_IN_PROGRESS_KEY,
             IMPORT_IN_PROGRESS_KEY, MIGRATION_IN_PROGRESS_KEY
           ];
-          if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
-                && _hasPersistedPendingStopwatchTransaction())
-              || importBlockingKeys.some(function(key) { return localStorage.getItem(key) !== null; })) {
-            throw new Error("يوجد سجل Stopwatch أو استرداد آخر قيد التنفيذ؛ لم يبدأ الاستيراد.");
+          var pendingStopwatchTransaction = false;
+          var importRecoveryMarkerPresent = false;
+          try {
+            pendingStopwatchTransaction = typeof _hasPersistedPendingStopwatchTransaction === "function"
+              && _hasPersistedPendingStopwatchTransaction();
+            importRecoveryMarkerPresent = importBlockingKeys.some(function(key) {
+              return localStorage.getItem(key) !== null;
+            });
+          } catch (importStateReadError) {
+            storageRecoveryRequired = true;
+            showAlertModal("تعذر التحقق من حالة الاسترداد",
+              "تعذرت قراءة سجل Stopwatch أو علامات الاسترداد. لم يبدأ الاستيراد ولم تُستبدل أي بيانات.");
+            return false;
+          }
+          if (pendingStopwatchTransaction || importRecoveryMarkerPresent) {
+            showAlertModal("الاستيراد محظور مؤقتًا",
+              "يوجد سجل Stopwatch أو استرداد آخر قيد التنفيذ؛ لم يبدأ الاستيراد.");
+            return false;
           }
           currentRaw = localStorage.getItem(STORAGE_KEY);
         const settings = d.settings || {};
