@@ -183,7 +183,13 @@ async function startBrowserContext(options = {}) {
         notifications: null
       }
     } : null;
-    await context.addInitScript(({ initial, withoutLocks, corruptSecondaryKey, recoveryMarker, importRollback, rollingRecord }) => {
+    const resetMain = { ...seed.main, tasks: [], dailyLogs: [] };
+    const resetRecord = options.recoveryMarker === 'reset' ? {
+      version: 1,
+      main: JSON.stringify(resetMain),
+      generation: 8
+    } : null;
+    await context.addInitScript(({ initial, withoutLocks, corruptSecondaryKey, recoveryMarker, importRollback, rollingRecord, resetRecord }) => {
       const nativeSetItem = Storage.prototype.setItem;
       const nativeRemoveItem = Storage.prototype.removeItem;
       const nativeClear = Storage.prototype.clear;
@@ -211,6 +217,9 @@ async function startBrowserContext(options = {}) {
           JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
       } else if (recoveryMarker === 'migration') {
         nativeSetItem.call(localStorage, 'timeTasksApp_migrationInProgress', '1');
+      } else if (recoveryMarker === 'reset') {
+        nativeSetItem.call(localStorage, 'timeTasksApp_recoveryBackupGeneration', '7');
+        nativeSetItem.call(localStorage, 'timeTasksApp_resetInProgress', JSON.stringify(resetRecord));
       }
 
       window.__startupStorageWrites = [];
@@ -239,7 +248,8 @@ async function startBrowserContext(options = {}) {
       corruptSecondaryKey: options.corruptSecondaryKey || null,
       recoveryMarker: options.recoveryMarker || null,
       importRollback,
-      rollingRecord
+      rollingRecord,
+      resetRecord
     });
     return { server, browser, context, appUrl, seed };
   } catch (error) {
@@ -371,7 +381,7 @@ test('D-03.1 startup remains read-only across every localStorage key while the S
   }
 });
 
-for (const recoveryMarker of ['import', 'rolling', 'migration']) {
+for (const recoveryMarker of ['reset', 'import', 'rolling', 'migration']) {
   test('D-03 refuses ' + recoveryMarker + ' recovery when a Stopwatch journal is also pending', {
     skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
   }, async () => {
@@ -397,11 +407,13 @@ for (const recoveryMarker of ['import', 'rolling', 'migration']) {
         main: JSON.parse(localStorage.getItem('timeTasksApp_v1')),
         timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
-        marker: localStorage.getItem(marker === 'import'
-          ? 'timeTasksApp_importInProgress'
-          : marker === 'rolling'
-            ? 'timeTasksApp_rollingRestoreInProgress'
-            : 'timeTasksApp_migrationInProgress'),
+        marker: localStorage.getItem(marker === 'reset'
+          ? 'timeTasksApp_resetInProgress'
+          : marker === 'import'
+            ? 'timeTasksApp_importInProgress'
+            : marker === 'rolling'
+              ? 'timeTasksApp_rollingRestoreInProgress'
+              : 'timeTasksApp_migrationInProgress'),
         importSnapshot: localStorage.getItem('timeTasksApp_preImportBackup'),
         backupA: localStorage.getItem('timeTasksApp_recoveryBackupA'),
         writes: window.__startupStorageWrites.slice()
@@ -413,6 +425,11 @@ for (const recoveryMarker of ['import', 'rolling', 'migration']) {
       assert.equal(blocked.timer.pendingStopwatchTransaction.id, runtime.seed.tx.id);
       assert.equal(blocked.sessions.length, 0);
       assert.ok(blocked.marker);
+      if (recoveryMarker === 'reset') {
+        assert.deepEqual(JSON.parse(blocked.marker), runtime.resetRecord || JSON.parse(blocked.marker));
+        assert.deepEqual(JSON.parse(JSON.parse(blocked.marker).main).tasks, []);
+        assert.deepEqual(JSON.parse(JSON.parse(blocked.marker).main).dailyLogs, []);
+      }
       if (recoveryMarker === 'import') assert.ok(blocked.importSnapshot);
       if (recoveryMarker === 'rolling') assert.ok(blocked.backupA);
       if (recoveryMarker === 'migration') assert.equal(blocked.marker, '1');
