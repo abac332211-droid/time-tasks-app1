@@ -396,7 +396,8 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
     timer: JSON.stringify({ mode: 'stopwatch', pendingStopwatchTransaction: tx })
   });
   let lockCalls = 0;
-  const sandbox = {
+  let sandbox;
+  sandbox = {
     localStorage: storage,
     navigator: { locks: { request() {} } },
     FOCUS_TIMER_KEY: 'timer',
@@ -449,9 +450,9 @@ test('retryStorageRecovery detects the durable timer journal even when the memor
       const timer = JSON.parse(storage.getItem('timer'));
       timer.pendingStopwatchTransaction = null;
       storage.setItem('timer', JSON.stringify(timer));
-      storageRecoveryRequired = false;
-      _startupStopwatchRecoveryFailed = false;
-      _appInitCompleted = true;
+      sandbox.storageRecoveryRequired = false;
+      sandbox._startupStopwatchRecoveryFailed = false;
+      sandbox._appInitCompleted = true;
       return { ok: true, recoveredBySibling: false };
     },
     showToast() {},
