@@ -631,6 +631,8 @@ test('forensic snapshot preservation performs no localStorage write or deletion 
     mentalInbox_corrupt_3: 'old snapshot 3',
     mentalInbox_corrupt_4: 'old snapshot 4'
   });
+  Object.defineProperty(storage, 'length', { get: () => storage.values.size });
+  storage.key = index => Array.from(storage.values.keys())[index] ?? null;
   const sandbox = {
     localStorage: storage,
     _stopwatchTransactionLockDepth: 0,
