@@ -2911,6 +2911,28 @@ function loadData(options) {
     console.error("loadData: the Stopwatch Web Lock is required for restore and migration.");
     return false;
   }
+
+  // Read the complete recovery identity before any marker replay or migration.
+  // A collective recovery marker must never bypass the durable Stopwatch journal.
+  var loadProbe = _probeStartupStopwatchRecovery();
+  if (!loadProbe || loadProbe.error) {
+    storageRecoveryRequired = true;
+    console.error("loadData: refusing recovery because the read-only probe failed.",
+      loadProbe && loadProbe.error ? loadProbe.error : "probe_unavailable");
+    return false;
+  }
+  var loadMarkers = loadProbe.blockingMarkers || {};
+  var loadMarkerCount = Object.keys(loadMarkers).filter(function(key) {
+    return loadMarkers[key] === true;
+  }).length;
+  if (loadMarkerCount > 1
+      || (loadMarkerCount > 0 && loadProbe.expectedTx)
+      || loadProbe.expectedTx) {
+    storageRecoveryRequired = true;
+    console.error("loadData: refusing restore or migration while a Stopwatch journal or overlapping recovery marker exists.");
+    return false;
+  }
+
   if (!_recoverInterruptedReset({ keepRecoveryLock: keepRecoveryLock })) {
     storageRecoveryRequired = true;
     showAlertModal("إعادة ضبط غير مكتملة",
@@ -3588,6 +3610,11 @@ function _recoverInterruptedRollingRestore() {
     console.error("Rolling restore recovery requires the Stopwatch Web Lock.");
     return false;
   }
+  if (_hasPersistedPendingStopwatchTransaction()) {
+    storageRecoveryRequired = true;
+    console.error("Rolling restore recovery refuses to overwrite a pending Stopwatch transaction.");
+    return false;
+  }
 
   try {
     var marker = JSON.parse(markerRaw);
@@ -3824,6 +3851,11 @@ function _recoverInterruptedReset(options) {
       && _stopwatchTransactionLockDepth > 0)) {
     storageRecoveryRequired = true;
     console.error("Interrupted reset recovery requires the Stopwatch Web Lock.");
+    return false;
+  }
+  if (_hasPersistedPendingStopwatchTransaction()) {
+    storageRecoveryRequired = true;
+    console.error("Interrupted reset recovery refuses to overwrite a pending Stopwatch transaction.");
     return false;
   }
 
@@ -4456,6 +4488,15 @@ function _executeResetAllTransaction() {
   _resetInFlight = true;
   var fresh = null;
   var resetPromise = _withResetTransactionLock(function() {
+    var resetProbe = _probeStartupStopwatchRecovery();
+    var resetMarkers = resetProbe && resetProbe.blockingMarkers ? resetProbe.blockingMarkers : {};
+    var resetMarkerCount = Object.keys(resetMarkers).filter(function(key) {
+      return resetMarkers[key] === true;
+    }).length;
+    if (!resetProbe || resetProbe.error || resetProbe.expectedTx || resetMarkerCount > 0) {
+      storageRecoveryRequired = true;
+      throw new Error("Reset refused because another recovery marker or Stopwatch journal is present.");
+    }
     fresh = buildEmptyV2();
     fresh.settings.darkMode = appSettings.darkMode;
     fresh.settings.themeMode = appSettings.themeMode || (appSettings.darkMode ? "dark" : "light");
@@ -7103,6 +7144,11 @@ function _restoreStorageSnapshot(rb) {
     console.error("Storage snapshot restore requires the Stopwatch Web Lock.");
     return false;
   }
+  if (_hasPersistedPendingStopwatchTransaction()) {
+    markRecoveryRequired();
+    console.error("Storage snapshot restore refuses to overwrite a pending Stopwatch transaction.");
+    return false;
+  }
 
   // A missing property is not the same as an intentionally empty collection.
   // Validate the entire rollback record before reading or changing any key.
@@ -7194,6 +7240,11 @@ function _recoverInterruptedImport() {
       && _stopwatchTransactionLockDepth > 0)) {
     if (typeof storageRecoveryRequired !== "undefined") storageRecoveryRequired = true;
     console.error("Import recovery requires the Stopwatch Web Lock.");
+    return false;
+  }
+  if (_hasPersistedPendingStopwatchTransaction()) {
+    storageRecoveryRequired = true;
+    console.error("Import recovery refuses to overwrite a pending Stopwatch transaction.");
     return false;
   }
 
