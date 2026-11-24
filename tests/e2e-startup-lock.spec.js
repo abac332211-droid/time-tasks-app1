@@ -435,6 +435,51 @@ test('D-02 task-linked save waits for real startup and records every persistence
           });
         }
       };
+      const originalRemoveItem = Storage.prototype.removeItem;
+      Storage.prototype.removeItem = function(key) {
+        const name = String(key);
+        const lockDepth = window._stopwatchTransactionLockDepth;
+        let outcome = 'success';
+        try {
+          return originalRemoveItem.call(this, key);
+        } catch (error) {
+          outcome = 'throw: ' + String(error && error.message ? error.message : error);
+          throw error;
+        } finally {
+          diagnostics.storage.push({
+            operation: 'remove',
+            key: name,
+            lockDepth,
+            beforeActual: getMainActual(),
+            afterActual: getMainActual(),
+            beforeTransactionId: getPendingTransactionId(),
+            afterTransactionId: getPendingTransactionId(),
+            outcome
+          });
+        }
+      };
+      const originalClear = Storage.prototype.clear;
+      Storage.prototype.clear = function() {
+        const lockDepth = window._stopwatchTransactionLockDepth;
+        let outcome = 'success';
+        try {
+          return originalClear.call(this);
+        } catch (error) {
+          outcome = 'throw: ' + String(error && error.message ? error.message : error);
+          throw error;
+        } finally {
+          diagnostics.storage.push({
+            operation: 'clear',
+            key: '*',
+            lockDepth,
+            beforeActual: null,
+            afterActual: getMainActual(),
+            beforeTransactionId: null,
+            afterTransactionId: getPendingTransactionId(),
+            outcome
+          });
+        }
+      };
       const wrapMethod = name => {
         const original = window[name];
         window[name] = function() {
