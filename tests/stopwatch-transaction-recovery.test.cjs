@@ -943,11 +943,11 @@ test('finishTimer logs a Pomodoro break against its task without modifying task 
   const storage = initialStorage();
   const timer = JSON.parse(storage.getItem('focus-timer'));
   timer.mode = 'pomodoro';
-  timer.phase = 'shortBreak';
+  timer.phase = 'short-break';
   storage.setItem('focus-timer', JSON.stringify(timer));
   const runtime = createRuntime(storage);
   runtime.sandbox._focusTimer.mode = 'pomodoro';
-  runtime.sandbox._focusTimer.phase = 'shortBreak';
+  runtime.sandbox._focusTimer.phase = 'short-break';
   installFinishTimer(runtime);
 
   const result = await runtime.sandbox.finishTimer();
@@ -958,7 +958,7 @@ test('finishTimer logs a Pomodoro break against its task without modifying task 
   assert.equal(main.tasks[0].actual, 5);
   assert.equal(main.tasks[0].lastStopwatchTransactionId, undefined);
   assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].phase, 'shortBreak');
+  assert.equal(sessions[0].phase, 'short-break');
   assert.equal(sessions[0].taskId, 7);
   assert.equal(savedTimer.pendingStopwatchTransaction, null);
   assert.equal(savedTimer.baseElapsed, 0);
