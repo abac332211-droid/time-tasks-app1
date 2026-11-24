@@ -1746,6 +1746,20 @@ test('corrupt current storage does not silently fall back to an old migration ar
   assert.equal(harness.values.get('migration-archive'), oldArchive);
 });
 
+test('migration refuses malformed non-null marker values without changing source bytes', () => {
+  const original = JSON.stringify({ tasks: [{ id: 7, name: 'V1 source' }], dailyLogs: [] });
+  for (const markerValue of ['', '2', 'unknown']) {
+    const harness = migrationHarness(original, null, markerValue);
+    const report = harness.run();
+    assert.equal(report.success, false, 'marker=' + JSON.stringify(markerValue));
+    assert.equal(report.error, 'invalid_or_unknown_migration_marker');
+    assert.equal(harness.values.get('main'), original);
+    assert.equal(harness.values.get('migration-in-progress'), markerValue);
+    assert.deepEqual(harness.writes, [],
+      'invalid marker values must fail before migration writes begin');
+  }
+});
+
 test('an explicit pending migration marker allows archive recovery and is cleared after verified V2 write', () => {
   const oldArchive = JSON.stringify({
     tasks: [{ id: 7, name: 'مهمة الترحيل' }],
