@@ -181,6 +181,57 @@ test('startup probe fails closed for an empty-but-present timer record and leave
   assert.equal(storage.values.get('main'), JSON.stringify(mainRecord()));
 });
 
+
+test('pending journal presence is not reduced to JavaScript truthiness', () => {
+  for (const journalValue of ['', false, 0, {}, 'malformed']) {
+    const raw = JSON.stringify({
+      mode: 'stopwatch',
+      pendingStopwatchTransaction: journalValue
+    });
+    const sandbox = {
+      FOCUS_TIMER_KEY: 'timer',
+      localStorage: { getItem(key) { return key === 'timer' ? raw : null; } }
+    };
+    runExtracted('_hasPersistedPendingStopwatchTransaction', sandbox);
+    assert.equal(sandbox._hasPersistedPendingStopwatchTransaction(), true,
+      'a present non-null journal must block writes even when its value is malformed: '
+        + JSON.stringify(journalValue));
+  }
+
+  for (const journalValue of [null, undefined]) {
+    const timer = { mode: 'stopwatch' };
+    if (journalValue !== undefined) timer.pendingStopwatchTransaction = journalValue;
+    const raw = JSON.stringify(timer);
+    const sandbox = {
+      FOCUS_TIMER_KEY: 'timer',
+      localStorage: { getItem(key) { return key === 'timer' ? raw : null; } }
+    };
+    runExtracted('_hasPersistedPendingStopwatchTransaction', sandbox);
+    assert.equal(sandbox._hasPersistedPendingStopwatchTransaction(), false);
+  }
+});
+
+test('read-only startup probe rejects a present but malformed transaction journal with all marker states preserved', () => {
+  const timerRaw = JSON.stringify({
+    mode: 'stopwatch',
+    pendingStopwatchTransaction: ''
+  });
+  const storage = makeStorage({
+    reset: null, 'rolling-restore': null, import: '1', migration: null,
+    timer: timerRaw, main: JSON.stringify(mainRecord())
+  });
+  const sandbox = makeProbeSandbox(storage);
+  runExtracted('_probeStartupStopwatchRecovery', sandbox);
+  const probe = sandbox._probeStartupStopwatchRecovery();
+  assert.ok(probe.error);
+  assert.equal(probe.blockingMarkers.import, true);
+  assert.equal(probe.markerValues.import, '1');
+  assert.equal(probe.timerRaw, timerRaw);
+  assert.equal(probe.timerObj.pendingStopwatchTransaction, '');
+  assert.equal(storage.writes.length, 0,
+    'invalid journal and overlapping marker state must remain byte-for-byte untouched');
+});
+
 test('sibling transaction outcome is accepted only with both task identity and matching session evidence', () => {
   const tx = pendingTransaction();
   const startedAt = new Date(tx.sessionStartAt).toISOString();
