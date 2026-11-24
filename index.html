@@ -4156,9 +4156,8 @@ function retryStorageRecovery() {
     _startupStopwatchRecoveryInFlight = true;
     _startupStopwatchRecoveryFailed = false;
     _appInitCompleted = false;
-    var coordinatedRetry = _withStopwatchTransactionLock(function() {
-      return _runStorageRecoveryCoordinatorInsideLock(retryProbe);
-    }).then(function(result) {
+    var coordinatedRetry = _runStorageRecoveryCoordinatorWithFreshProbeRetry(retryProbe)
+      .then(function(result) {
       if (!result || result.ok !== true || storageRecoveryRequired || !_appInitCompleted)
         throw new Error(result && result.reason ? result.reason : "Recovery coordinator did not verify startup completion.");
       var verifyProbe = _probeStartupStopwatchRecovery();
@@ -11825,15 +11824,18 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
       return { ok: false, reason: "stopwatch_recovery_snapshot_changed" };
     }
   } else if (!siblingMayHaveCommitted) {
-    // With no journal, another window may legitimately publish a rolling
-    // startup checkpoint while this page waits for the same lock. Compare the
-    // task/timer records and markers, but do not treat generation-only movement
-    // as a changed Stopwatch transaction identity.
-    if (!!initialTx !== !!currentTx
-        || lockedProbe.timerRaw !== initialProbe.timerRaw
-        || lockedProbe.mainRaw !== initialProbe.mainRaw) {
+    var hasNoTransactionOrMarkers = !initialTx && !currentTx && markerCount === 0;
+    var startupSnapshotChanged = !!initialTx !== !!currentTx
+      || lockedProbe.timerRaw !== initialProbe.timerRaw
+      || lockedProbe.mainRaw !== initialProbe.mainRaw
+      || lockedProbe.bootPersistedGeneration !== initialProbe.bootPersistedGeneration;
+    if (startupSnapshotChanged) {
       storageRecoveryRequired = true;
-      return { ok: false, reason: "storage_recovery_snapshot_changed" };
+      return {
+        ok: false,
+        reason: "storage_recovery_snapshot_changed",
+        retryWithFreshProbe: hasNoTransactionOrMarkers
+      };
     }
   }
   if (markerCount > 0 || currentTx || siblingMayHaveCommitted) {
@@ -11876,6 +11878,25 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
     return { ok: false, reason: "normal_startup_finalize_failed" };
   }
   return { ok: true, initialized: true, generatedCount: postInit.generatedCount };
+}
+
+// A changed no-journal startup snapshot is never replayed. Drop the stale attempt,
+// take a new read-only probe after releasing the first lock, and retry once against
+// that fresh identity. Any second change fails closed.
+function _runStorageRecoveryCoordinatorWithFreshProbeRetry(probeSnapshot) {
+  return _withStopwatchTransactionLock(function() {
+    return _runStorageRecoveryCoordinatorInsideLock(probeSnapshot);
+  }).then(function(result) {
+    if (!result || result.retryWithFreshProbe !== true) return result;
+    var freshProbe = _probeStartupStopwatchRecovery();
+    if (freshProbe.error || freshProbe.pending) {
+      storageRecoveryRequired = true;
+      return { ok: false, reason: "fresh_startup_probe_failed" };
+    }
+    return _withStopwatchTransactionLock(function() {
+      return _runStorageRecoveryCoordinatorInsideLock(freshProbe);
+    });
+  });
 }
 
 function _applyStopwatchSave(elapsedSec,task,minutesToAdd,snapshot) {
@@ -12892,9 +12913,8 @@ if (startupStopwatchProbe.error) {
   renderAll();
   _renderFocusTimer();
 
-  _startupStopwatchRecoveryPromise = _withStopwatchTransactionLock(function() {
-    return _runStorageRecoveryCoordinatorInsideLock(startupStopwatchProbe);
-  }).then(function(result) {
+  _startupStopwatchRecoveryPromise = _runStorageRecoveryCoordinatorWithFreshProbeRetry(startupStopwatchProbe)
+    .then(function(result) {
     if (!result || result.ok !== true || storageRecoveryRequired || !_appInitCompleted)
       throw new Error(result && result.reason ? result.reason : "Startup coordinator did not verify complete initialization.");
     var verifyProbe = _probeStartupStopwatchRecovery();
