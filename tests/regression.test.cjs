@@ -2054,6 +2054,23 @@ function rollingState(prefix) {
   };
 }
 
+test('locked rolling-recovery writer refuses direct calls without the Stopwatch lock', () => {
+  const harness = rollingRecoveryHarness(rollingState('current'));
+  harness.sandbox._stopwatchTransactionLockDepth = 0;
+  const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  assert.equal(harness.sandbox._storeRollingRecoveryBackupLocked('direct-call'), false);
+  assert.deepEqual(harness.writes, [],
+    'the locked writer must reject before publishing any backup slot');
+  assert.deepEqual(
+    Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0])),
+    before,
+    'the locked writer must preserve every stored byte when called without lock ownership'
+  );
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.sandbox._rollingRecoveryBackupLastFailure, 'lock_not_held');
+});
+
 test('rolling recovery checkpoints contain every raw storage group and rotate two verified generations', () => {
   const harness = rollingRecoveryHarness(rollingState('first'));
   assert.equal(harness.sandbox._storeRollingRecoveryBackup('main-save'), true);
