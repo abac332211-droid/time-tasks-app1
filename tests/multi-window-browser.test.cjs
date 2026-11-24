@@ -416,10 +416,11 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
     server.listen(0, '127.0.0.1', resolve);
   });
   const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
-  let browserInstance;
+  let browserInstance, context;
+  const nodeDiagnostics = { pageA: [], pageB: [] };
   try {
     browserInstance = await chromium.launch({ headless: true });
-    const context = await browserInstance.newContext({ serviceWorkers: 'block' });
+    context = await browserInstance.newContext({ serviceWorkers: 'block' });
     const initial = JSON.parse(JSON.stringify(seed));
     initial.main.tasks = [{
       id: 7031, name: 'Concurrent stopwatch task', type: 'معرفية', status: 'pending',
@@ -430,59 +431,258 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
     initial.timer.taskId = 7031;
     initial.timer.baseElapsed = 125;
     initial.timer.sessionStartAt = Date.now() - 125000;
-    await context.addInitScript((value) => {
-      if (localStorage.getItem('timeTasksApp_v1') === null)
-        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
-      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
-        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
-      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
-        localStorage.setItem('timeTasksApp_focusSessions', '[]');
-    }, initial);
-    const pageA = await context.newPage(), pageB = await context.newPage();
-    await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
-    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
-      () => window._appInitCompleted === true
+
+    async function setupPage(label) {
+      const page = await context.newPage();
+      page.on('console', message => {
+        if (message.type() === 'error') nodeDiagnostics[label].push({
+          type: 'console.error', text: message.text()
+        });
+      });
+      page.on('pageerror', error => nodeDiagnostics[label].push({
+        type: 'pageerror', text: error && error.stack ? error.stack : String(error)
+      }));
+      await page.addInitScript(({ windowLabel, seedValue, channelName }) => {
+        const nativeGet = Storage.prototype.getItem;
+        const nativeSet = Storage.prototype.setItem;
+        const nativeRemove = Storage.prototype.removeItem;
+        const nativeClear = Storage.prototype.clear;
+        const tracked = new Set([
+          'timeTasksApp_v1', 'timeTasksApp_focusTimer', 'timeTasksApp_focusSessions'
+        ]);
+        if (nativeGet.call(localStorage, 'timeTasksApp_v1') === null)
+          nativeSet.call(localStorage, 'timeTasksApp_v1', JSON.stringify(seedValue.main));
+        if (nativeGet.call(localStorage, 'timeTasksApp_focusTimer') === null)
+          nativeSet.call(localStorage, 'timeTasksApp_focusTimer', JSON.stringify(seedValue.timer));
+        if (nativeGet.call(localStorage, 'timeTasksApp_focusSessions') === null)
+          nativeSet.call(localStorage, 'timeTasksApp_focusSessions', '[]');
+
+        window.__stopwatchDiagnostic = {
+          window: windowLabel, calls: [], storage: [], events: [], errors: [], wrapped: []
+        };
+        function summarize(value) {
+          if (value === null || value === undefined || typeof value !== 'object') return value;
+          const out = {};
+          ['id','taskId','minutesToAdd','durationSec','mode','phase','sessionStartAt',
+            'previousActual','targetActual','transactionId','baseElapsed'].forEach(key => {
+            if (Object.prototype.hasOwnProperty.call(value, key)) out[key] = value[key];
+          });
+          if (value.snapshot && typeof value.snapshot === 'object') {
+            out.snapshot = {};
+            ['taskId','mode','phase','sessionStartAt','baseElapsed'].forEach(key => {
+              if (Object.prototype.hasOwnProperty.call(value.snapshot, key))
+                out.snapshot[key] = value.snapshot[key];
+            });
+          }
+          return out;
+        }
+        Storage.prototype.getItem = function(key) {
+          const value = nativeGet.call(this, key);
+          if (tracked.has(String(key))) window.__stopwatchDiagnostic.storage.push({
+            at: performance.now(), op: 'get', key: String(key), value
+          });
+          return value;
+        };
+        Storage.prototype.setItem = function(key, value) {
+          const name = String(key);
+          const before = tracked.has(name) ? nativeGet.call(this, key) : undefined;
+          const result = nativeSet.call(this, key, value);
+          if (tracked.has(name)) {
+            const after = nativeGet.call(this, key);
+            window.__stopwatchDiagnostic.storage.push({
+              at: performance.now(), op: 'set', key: name, before,
+              attempted: String(value), after, verified: after === String(value)
+            });
+          }
+          return result;
+        };
+        Storage.prototype.removeItem = function(key) {
+          const name = String(key);
+          const before = tracked.has(name) ? nativeGet.call(this, key) : undefined;
+          const result = nativeRemove.call(this, key);
+          if (tracked.has(name)) {
+            const after = nativeGet.call(this, key);
+            window.__stopwatchDiagnostic.storage.push({
+              at: performance.now(), op: 'remove', key: name, before,
+              after, verified: after === null
+            });
+          }
+          return result;
+        };
+        Storage.prototype.clear = function() {
+          const before = {};
+          tracked.forEach(key => { before[key] = nativeGet.call(this, key); });
+          const result = nativeClear.call(this);
+          window.__stopwatchDiagnostic.storage.push({
+            at: performance.now(), op: 'clear', before,
+            after: Object.fromEntries(Array.from(tracked).map(key => [key, nativeGet.call(this, key)]))
+          });
+          return result;
+        };
+        window.addEventListener('unhandledrejection', event => {
+          window.__stopwatchDiagnostic.errors.push({
+            at: performance.now(), type: 'unhandledrejection',
+            reason: event.reason && event.reason.stack ? event.reason.stack : String(event.reason)
+          });
+        });
+        window.addEventListener('storage', event => {
+          if (tracked.has(String(event.key))) window.__stopwatchDiagnostic.events.push({
+            at: performance.now(), type: 'storage', key: event.key,
+            oldValue: event.oldValue, newValue: event.newValue
+          });
+        });
+        const channel = new BroadcastChannel(channelName);
+        window.__stopwatchDiagnosticChannel = channel;
+        window.__stopwatchStartGate = new Promise(resolve => {
+          channel.addEventListener('message', event => {
+            if (event.data === 'start-stopwatch-commit') resolve();
+          });
+        });
+        document.addEventListener('DOMContentLoaded', () => {
+          const names = [
+            '_commitFocusTaskSession', '_commitFocusTaskSessionLocked',
+            'finishTimer', '_applyTimerFinish', '_applyStopwatchSave',
+            '_saveFocusTimer', '_saveSessions', '_saveFocusSessions'
+          ];
+          names.forEach(name => {
+            const original = window[name];
+            if (typeof original !== 'function' || original.__stopwatchDiagnosticWrapped) return;
+            const wrapped = function(...args) {
+              const record = {
+                window: windowLabel, method: name, startedAt: performance.now(),
+                args: args.map(summarize), transactionId: null
+              };
+              args.forEach(arg => {
+                if (!record.transactionId && arg && typeof arg === 'object')
+                  record.transactionId = arg.id
+                    || (arg.pendingStopwatchTransaction && arg.pendingStopwatchTransaction.id)
+                    || (arg.snapshot && arg.snapshot.transactionId) || null;
+              });
+              window.__stopwatchDiagnostic.calls.push(record);
+              try {
+                const value = Reflect.apply(original, this, args);
+                if (value && typeof value.then === 'function') {
+                  return value.then(result => {
+                    record.endedAt = performance.now();
+                    record.result = summarize(result);
+                    return result;
+                  }, error => {
+                    record.endedAt = performance.now();
+                    record.error = error && error.stack ? error.stack : String(error);
+                    throw error;
+                  });
+                }
+                record.endedAt = performance.now();
+                record.result = summarize(value);
+                return value;
+              } catch (error) {
+                record.endedAt = performance.now();
+                record.error = error && error.stack ? error.stack : String(error);
+                throw error;
+              }
+            };
+            wrapped.__stopwatchDiagnosticWrapped = true;
+            window[name] = wrapped;
+            window.__stopwatchDiagnostic.wrapped.push(name);
+          });
+          window.__stopwatchDiagnosticReady = true;
+          window.__runStopwatchCommitAfterBarrier = async function() {
+            window.__stopwatchAttemptWaiting = true;
+            await window.__stopwatchStartGate;
+            const task = tasks.find(item => item && item.id === 7031);
+            const before = task ? task.actual : null;
+            const value = await _applyStopwatchSave(125, task, 3);
+            return {
+              value, before, after: task ? task.actual : null,
+              pending: !!_focusTimer.pendingStopwatchTransaction,
+              recoveryRequired: storageRecoveryRequired
+            };
+          };
+        }, { once: true });
+      }, {
+        windowLabel: label,
+        seedValue: initial,
+        channelName: 'stopwatch-duplicate-commit-diagnostics-7031'
+      });
+      await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+      return page;
+    }
+
+    const pageA = await setupPage('pageA');
+    const pageB = await setupPage('pageB');
+    const pages = [pageA, pageB];
+    await Promise.all(pages.map(page => page.waitForFunction(() =>
+      window._appInitCompleted === true
+        && typeof storageRecoveryRequired !== 'undefined'
+        && storageRecoveryRequired === false
+        && window._startupStopwatchRecoveryInFlight !== true
+        && window._startupStopwatchRecoveryFailed !== true
         && window._mainStorageBaselineReady === true
-        && typeof window._applyStopwatchSave === 'function'
-        && tasks.some(item => item.id === 7031)
-        && _focusTimer.taskId === 7031,
+        && window.__stopwatchDiagnosticReady === true
+        && typeof window.__runStopwatchCommitAfterBarrier === 'function',
       null, { timeout: 20000 }
     )));
-    const operationResults = await Promise.all([pageA, pageB].map(page => page.evaluate(async () => {
-      const task = tasks.find(item => item.id === 7031);
-      const before = {
-        initialized: window._appInitCompleted,
-        actual: task && task.actual,
-        timerTaskId: _focusTimer.taskId,
-        timerElapsed: _focusTimer.baseElapsed,
-        mainBaselineReady: window._mainStorageBaselineReady
-      };
-      const result = await _applyStopwatchSave(125, task, 3);
-      return { result, before, pending: !!_focusTimer.pendingStopwatchTransaction,
-        recoveryRequired: storageRecoveryRequired };
-    })));
-    assert.equal(operationResults.filter(item => item.result === true).length, 1,
-      'exactly one window must commit the task-linked transaction: ' + JSON.stringify(operationResults));
-    assert.equal(operationResults.filter(item => item.result === false).length, 1,
-      'the competing window must reject its stale snapshot: ' + JSON.stringify(operationResults));
-    const state = await pageA.evaluate(() => ({
-      task: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks.find(item => item.id === 7031),
-      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
-        .filter(item => item.taskId === 7031),
-      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
-    }));
-    assert.equal(state.task.actual, 8);
+    const attempts = pages.map(page => page.evaluate(() => window.__runStopwatchCommitAfterBarrier()));
+    await Promise.all(pages.map(page => page.waitForFunction(
+      () => window.__stopwatchAttemptWaiting === true, null, { timeout: 10000 }
+    )));
+    await pageA.evaluate(() => window.__stopwatchDiagnosticChannel.postMessage('start-stopwatch-commit'));
+    const settled = await Promise.allSettled(attempts);
+    const pageDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
+      calls: window.__stopwatchDiagnostic.calls,
+      storage: window.__stopwatchDiagnostic.storage,
+      events: window.__stopwatchDiagnostic.events,
+      errors: window.__stopwatchDiagnostic.errors,
+      wrapped: window.__stopwatchDiagnostic.wrapped
+    }))));
+    const diagnostics = {
+      pageResults: settled.map(item => item.status === 'fulfilled'
+        ? { status: item.status, value: item.value }
+        : { status: item.status, reason: item.reason && item.reason.message ? item.reason.message : String(item.reason) }),
+      pages: pageDiagnostics,
+      node: nodeDiagnostics
+    };
+    const successful = settled.filter(item => item.status === 'fulfilled'
+      && item.value && item.value.value === true);
+    const rejected = settled.filter(item => item.status === 'fulfilled'
+      && item.value && item.value.value === false);
+    assert.equal(successful.length, 1,
+      'exactly one page must commit; diagnostics=' + JSON.stringify(diagnostics));
+    assert.equal(rejected.length, 1,
+      'the stale competing page must return false; diagnostics=' + JSON.stringify(diagnostics));
+
+    const verifyPage = await context.newPage();
+    await verifyPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await verifyPage.waitForFunction(() =>
+      window._appInitCompleted === true && storageRecoveryRequired === false
+        && window._startupStopwatchRecoveryInFlight !== true
+        && window._startupStopwatchRecoveryFailed !== true,
+      null, { timeout: 20000 }
+    );
+    const state = await verifyPage.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const task = main && main.tasks.find(item => item.id === 7031);
+      return { task, timer, linked: sessions.filter(item => item.taskId === 7031) };
+    });
+    assert.ok(state.task, 'task must remain in storage; diagnostics=' + JSON.stringify(diagnostics));
+    assert.equal(state.task.actual, 8, 'minutes must be committed exactly once; diagnostics=' + JSON.stringify(diagnostics));
     assert.equal(typeof state.task.lastStopwatchTransactionId, 'string');
-    assert.equal(state.sessions.length, 1);
-    assert.equal(state.sessions[0].transactionId, state.task.lastStopwatchTransactionId);
     assert.equal(state.timer.pendingStopwatchTransaction, null);
-    await context.close();
+    assert.equal(state.linked.length, 1);
+    assert.equal(state.linked[0].transactionId, state.task.lastStopwatchTransactionId);
+    assert.equal(state.linked[0].taskId, 7031);
+    assert.equal(state.linked[0].mode, 'stopwatch');
+    assert.equal(state.linked[0].phase, 'work');
+    assert.equal(state.linked[0].durationSec, 125);
+    assert.equal(state.linked[0].startedAt, new Date(initial.timer.sessionStartAt).toISOString());
   } finally {
+    if (context) await context.close().catch(() => {});
     if (browserInstance) await browserInstance.close();
     await new Promise(resolve => server.close(resolve));
   }
 });
-
 
 test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'

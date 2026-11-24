@@ -138,7 +138,7 @@ function makeSeed(options = {}) {
     awaitingConfirmation: false,
     pendingPhaseEndedAt: null,
     clockAdjusted: false,
-    pendingStopwatchTransaction: tx,
+    pendingStopwatchTransaction: options.withoutPendingStopwatchTransaction === true ? null : tx,
     savedAt: now
   };
 
@@ -209,6 +209,8 @@ async function startBrowserContext(options = {}) {
         nativeSetItem.call(localStorage, 'timeTasksApp_recoveryBackupGeneration', '7');
         nativeSetItem.call(localStorage, 'timeTasksApp_rollingRestoreInProgress',
           JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
+      } else if (recoveryMarker === 'migration') {
+        nativeSetItem.call(localStorage, 'timeTasksApp_migrationInProgress', '1');
       }
 
       window.__startupStorageWrites = [];
@@ -336,16 +338,32 @@ test('D-03.1 startup remains read-only across every localStorage key while the S
     await controller.evaluate(() => {
       localStorage.setItem('timeTasksApp_mentalInbox', '[]');
     });
+    const queued = await appPage.evaluate(() => ({
+      queue: window._pendingCorruptStorageSnapshots.slice(),
+      forensicKeys: Object.keys(localStorage).filter(key => key.startsWith('timeTasksApp_mentalInbox_corrupt_'))
+    }));
+    assert.equal(queued.queue.length, 1);
+    assert.equal(queued.queue[0].raw, '{broken-secondary');
+    assert.deepEqual(queued.forensicKeys, [],
+      'the first render must not persist forensic bytes outside the Stopwatch lock');
+
     await releaseStopwatchLock(controller);
     await waitForStartupSuccess(appPage);
     const afterRelease = await appPage.evaluate(() => ({
       timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
       main: JSON.parse(localStorage.getItem('timeTasksApp_v1')),
-      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      queue: window._pendingCorruptStorageSnapshots.slice(),
+      forensic: Object.keys(localStorage)
+        .filter(key => key.startsWith('timeTasksApp_mentalInbox_corrupt_'))
+        .map(key => localStorage.getItem(key))
     }));
     assert.equal(afterRelease.main.tasks[0].actual, 8);
     assert.equal(afterRelease.sessions.length, 1);
     assert.equal(afterRelease.timer.pendingStopwatchTransaction, null);
+    assert.equal(afterRelease.queue.length, 0);
+    assert.ok(afterRelease.forensic.includes('{broken-secondary'),
+      'the exact original raw record must be preserved after lock acquisition');
     assert.ok(afterRelease.main, 'startup recovered after the corrupted secondary record was repaired');
   } finally {
     if (controller) await releaseStopwatchLock(controller).catch(() => {});
@@ -354,31 +372,71 @@ test('D-03.1 startup remains read-only across every localStorage key while the S
 });
 
 for (const recoveryMarker of ['import', 'rolling']) {
-  test('D-03 marker recovery (' + recoveryMarker + ') is serialized with a pending Stopwatch journal', {
+  test('D-03 refuses ' + recoveryMarker + ' recovery when a Stopwatch journal is also pending', {
     skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
   }, async () => {
     const runtime = await startBrowserContext({ recoveryMarker });
-    let controller;
-    let appPage;
+    let controller, appPage;
     try {
       controller = await runtime.context.newPage();
       await controller.goto(runtime.appUrl + 'hold-lock.html');
       await holdStopwatchLock(controller);
-
       appPage = await runtime.context.newPage();
       await appPage.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
       await appPage.waitForFunction(() => window._startupStopwatchRecoveryInFlight === true);
-
       const waiting = await appPage.evaluate(() => ({
-        writes: window.__startupStorageWrites.slice(),
-        initialized: window._appInitCompleted,
-        inFlight: window._startupStopwatchRecoveryInFlight
+        writes: window.__startupStorageWrites.slice(), initialized: window._appInitCompleted
       }));
       assert.equal(waiting.initialized, false);
-      assert.equal(waiting.inFlight, true);
-      assert.deepEqual(waiting.writes, [],
-        'marker recovery must not replace any storage group before acquiring the lock');
+      assert.deepEqual(waiting.writes, []);
+      await releaseStopwatchLock(controller);
+      await appPage.waitForFunction(() => window._startupStopwatchRecoveryFailed === true);
+      const blocked = await appPage.evaluate(marker => ({
+        recoveryRequired: storageRecoveryRequired,
+        initialized: window._appInitCompleted,
+        main: JSON.parse(localStorage.getItem('timeTasksApp_v1')),
+        timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        marker: localStorage.getItem(marker === 'import'
+          ? 'timeTasksApp_importInProgress' : 'timeTasksApp_rollingRestoreInProgress'),
+        importSnapshot: localStorage.getItem('timeTasksApp_preImportBackup'),
+        backupA: localStorage.getItem('timeTasksApp_recoveryBackupA'),
+        writes: window.__startupStorageWrites.slice()
+      }), recoveryMarker);
+      assert.equal(blocked.recoveryRequired, true);
+      assert.equal(blocked.initialized, false);
+      assert.equal(blocked.main.tasks[0].actual, 5);
+      assert.equal(blocked.main.tasks[0].lastStopwatchTransactionId, undefined);
+      assert.equal(blocked.timer.pendingStopwatchTransaction.id, runtime.seed.tx.id);
+      assert.equal(blocked.sessions.length, 0);
+      assert.ok(blocked.marker);
+      if (recoveryMarker === 'import') assert.ok(blocked.importSnapshot);
+      if (recoveryMarker === 'rolling') assert.ok(blocked.backupA);
+      assert.deepEqual(blocked.writes, [],
+        'journal+group marker overlap must fail before any storage mutation');
+    } finally {
+      if (controller) await releaseStopwatchLock(controller).catch(() => {});
+      await closeBrowserContext(runtime);
+    }
+  });
+}
 
+for (const recoveryMarker of ['import', 'rolling']) {
+  test('D-03 recovers a lone ' + recoveryMarker + ' marker under the Stopwatch lock', {
+    skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  }, async () => {
+    const runtime = await startBrowserContext({
+      recoveryMarker, withoutPendingStopwatchTransaction: true
+    });
+    let controller, appPage;
+    try {
+      controller = await runtime.context.newPage();
+      await controller.goto(runtime.appUrl + 'hold-lock.html');
+      await holdStopwatchLock(controller);
+      appPage = await runtime.context.newPage();
+      await appPage.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+      await appPage.waitForFunction(() => window._startupStopwatchRecoveryInFlight === true);
+      assert.deepEqual(await appPage.evaluate(() => window.__startupStorageWrites.slice()), []);
       await releaseStopwatchLock(controller);
       await waitForStartupSuccess(appPage);
       const recovered = await appPage.evaluate(marker => ({
@@ -387,13 +445,15 @@ for (const recoveryMarker of ['import', 'rolling']) {
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
         marker: localStorage.getItem(marker === 'import'
           ? 'timeTasksApp_importInProgress' : 'timeTasksApp_rollingRestoreInProgress'),
-        importSnapshot: localStorage.getItem('timeTasksApp_preImportBackup')
+        importSnapshot: localStorage.getItem('timeTasksApp_preImportBackup'),
+        backupA: localStorage.getItem('timeTasksApp_recoveryBackupA')
       }), recoveryMarker);
-      assert.equal(recovered.main.tasks[0].actual, 8);
-      assert.equal(recovered.sessions.length, 1);
+      assert.equal(recovered.main.tasks[0].actual, 5);
       assert.equal(recovered.timer.pendingStopwatchTransaction, null);
+      assert.equal(recovered.sessions.length, 0);
       assert.equal(recovered.marker, null);
       if (recoveryMarker === 'import') assert.equal(recovered.importSnapshot, null);
+      if (recoveryMarker === 'rolling') assert.ok(recovered.backupA);
     } finally {
       if (controller) await releaseStopwatchLock(controller).catch(() => {});
       await closeBrowserContext(runtime);
@@ -401,6 +461,67 @@ for (const recoveryMarker of ['import', 'rolling']) {
   });
 }
 
+test('D-03 recovers a lone Migration marker under the Stopwatch lock', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({
+    recoveryMarker: 'migration', withoutPendingStopwatchTransaction: true
+  });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    const state = await page.evaluate(() => ({
+      marker: localStorage.getItem('timeTasksApp_migrationInProgress'),
+      main: JSON.parse(localStorage.getItem('timeTasksApp_v1')),
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
+    }));
+    assert.equal(state.marker, null);
+    assert.equal(state.main.tasks[0].actual, 5);
+    assert.equal(state.timer.pendingStopwatchTransaction, null);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('D-03 refuses overlapping group-recovery markers without changing sources', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({
+    recoveryMarker: 'import', withoutPendingStopwatchTransaction: true
+  });
+  let controller, appPage;
+  try {
+    controller = await runtime.context.newPage();
+    await controller.goto(runtime.appUrl + 'hold-lock.html');
+    await holdStopwatchLock(controller);
+    const rollingMarker = JSON.stringify({ version: 1, slot: 'a', sequence: 7 });
+    await controller.evaluate(value => {
+      localStorage.setItem('timeTasksApp_rollingRestoreInProgress', value);
+    }, rollingMarker);
+    appPage = await runtime.context.newPage();
+    await appPage.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await appPage.waitForFunction(() => window._startupStopwatchRecoveryInFlight === true);
+    await releaseStopwatchLock(controller);
+    await appPage.waitForFunction(() => window._startupStopwatchRecoveryFailed === true);
+    const state = await appPage.evaluate(() => ({
+      importMarker: localStorage.getItem('timeTasksApp_importInProgress'),
+      rollingMarker: localStorage.getItem('timeTasksApp_rollingRestoreInProgress'),
+      preImport: localStorage.getItem('timeTasksApp_preImportBackup'),
+      writes: window.__startupStorageWrites.slice(),
+      initialized: window._appInitCompleted
+    }));
+    assert.equal(state.importMarker, '1');
+    assert.equal(state.rollingMarker, rollingMarker);
+    assert.ok(state.preImport);
+    assert.equal(state.initialized, false);
+    assert.deepEqual(state.writes, []);
+  } finally {
+    if (controller) await releaseStopwatchLock(controller).catch(() => {});
+    await closeBrowserContext(runtime);
+  }
+});
 test('D-03.2 two same-origin tabs recover one transaction once and the waiter proves the sibling commit', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
