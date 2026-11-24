@@ -202,6 +202,29 @@ test('normal startup initialization refuses persisted work without owning the St
     'normal startup must not heal, generate recurring tasks, render or save outside the lock');
 });
 
+test('import recovery rejects malformed present marker values without any storage writes', () => {
+  for (const markerValue of ['', '2', 'unknown']) {
+    const storage = makeStorage({ 'import-marker': markerValue });
+    const sandbox = {
+      localStorage: storage,
+      IMPORT_IN_PROGRESS_KEY: 'import-marker',
+      PRE_IMPORT_KEY: 'pre-import',
+      _stopwatchTransactionLockDepth: 1,
+      _hasPersistedPendingStopwatchTransaction: () => false,
+      storageRecoveryRequired: false,
+      console: { error() {}, warn() {} }
+    };
+    runExtracted('_recoverInterruptedImport', sandbox);
+    assert.equal(sandbox._recoverInterruptedImport(), false,
+      'malformed import marker must be treated as a blocking recovery error: '
+        + JSON.stringify(markerValue));
+    assert.equal(sandbox.storageRecoveryRequired, true);
+    assert.equal(storage.values.get('import-marker'), markerValue);
+    assert.equal(storage.writes.length, 0,
+      'malformed marker must fail before snapshot restore or marker cleanup');
+  }
+});
+
 test('pending journal presence is not reduced to JavaScript truthiness', () => {
   for (const journalValue of ['', false, 0, {}, 'malformed']) {
     const raw = JSON.stringify({
