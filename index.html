@@ -4088,7 +4088,7 @@ function retryStorageRecovery() {
   }
 
   if (!storageRecoveryRequired && !resetPending && !rollingRestorePending && !pendingTx
-      && !_startupStopwatchRecoveryExpectedTx) {
+      && !(typeof _startupStopwatchRecoveryExpectedTx !== "undefined" && _startupStopwatchRecoveryExpectedTx)) {
     showToast('✅ لا يوجد حظر حاليًّا');
     return Promise.resolve(true);
   }
@@ -4147,7 +4147,7 @@ function retryStorageRecovery() {
     return Promise.resolve(false);
   }
 
-  var expectedTx = pendingTx || _startupStopwatchRecoveryExpectedTx;
+  var expectedTx = pendingTx || (typeof _startupStopwatchRecoveryExpectedTx !== "undefined" ? _startupStopwatchRecoveryExpectedTx : null);
   if (expectedTx) {
     if (_startupStopwatchRecoveryInFlight || _stopwatchRetryRecoveryPromise) {
       showToast("⏳ استرداد معاملة المؤقت قيد التنفيذ بالفعل...");
@@ -4172,10 +4172,10 @@ function retryStorageRecovery() {
     }
 
     var retryExpectedTx = JSON.parse(JSON.stringify(expectedTx));
-    var retryBootGeneration = _startupStopwatchRecoveryBootGeneration;
+    var retryBootGeneration = typeof _startupStopwatchRecoveryBootGeneration !== "undefined" ? _startupStopwatchRecoveryBootGeneration : null;
     if (retryBootGeneration === null || retryBootGeneration === undefined)
       retryBootGeneration = _readPersistedRollingBackupGeneration();
-    var wasInitialized = _appInitCompleted === true;
+    var wasInitialized = typeof _appInitCompleted !== "undefined" && _appInitCompleted === true;
     storageRecoveryRequired = true;
     _startupStopwatchRecoveryInFlight = true;
     _startupStopwatchRecoveryFailed = false;
@@ -11159,7 +11159,7 @@ function _runPostRecoveryPersistedInitInsideLock() {
     return { ok: false, reason: "lock_not_held", generatedCount: 0 };
   }
   var generatedCount = 0;
-  var previousWriteDepth = _startupStopwatchRecoveryWriteDepth;
+  var previousWriteDepth = typeof _startupStopwatchRecoveryWriteDepth === "number" ? _startupStopwatchRecoveryWriteDepth : 0;
   _startupStopwatchRecoveryWriteDepth = previousWriteDepth + 1;
   try {
     if (tasks.length > 0 && _healTaskFieldsAfterLoad() && !saveData()) {
