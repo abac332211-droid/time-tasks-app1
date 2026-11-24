@@ -243,6 +243,47 @@ test('reset sibling proof requires the complete empty reset footprint and a newe
   );
 });
 
+test('all persisted post-recovery initialization remains inside the Stopwatch lock', () => {
+  const calls = [];
+  const sandbox = {
+    tasks: [{ id: 7011 }],
+    _stopwatchTransactionLockDepth: 1,
+    _healTaskFieldsAfterLoad() {
+      assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
+      calls.push('heal');
+      return true;
+    },
+    saveData() {
+      assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
+      calls.push('save');
+      return true;
+    },
+    _generateAndPersistRecurringTasks() {
+      assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
+      calls.push('recurring');
+      return 2;
+    },
+    _finalizeFocusTimerColdStartRestore() {
+      assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
+      calls.push('cold-start');
+    },
+    _storeRollingRecoveryBackup(reason, interval) {
+      assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
+      calls.push('backup:' + reason + ':' + interval);
+      return true;
+    },
+    console: { error() {} }
+  };
+  runExtracted('_runPostRecoveryPersistedInitInsideLock', sandbox);
+
+  const result = sandbox._runPostRecoveryPersistedInitInsideLock();
+  assert.equal(result.ok, true);
+  assert.equal(result.generatedCount, 2);
+  assert.deepEqual(calls, [
+    'heal', 'save', 'recurring', 'cold-start', 'backup:startup:60000'
+  ]);
+});
+
 test('vanished journal without transaction or reset proof keeps recovery locked and does not apply the bundle', () => {
   const storage = makeStorage({
     reset: null,
