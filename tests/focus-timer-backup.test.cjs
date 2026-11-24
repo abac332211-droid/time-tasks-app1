@@ -468,6 +468,24 @@ function restoreContext(storage) {
     NOTIFICATIONS_KEY: STORAGE_KEYS.NOTIFICATIONS,
     IMPORT_IN_PROGRESS_KEY: STORAGE_KEYS.IMPORT_IN_PROGRESS,
     PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
+    RESET_IN_PROGRESS_KEY: 'timeTasksApp_resetInProgress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'timeTasksApp_rollingRestoreInProgress',
+    MIGRATION_IN_PROGRESS_KEY: 'timeTasksApp_migrationInProgress',
+    FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
+    _stopwatchTransactionLockDepth: 1,
+    _withStopwatchTransactionLock(callback) {
+      const previousDepth = context._stopwatchTransactionLockDepth;
+      context._stopwatchTransactionLockDepth = previousDepth + 1;
+      let result;
+      try {
+        result = callback();
+      } catch (error) {
+        context._stopwatchTransactionLockDepth = previousDepth;
+        return Promise.reject(error);
+      }
+      context._stopwatchTransactionLockDepth = previousDepth;
+      return Promise.resolve(result);
+    },
     validateV2: () => true,
     storageRecoveryRequired: false,
     location: { reload() {} },
@@ -1094,13 +1112,31 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
   const confirmations = [];
   const rollingCheckpoints = [];
   let reloads = 0;
-  const sandbox = {
+  let sandbox;
+  sandbox = {
     STORAGE_KEY: STORAGE_KEYS.MAIN,
     FOCUS_SESSIONS_KEY: STORAGE_KEYS.FOCUS_SESSIONS,
     FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
     MENTAL_INBOX_KEY: STORAGE_KEYS.MENTAL_INBOX,
     IMPORT_IN_PROGRESS_KEY: STORAGE_KEYS.IMPORT_IN_PROGRESS,
     PRE_IMPORT_KEY: STORAGE_KEYS.PRE_IMPORT,
+    RESET_IN_PROGRESS_KEY: 'timeTasksApp_resetInProgress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'timeTasksApp_rollingRestoreInProgress',
+    MIGRATION_IN_PROGRESS_KEY: 'timeTasksApp_migrationInProgress',
+    _stopwatchTransactionLockDepth: 1,
+    _withStopwatchTransactionLock(callback) {
+      const previousDepth = sandbox._stopwatchTransactionLockDepth;
+      sandbox._stopwatchTransactionLockDepth = previousDepth + 1;
+      let result;
+      try {
+        result = callback();
+      } catch (error) {
+        sandbox._stopwatchTransactionLockDepth = previousDepth;
+        return Promise.reject(error);
+      }
+      sandbox._stopwatchTransactionLockDepth = previousDepth;
+      return Promise.resolve(result);
+    },
     THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
     PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
     FOCUS_SETTINGS_KEY: STORAGE_KEYS.FOCUS_SETTINGS,

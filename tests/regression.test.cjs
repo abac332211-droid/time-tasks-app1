@@ -2835,6 +2835,7 @@ test('loadData blocks migration and normal loading when interrupted import recov
   const sandbox = {
     tasks: [{ id: 77, name: 'must not be replaced' }],
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     _recoverInterruptedReset: () => true,
     _recoverInterruptedRollingRestore: () => true,
     _recoverInterruptedImport: () => false,
