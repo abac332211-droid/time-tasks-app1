@@ -11603,10 +11603,13 @@ function _recoverPendingStopwatchSaveFromStartup(expectedTx, bootPersistedGenera
       return { ok: false, reason: "stopwatch_recovery_snapshot_changed" };
     }
   } else if (!siblingMayHaveCommitted) {
+    // With no journal, another window may legitimately publish a rolling
+    // startup checkpoint while this page waits for the same lock. Compare the
+    // task/timer records and markers, but do not treat generation-only movement
+    // as a changed Stopwatch transaction identity.
     if (!!initialTx !== !!currentTx
         || lockedProbe.timerRaw !== initialProbe.timerRaw
-        || lockedProbe.mainRaw !== initialProbe.mainRaw
-        || lockedProbe.bootPersistedGeneration !== initialProbe.bootPersistedGeneration) {
+        || lockedProbe.mainRaw !== initialProbe.mainRaw) {
       storageRecoveryRequired = true;
       return { ok: false, reason: "storage_recovery_snapshot_changed" };
     }
@@ -11822,10 +11825,13 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
       return { ok: false, reason: "stopwatch_recovery_snapshot_changed" };
     }
   } else if (!siblingMayHaveCommitted) {
+    // With no journal, another window may legitimately publish a rolling
+    // startup checkpoint while this page waits for the same lock. Compare the
+    // task/timer records and markers, but do not treat generation-only movement
+    // as a changed Stopwatch transaction identity.
     if (!!initialTx !== !!currentTx
         || lockedProbe.timerRaw !== initialProbe.timerRaw
-        || lockedProbe.mainRaw !== initialProbe.mainRaw
-        || lockedProbe.bootPersistedGeneration !== initialProbe.bootPersistedGeneration) {
+        || lockedProbe.mainRaw !== initialProbe.mainRaw) {
       storageRecoveryRequired = true;
       return { ok: false, reason: "storage_recovery_snapshot_changed" };
     }

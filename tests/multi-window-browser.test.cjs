@@ -346,7 +346,10 @@ test('a stale page refuses manual and rolling backups while another page has a p
       _mainStorageExternalChangeObserved = false;
       _focusTimerExternalConflict = false;
       _secondaryStorageConflicts = Object.create(null);
-      loadData();
+      const loaded = await _withStopwatchTransactionLock(function() {
+        return loadData();
+      });
+      if (loaded !== true) throw new Error('loadData did not complete under Stopwatch Web Lock');
       _setMainStorageBaseline(localStorage.getItem(STORAGE_KEY));
       _secondaryStorageBaselines[FOCUS_TIMER_KEY] = localStorage.getItem(FOCUS_TIMER_KEY);
       _secondaryStorageBaselines[FOCUS_SESSIONS_KEY] = localStorage.getItem(FOCUS_SESSIONS_KEY);
