@@ -613,7 +613,7 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
           const names = [
             '_commitFocusTaskSession', '_commitFocusTaskSessionLocked',
             'finishTimer', '_applyTimerFinish', '_applyStopwatchSave',
-            '_saveFocusTimer', '_saveSessions', '_saveFocusSessions'
+            '_saveFocusTimer', '_saveSessions', '_saveFocusSessions', 'saveData'
           ];
           names.forEach(name => {
             const original = window[name];
@@ -666,7 +666,11 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
             return {
               value, before, after: task ? task.actual : null,
               pending: !!_focusTimer.pendingStopwatchTransaction,
-              recoveryRequired: storageRecoveryRequired
+              transactionId: task && task.lastStopwatchTransactionId || null,
+              recoveryRequired: storageRecoveryRequired,
+              mainConflict: _mainStorageExternalChangeObserved === true,
+              timerConflict: _focusTimerExternalConflict === true,
+              sessionConflict: !!_secondaryStorageConflicts[FOCUS_SESSIONS_KEY]
             };
           };
         }, { once: true });
@@ -710,6 +714,7 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
       pages: pageDiagnostics,
       node: nodeDiagnostics
     };
+    console.log('STOPWATCH_MULTI_WINDOW_DIAGNOSTICS ' + JSON.stringify(diagnostics));
     const successful = settled.filter(item => item.status === 'fulfilled'
       && item.value && item.value.value === true);
     const rejected = settled.filter(item => item.status === 'fulfilled'
@@ -718,6 +723,11 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
       'exactly one page must commit; diagnostics=' + JSON.stringify(diagnostics));
     assert.equal(rejected.length, 1,
       'the stale competing page must return false; diagnostics=' + JSON.stringify(diagnostics));
+    const losingAttempt = rejected[0].value;
+    assert.ok(losingAttempt.recoveryRequired || losingAttempt.mainConflict
+      || losingAttempt.timerConflict || losingAttempt.sessionConflict,
+      'the losing attempt must expose a persisted-journal, storage-conflict, or recovery gate; diagnostics='
+        + JSON.stringify(diagnostics));
 
     const verifyPage = await context.newPage();
     await verifyPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
