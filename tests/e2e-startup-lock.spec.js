@@ -426,9 +426,12 @@ for (const recoveryMarker of ['reset', 'import', 'rolling', 'migration']) {
       assert.equal(blocked.sessions.length, 0);
       assert.ok(blocked.marker);
       if (recoveryMarker === 'reset') {
-        assert.deepEqual(JSON.parse(blocked.marker), runtime.resetRecord || JSON.parse(blocked.marker));
-        assert.deepEqual(JSON.parse(JSON.parse(blocked.marker).main).tasks, []);
-        assert.deepEqual(JSON.parse(JSON.parse(blocked.marker).main).dailyLogs, []);
+        const resetMarker = JSON.parse(blocked.marker);
+        const resetMain = JSON.parse(resetMarker.main);
+        assert.equal(resetMarker.version, 1);
+        assert.equal(resetMarker.generation, 8);
+        assert.deepEqual(resetMain.tasks, []);
+        assert.deepEqual(resetMain.dailyLogs, []);
       }
       if (recoveryMarker === 'import') assert.ok(blocked.importSnapshot);
       if (recoveryMarker === 'rolling') assert.ok(blocked.backupA);
