@@ -12854,6 +12854,13 @@ function renderNotebook() {
 
 function _completeNormalStartupInit(options) {
   var opts = options || {};
+  if (!(typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0)) {
+    storageRecoveryRequired = true;
+    _appInitCompleted = false;
+    console.error("Normal startup initialization requires the Stopwatch Web Lock.");
+    return false;
+  }
   if (!opts.dataAlreadyLoaded) {
     var loaded = loadData();
     if (loaded === false && storageRecoveryRequired) {
