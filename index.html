@@ -1546,7 +1546,8 @@ var _secondaryStorageKeys = [
 ];
 
 function _isStartupStopwatchBlocked() {
-  return _startupStopwatchRecoveryInFlight === true
+  return typeof _startupStopwatchRecoveryInFlight !== "undefined"
+    && _startupStopwatchRecoveryInFlight === true
     && !(typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0);
 }
 
@@ -1567,14 +1568,14 @@ function _isTaskWriteBlocked() {
   var lockHeld = typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   return !!(
-    (!lockHeld && (storageRecoveryRequired
-      || _startupStopwatchRecoveryInFlight
-      || _startupStopwatchRecoveryFailed))
-    || _isFocusCommitBlocked()
-    || _startupResetRecoveryInFlight
-    || _resetRecoveryInFlight
-    || _resetInFlight
-    || _mainStorageExternalChangeObserved
+    (!lockHeld && ((typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired)
+      || (typeof _startupStopwatchRecoveryInFlight !== "undefined" && _startupStopwatchRecoveryInFlight)
+      || (typeof _startupStopwatchRecoveryFailed !== "undefined" && _startupStopwatchRecoveryFailed)))
+    || (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked())
+    || (typeof _startupResetRecoveryInFlight !== "undefined" && _startupResetRecoveryInFlight)
+    || (typeof _resetRecoveryInFlight !== "undefined" && _resetRecoveryInFlight)
+    || (typeof _resetInFlight !== "undefined" && _resetInFlight)
+    || (typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
   );
 }
 
@@ -1598,13 +1599,16 @@ function _trackSecondaryStorageRead(key, raw) {
 }
 
 function _secondaryStorageWriteAllowed(key) {
-  var startupRecoveryWrite = _startupStopwatchRecoveryWriteDepth > 0
+  var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
+    && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired
       && !startupRecoveryWrite) return false;
-  if (_startupStopwatchRecoveryInFlight && !startupRecoveryWrite) return false;
-  if (_startupStopwatchRecoveryFailed && !startupRecoveryWrite) return false;
+  if (typeof _startupStopwatchRecoveryInFlight !== "undefined"
+      && _startupStopwatchRecoveryInFlight && !startupRecoveryWrite) return false;
+  if (typeof _startupStopwatchRecoveryFailed !== "undefined"
+      && _startupStopwatchRecoveryFailed && !startupRecoveryWrite) return false;
   if (_secondaryStorageConflicts[key]) return false;
   try {
     var current = localStorage.getItem(key);
@@ -1728,7 +1732,8 @@ function _pendingStopwatchWriteAllowed() {
 }
 
 function _storageWriteAllowed() {
-  var startupRecoveryWrite = _startupStopwatchRecoveryWriteDepth > 0
+  var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
+    && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()
@@ -3870,11 +3875,13 @@ function _recoverInterruptedReset(options) {
 }
 
 function saveData() {
-  var startupRecoveryWrite = _startupStopwatchRecoveryWriteDepth > 0
+  var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
+    && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (((typeof storageRecoveryRequired !== 'undefined' && storageRecoveryRequired)
-      || _startupStopwatchRecoveryInFlight || _startupStopwatchRecoveryFailed)
+      || (typeof _startupStopwatchRecoveryInFlight !== "undefined" && _startupStopwatchRecoveryInFlight)
+      || (typeof _startupStopwatchRecoveryFailed !== "undefined" && _startupStopwatchRecoveryFailed))
       && !startupRecoveryWrite) {
     console.error("saveData: refusing write — data recovery required");
     showAlertModal("تنبيه الحفظ", "البيانات القديمة لم تُرحَّل بعد. استعدها من نسخة احتياطية، أو احذف كل البيانات من الإعدادات.");
@@ -4369,9 +4376,11 @@ function _executeResetAllTransaction() {
 }
 
 function resetAll() {
-  if (_resetInFlight || _startupResetRecoveryInFlight
-      || _startupStopwatchRecoveryInFlight || _resetRecoveryInFlight
-      || _focusCommitInFlight) {
+  if ((typeof _resetInFlight !== "undefined" && _resetInFlight)
+      || (typeof _startupResetRecoveryInFlight !== "undefined" && _startupResetRecoveryInFlight)
+      || (typeof _startupStopwatchRecoveryInFlight !== "undefined" && _startupStopwatchRecoveryInFlight)
+      || (typeof _resetRecoveryInFlight !== "undefined" && _resetRecoveryInFlight)
+      || (typeof _focusCommitInFlight !== "undefined" && _focusCommitInFlight)) {
     showToast("⏳ توجد عملية استرداد أو إعادة ضبط قيد التنفيذ بالفعل.");
     return;
   }
@@ -11557,7 +11566,8 @@ var _recurringTaskRefreshInterval = null;
 function _setupRecurringTaskRefresh() {
   if (_recurringTaskRefreshInterval !== null) return;
   _recurringTaskRefreshInterval = setInterval(function() {
-    if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
+    if (storageRecoveryRequired
+        || (typeof _startupStopwatchRecoveryInFlight !== "undefined" && _startupStopwatchRecoveryInFlight)
         || _startupResetRecoveryInFlight || !_appInitCompleted
         || document.visibilityState !== "visible") return;
     try {
