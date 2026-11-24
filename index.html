@@ -7325,7 +7325,6 @@ function showImportPreview(obj) {
             return false;
           }
           currentRaw = localStorage.getItem(STORAGE_KEY);
-          var _previousPreImportRaw = localStorage.getItem(PRE_IMPORT_KEY);
         const settings = d.settings || {};
         const maxTaskId = d.tasks.reduce(function(max, task) {
           return Math.max(max, Number.isFinite(task && task.id) ? task.id : 0);
@@ -7371,6 +7370,7 @@ function showImportPreview(obj) {
         }
 
         var _rollback;
+        var _previousPreImportRaw;
         try {
           _rollback = {
             main: currentRaw || null,
@@ -7382,6 +7382,7 @@ function showImportPreview(obj) {
             focusSettings: localStorage.getItem(FOCUS_SETTINGS_KEY),
             notifications: localStorage.getItem(NOTIFICATIONS_KEY)
           };
+          _previousPreImportRaw = localStorage.getItem(PRE_IMPORT_KEY);
         } catch (e) {
           showAlertModal("فشل الاستعادة", "تعذرت قراءة جميع البيانات اللازمة لتجهيز نقطة التراجع. لم تبدأ كتابة أي بيانات ولم يتغير التخزين الحالي.");
           return;

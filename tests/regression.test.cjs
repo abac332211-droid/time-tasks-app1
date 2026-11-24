@@ -1654,6 +1654,7 @@ function migrationHarness(mainRaw, archiveRaw = null, markerRaw = null, faults =
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     CURRENT_SCHEMA_VERSION: 2,
     APP_VERSION: 'test',
+    _stopwatchTransactionLockDepth: 1,
     Date,
     console,
     localStorage: {
@@ -1870,6 +1871,20 @@ function resetAllHarness(faults = {}) {
     },
     _setMainStorageBaseline: () => {},
     _captureMainStorageBaseline: () => true,
+    _withStopwatchTransactionLock(callback) {
+      this._stopwatchTransactionLockDepth = (this._stopwatchTransactionLockDepth || 0) + 1;
+      let result;
+      try { result = callback(); }
+      catch (error) {
+        this._stopwatchTransactionLockDepth--;
+        throw error;
+      }
+      if (result && typeof result.then === 'function') {
+        return result.finally(() => { this._stopwatchTransactionLockDepth--; });
+      }
+      this._stopwatchTransactionLockDepth--;
+      return Promise.resolve(result);
+    },
     loadData: () => true,
     _loadFocusTimer: () => {},
     _loadFocusSettings: () => {},
@@ -1960,6 +1975,7 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     Date,
     console,
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     _rollingRecoveryBackupEpoch: 0,
     _rollingRecoveryBackupPending: null,
     _rollingRecoveryCheckpointHold: 0,
