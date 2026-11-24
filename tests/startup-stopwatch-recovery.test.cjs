@@ -572,6 +572,35 @@ test('timer and task write gates remain closed after startup recovery failure', 
 });
 
 
+test('empty raw forensic values are queued unchanged and preserved under the lock', () => {
+  const storage = makeStorage({});
+  const sandbox = {
+    localStorage: storage,
+    _stopwatchTransactionLockDepth: 0,
+    _pendingCorruptStorageSnapshots: [],
+    storageRecoveryRequired: false,
+    console: { error() {}, warn() {} },
+    Date,
+    JSON
+  };
+  runExtracted('_preserveCorruptStorageSnapshot', sandbox,
+    ['_queuePendingCorruptStorageSnapshot']);
+  runExtracted('_flushPendingCorruptStorageSnapshotsInsideLock', sandbox,
+    ['_queuePendingCorruptStorageSnapshot', '_preserveCorruptStorageSnapshot']);
+
+  assert.equal(sandbox._preserveCorruptStorageSnapshot('mentalInbox', ''), false);
+  assert.equal(JSON.stringify(sandbox._pendingCorruptStorageSnapshots),
+    JSON.stringify([{ baseKey: 'mentalInbox', raw: '' }]));
+  assert.equal(sandbox.storageRecoveryRequired, true);
+
+  sandbox._stopwatchTransactionLockDepth = 1;
+  assert.equal(sandbox._flushPendingCorruptStorageSnapshotsInsideLock(), true);
+  assert.equal(sandbox._pendingCorruptStorageSnapshots.length, 0);
+  assert.ok(Array.from(storage.values.entries())
+    .some(([key, value]) => key.startsWith('mentalInbox_corrupt_') && value === ''),
+    'the empty raw string must be preserved byte-for-byte and read-back verified');
+});
+
 test('failed locked forensic snapshot writes retain exact raw bytes in the queue and retry under lock', () => {
   for (const failureMode of ['throw', 'readback-mismatch']) {
     const storage = makeStorage({});
