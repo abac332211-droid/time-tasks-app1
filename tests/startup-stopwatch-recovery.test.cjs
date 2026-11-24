@@ -296,6 +296,7 @@ test('vanished journal without transaction or reset proof keeps recovery locked 
   const alerts = [];
   const sandbox = {
     localStorage: storage,
+    _stopwatchTransactionLockDepth: 1,
     RESET_IN_PROGRESS_KEY: 'reset',
     IMPORT_IN_PROGRESS_KEY: 'import',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore',
