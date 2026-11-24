@@ -3610,7 +3610,8 @@ function _recoverInterruptedRollingRestore() {
     console.error("Rolling restore recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (_hasPersistedPendingStopwatchTransaction()) {
+  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
+      && _hasPersistedPendingStopwatchTransaction()) {
     storageRecoveryRequired = true;
     console.error("Rolling restore recovery refuses to overwrite a pending Stopwatch transaction.");
     return false;
@@ -3853,7 +3854,8 @@ function _recoverInterruptedReset(options) {
     console.error("Interrupted reset recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (_hasPersistedPendingStopwatchTransaction()) {
+  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
+      && _hasPersistedPendingStopwatchTransaction()) {
     storageRecoveryRequired = true;
     console.error("Interrupted reset recovery refuses to overwrite a pending Stopwatch transaction.");
     return false;
@@ -7144,7 +7146,8 @@ function _restoreStorageSnapshot(rb) {
     console.error("Storage snapshot restore requires the Stopwatch Web Lock.");
     return false;
   }
-  if (_hasPersistedPendingStopwatchTransaction()) {
+  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
+      && _hasPersistedPendingStopwatchTransaction()) {
     markRecoveryRequired();
     console.error("Storage snapshot restore refuses to overwrite a pending Stopwatch transaction.");
     return false;
@@ -7242,7 +7245,8 @@ function _recoverInterruptedImport() {
     console.error("Import recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (_hasPersistedPendingStopwatchTransaction()) {
+  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
+      && _hasPersistedPendingStopwatchTransaction()) {
     storageRecoveryRequired = true;
     console.error("Import recovery refuses to overwrite a pending Stopwatch transaction.");
     return false;
