@@ -946,6 +946,8 @@ test('finishTimer logs a Pomodoro break against its task without modifying task 
   timer.phase = 'shortBreak';
   storage.setItem('focus-timer', JSON.stringify(timer));
   const runtime = createRuntime(storage);
+  runtime.sandbox._focusTimer.mode = 'pomodoro';
+  runtime.sandbox._focusTimer.phase = 'shortBreak';
   installFinishTimer(runtime);
 
   const result = await runtime.sandbox.finishTimer();
@@ -983,7 +985,10 @@ test('startTimerForTask does not start the next timer when a short-session reset
   sandbox._clearFocusTimerClock = () => {};
   sandbox._anchorFocusTimerClock = () => {};
   sandbox._showAwaySessionConfirmation = () => {};
-  vm.runInNewContext(extractFunction('startTimerForTask'), sandbox);
+  vm.runInNewContext(
+    [extractFunction('_freezeFocusTimerForDecision'), extractFunction('startTimerForTask')].join('\n'),
+    sandbox
+  );
 
   const saveTimer = sandbox._saveFocusTimer.bind(sandbox);
   let saves = 0;
