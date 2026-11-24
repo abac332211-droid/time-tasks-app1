@@ -542,7 +542,7 @@ test('failed locked forensic snapshot writes retain exact raw bytes in the queue
     storage.setItem = originalSet;
     assert.equal(sandbox._flushPendingCorruptStorageSnapshotsInsideLock(), true,
       failureMode + ': a later locked flush should verify the preserved raw bytes');
-    assert.deepEqual(sandbox._pendingCorruptStorageSnapshots, []);
+    assert.equal(sandbox._pendingCorruptStorageSnapshots.length, 0);
     const preserved = Array.from(storage.values.entries())
       .filter(([key]) => key.startsWith('mentalInbox_corrupt_'))
       .map(([, value]) => value);
