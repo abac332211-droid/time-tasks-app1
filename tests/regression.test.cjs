@@ -2143,18 +2143,19 @@ test('failed interrupted rolling-backup restoration preserves its marker and ver
 
 test('_recoverInterruptedResetWithLock keeps the lock through the post-recovery load callback', async () => {
   const events = [];
-  const sandbox = {
+  let sandbox;
+  sandbox = {
     navigator: { locks: { request() { throw new Error('the helper must delegate to the shared lock wrapper'); } } },
     _stopwatchTransactionLockDepth: 0,
     _withStopwatchTransactionLock(callback) {
-      this._stopwatchTransactionLockDepth++;
+      sandbox._stopwatchTransactionLockDepth++;
       let result;
       try { result = callback(); }
-      finally { this._stopwatchTransactionLockDepth--; }
+      finally { sandbox._stopwatchTransactionLockDepth--; }
       return Promise.resolve(result);
     },
     _recoverInterruptedReset(options) {
-      events.push({ stage: 'recover', depth: this._stopwatchTransactionLockDepth,
+      events.push({ stage: 'recover', depth: sandbox._stopwatchTransactionLockDepth,
         keepRecoveryLock: options.keepRecoveryLock });
       return true;
     }
@@ -2176,13 +2177,14 @@ test('_recoverInterruptedResetWithLock keeps the lock through the post-recovery 
 
 test('_recoverInterruptedResetWithLock does not run post-recovery load after a failed replay', async () => {
   let callbackCalls = 0;
-  const sandbox = {
+  let sandbox;
+  sandbox = {
     navigator: { locks: { request() { throw new Error('the helper must delegate to the shared lock wrapper'); } } },
     _stopwatchTransactionLockDepth: 0,
     _withStopwatchTransactionLock(callback) {
-      this._stopwatchTransactionLockDepth++;
+      sandbox._stopwatchTransactionLockDepth++;
       try { return Promise.resolve(callback()); }
-      finally { this._stopwatchTransactionLockDepth--; }
+      finally { sandbox._stopwatchTransactionLockDepth--; }
     },
     _recoverInterruptedReset: () => false
   };
