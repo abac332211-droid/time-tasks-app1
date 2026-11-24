@@ -157,7 +157,7 @@ async function startBrowserContext(options = {}) {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const seed = makeSeed(options);
-    await context.addInitScript((initial, withoutLocks) => {
+    await context.addInitScript(({ initial, withoutLocks }) => {
       const nativeSetItem = Storage.prototype.setItem;
       const nativeRemoveItem = Storage.prototype.removeItem;
 
@@ -188,7 +188,7 @@ async function startBrowserContext(options = {}) {
           value: undefined
         });
       }
-    }, seed, options.withoutLocks === true);
+    }, { initial: seed, withoutLocks: options.withoutLocks === true });
     return { server, browser, context, appUrl, seed };
   } catch (error) {
     if (browser) await browser.close();
