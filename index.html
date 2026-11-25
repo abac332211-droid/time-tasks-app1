@@ -11094,12 +11094,11 @@ function setTimerMode(mode) {
   _applyModeChange();
 }
 
-function toggleTimer() {
-  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _toggleTimerNow();
-  return _runWithFreshNativeStopwatchClock(_toggleTimerNow);
-}
-
-function _toggleTimerNow() {
+function toggleTimer(_nativeClockSynchronized) {
+  if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
+      && typeof _runWithFreshNativeStopwatchClock === "function") {
+    return _runWithFreshNativeStopwatchClock(function() { return toggleTimer(true); });
+  }
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -11166,12 +11165,11 @@ function _toggleTimerNow() {
   _renderFocusTimer();
 }
 
-function resetTimer() {
-  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _resetTimerNow();
-  return _runWithFreshNativeStopwatchClock(_resetTimerNow);
-}
-
-function _resetTimerNow() {
+function resetTimer(_nativeClockSynchronized) {
+  if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
+      && typeof _runWithFreshNativeStopwatchClock === "function") {
+    return _runWithFreshNativeStopwatchClock(function() { return resetTimer(true); });
+  }
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -12397,12 +12395,11 @@ function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
   return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
-function finishTimer() {
-  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _finishTimerNow();
-  return _runWithFreshNativeStopwatchClock(_finishTimerNow);
-}
-
-function _finishTimerNow() {
+function finishTimer(_nativeClockSynchronized) {
+  if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
+      && typeof _runWithFreshNativeStopwatchClock === "function") {
+    return _runWithFreshNativeStopwatchClock(function() { return finishTimer(true); });
+  }
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return Promise.resolve(false);
@@ -12578,14 +12575,13 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
   document.addEventListener('keydown',_modalKeyHandler);
 }
 
-function startTimerForTask(taskId) {
-  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _startTimerForTaskNow(taskId);
-  return _runWithFreshNativeStopwatchClock(function() {
-    return _startTimerForTaskNow(taskId);
-  });
-}
-
-function _startTimerForTaskNow(taskId) {
+function startTimerForTask(taskId, _nativeClockSynchronized) {
+  if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
+      && typeof _runWithFreshNativeStopwatchClock === "function") {
+    return _runWithFreshNativeStopwatchClock(function() {
+      return startTimerForTask(taskId, true);
+    });
+  }
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return Promise.resolve(false);
