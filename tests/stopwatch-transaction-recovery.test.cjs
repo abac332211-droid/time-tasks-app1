@@ -311,7 +311,17 @@ test('process restart after task commit but before session logging resumes witho
     'the simulated interruption occurs before the session write');
 
   const restarted = createRuntime(storage);
-  assert.ok(restarted.sandbox._focusTimer.pendingStopwatchTransaction);
+  const restartValidation = restarted.sandbox._normalizeFocusTimerRecord(
+    interruptedTimer, restarted.sandbox.tasks
+  );
+  assert.equal(restartValidation.valid, true,
+    "persisted pending transaction should hydrate: " + JSON.stringify(restartValidation));
+  assert.equal(restarted.sandbox._validatePendingStopwatchTransaction(
+    interruptedTimer.pendingStopwatchTransaction
+  ), true, "transaction validator rejected durable journal: "
+    + JSON.stringify(interruptedTimer.pendingStopwatchTransaction));
+  assert.ok(restarted.sandbox._focusTimer.pendingStopwatchTransaction,
+    "restart should preserve pending transaction journal");
   assert.equal(await restarted.sandbox._withStopwatchTransactionLock(
     () => restarted.sandbox._recoverPendingStopwatchSave(false)
   ), true);
