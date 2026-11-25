@@ -106,7 +106,10 @@ test('timer integration resynchronizes before destructive actions and foreground
   assert.match(html, /function _runWithFreshNativeStopwatchClock\(action\)/);
   assert.ok(extractFunction('toggleTimer').includes('_runWithFreshNativeStopwatchClock'));
   assert.ok(extractFunction('finishTimer').includes('_runWithFreshNativeStopwatchClock'));
+  assert.match(html, /function syncClockAfterQueue\(\)/);
+  assert.match(html, /_consumeNativeStopwatchNotificationAction\(\)/);
   assert.match(html, /var clockSync = _focusTimer\.nativeRestorePending/);
   assert.match(html, /_refreshNativeStopwatchClock\(false\)/);
+  assert.match(html, /function _scheduleNativeStopwatchRestore\(\)/);
   assert.match(html, /if \(_focusTimer\.nativeClockActive && \(fallbackDelta < 0 \|\| fallbackDelta > 120000\)\) \{\s*\/\/ The native monotonic clock will reconcile this interval/);
 });
