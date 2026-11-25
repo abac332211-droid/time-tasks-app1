@@ -9301,11 +9301,12 @@ function _attachNativeStopwatchClockToRunningTimer() {
       _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
       if (_saveFocusTimer()) return true;
       Object.assign(_focusTimer, previousState);
-      _focusElapsedRemainderMs = previousRemainderMs;
+      _focusTimer.baseElapsed = parts.seconds;
+      _focusElapsedRemainderMs = parts.remainderMs;
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
       _focusTimer.startedAt = Date.now();
-      _anchorFocusTimerClock(_focusTimer.startedAt, previousRemainderMs);
+      _anchorFocusTimerClock(_focusTimer.startedAt, parts.remainderMs);
       return false;
     });
   }).then(function(saved) {
@@ -9359,7 +9360,7 @@ function _refreshNativeStopwatchClock(requireBootIdentity) {
     });
   }).then(function(result) {
     if (result && result.ok && _focusTimer.running) return true;
-    if (result && !result.retryable && result.reason) {
+    if (result && !result.retryable && result.reason && requireBootIdentity !== true) {
       showAlertModal("⏸ تعذرت مزامنة ساعة المؤقت",
         "أوقف التطبيق المؤقت بأمان واحتفظ بآخر مدة موثوقة؛ لم يُحتسب زمن تخميني. السبب: " + result.reason);
     }
