@@ -9598,9 +9598,16 @@ function _saveFocusTimer() {
     var elapsedParts = running ? _getFocusTimerElapsedParts() : null;
     // The elapsed-time read may conservatively pause the timer if the monotonic clock stalled.
     if (running && !_focusTimer.running) running = false;
-    var checkpointElapsed = running ? elapsedParts.seconds : _focusTimer.baseElapsed;
+    var useNativeAnchor = running && _focusTimer.nativeClockActive
+      && Number.isFinite(_focusTimer.nativeAnchorBaseMs)
+      && Number.isFinite(_focusTimer.nativeAnchorElapsedRealtimeMs);
+    var checkpointElapsed = running
+      ? (useNativeAnchor ? Math.floor(_focusTimer.nativeAnchorBaseMs / 1000) : elapsedParts.seconds)
+      : _focusTimer.baseElapsed;
     var checkpointRemainderMs = running
-      ? elapsedParts.remainderMs
+      ? (useNativeAnchor
+          ? Math.floor(_focusTimer.nativeAnchorBaseMs % 1000)
+          : elapsedParts.remainderMs)
       : (Number.isFinite(_focusElapsedRemainderMs) && _focusElapsedRemainderMs >= 0
           && _focusElapsedRemainderMs < 1000 ? Math.floor(_focusElapsedRemainderMs) : 0);
     if (!Number.isFinite(checkpointElapsed) || checkpointElapsed < 0) {
@@ -9608,8 +9615,10 @@ function _saveFocusTimer() {
       return false;
     }
     checkpointElapsed = Math.floor(checkpointElapsed);
-    var checkpointWallAnchor = running && elapsedParts && Number.isFinite(elapsedParts.wallNow)
-      ? elapsedParts.wallNow : now;
+    var checkpointWallAnchor = running && useNativeAnchor
+      ? _focusTimer.nativeAnchorWallMs
+      : (running && elapsedParts && Number.isFinite(elapsedParts.wallNow)
+          ? elapsedParts.wallNow : now);
     var focusTimerRaw = JSON.stringify({
       mode: _focusTimer.mode,
       phase: _focusTimer.phase,
@@ -9637,14 +9646,14 @@ function _saveFocusTimer() {
     _focusTimer.baseElapsed = checkpointElapsed;
     _focusElapsedRemainderMs = checkpointRemainderMs;
     _focusTimer.startedAt = running ? checkpointWallAnchor : null;
-    if (running) {
+    if (running && !useNativeAnchor) {
       _anchorFocusTimerClock(
         checkpointWallAnchor,
         checkpointRemainderMs,
         elapsedParts.monotonicNow,
         elapsedParts.wallNow
       );
-    } else _clearFocusTimerClock();
+    } else if (!running) _clearFocusTimerClock();
     _focusTimerCheckpointAt = running ? now : 0;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("focus-timer-checkpoint", 60 * 1000);
     return true;
