@@ -1234,15 +1234,19 @@ test('Stopwatch button label distinguishes fresh, running and paused states with
     const initialState = await pageA.evaluate(() => {
       const sessions = JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]');
       const task = tasks.find(item => item.id === _focusTimer.taskId);
+      const timerRecord = JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY));
       return {
         label: document.getElementById('timerStartBtn').textContent,
         elapsed: _focusTimer.baseElapsed,
         sessions: sessions.length,
         taskId: _focusTimer.taskId,
+        persistedTimerTaskId: timerRecord ? timerRecord.taskId : null,
         taskActual: task ? task.actual : null,
         taskTransactionId: task ? task.lastStopwatchTransactionId || null : null,
         pendingTransactionId: _focusTimer.pendingStopwatchTransaction
           ? _focusTimer.pendingStopwatchTransaction.id : null,
+        persistedPendingTransactionId: timerRecord && timerRecord.pendingStopwatchTransaction
+          ? timerRecord.pendingStopwatchTransaction.id : null,
         historicalSessions: JSON.stringify(sessions)
       };
     });
@@ -1348,17 +1352,35 @@ test('Stopwatch button label distinguishes fresh, running and paused states with
     const reset = await pageA.evaluate(() => {
       const sessions = JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]');
       const task = tasks.find(item => item.id === _focusTimer.taskId);
+      const timerRecord = JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY));
       return {
         sessionStartAt: _focusTimer.sessionStartAt,
         sessions: sessions.length,
+        taskId: _focusTimer.taskId,
+        persistedTimerTaskId: timerRecord ? timerRecord.taskId : null,
         taskActual: task ? task.actual : null,
+        taskTransactionId: task ? task.lastStopwatchTransactionId || null : null,
+        pendingTransactionId: _focusTimer.pendingStopwatchTransaction
+          ? _focusTimer.pendingStopwatchTransaction.id : null,
+        persistedPendingTransactionId: timerRecord && timerRecord.pendingStopwatchTransaction
+          ? timerRecord.pendingStopwatchTransaction.id : null,
         historicalSessions: JSON.stringify(sessions)
       };
     });
     assert.equal(reset.sessionStartAt, null);
     assert.equal(reset.sessions, 1, 'reset must preserve prior sessions and create none');
+    assert.equal(reset.taskId, initialState.taskId,
+      'resetting the current interval must preserve the linked task in memory');
+    assert.equal(reset.persistedTimerTaskId, initialState.persistedTimerTaskId,
+      'resetting the current interval must preserve the persisted task link');
     assert.equal(reset.taskActual, initialState.taskActual,
       'resetting the current interval must not change the task total');
+    assert.equal(reset.taskTransactionId, initialState.taskTransactionId,
+      'resetting the current interval must not change the task transaction marker');
+    assert.equal(reset.pendingTransactionId, initialState.pendingTransactionId,
+      'resetting the current interval must not introduce or change a pending transaction in memory');
+    assert.equal(reset.persistedPendingTransactionId, initialState.persistedPendingTransactionId,
+      'resetting the current interval must not introduce or change a persisted pending transaction');
     assert.equal(reset.historicalSessions, initialState.historicalSessions,
       'resetting the current interval must preserve historical session records');
   }, initial, 1);
