@@ -13064,7 +13064,9 @@ function finishTimer(_nativeClockSynchronized) {
     overlay.classList.remove("hidden");
     _pendingFinishDialogShown = true;
     const trap = _setupModalFocusTrap(card);
-    if (_modalKeyHandler) document.removeEventListener("keydown", _modalKeyHandler);
+    if (_modalKeyHandler) {
+      document.removeEventListener("keydown", _modalKeyHandler);
+    }
     _modalKeyHandler = function(e) {
       if (e.key === "Escape") { e.preventDefault(); cancel.click(); }
       else trap(e);
