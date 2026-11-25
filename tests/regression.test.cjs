@@ -156,13 +156,14 @@ test('long background absence never synthesizes repeated focus and break session
   assert.equal(sandbox.promptCount, 1);
 });
 
-test('failed persistence of a pending background phase does not create a fake session', () => {
+test('failed persistence preserves the running Pomodoro and does not create a fake session', () => {
   const sandbox = timerSandbox(null, () => false);
   sandbox._catchUp(true);
   assert.equal(sandbox.savedSessions.length, 0);
-  assert.equal(sandbox._focusTimer.running, false);
-  assert.equal(sandbox._focusTimer.awaitingConfirmation, true);
-  assert.equal(sandbox._focusTimer.baseElapsed, 5 * 60);
+  assert.equal(sandbox._focusTimer.running, true,
+    'a failed durable pause must restore the prior running state');
+  assert.equal(sandbox._focusTimer.awaitingConfirmation, false);
+  assert.equal(sandbox._focusTimer.baseElapsed, 0);
   assert.equal(sandbox.promptCount, 0);
   assert.equal(sandbox.alertCount, 1);
 });
