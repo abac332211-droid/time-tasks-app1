@@ -63,6 +63,7 @@ jobs:
           }
           EOF
           npx cap add android
+          python3 scripts/configure-android-stopwatch.py
 
       - name: Fix Android project
         run: |
