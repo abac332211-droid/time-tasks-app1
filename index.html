@@ -10226,6 +10226,28 @@ function _catchUp(backgroundReturn) {
     return;
   }
   var elapsedTotal = elapsedParts.seconds, targetNow = _phaseTargetSec();
+  var nativeSessionToken = _focusTimer.nativeSessionToken || null;
+  var operationSnapshot = typeof _captureFocusTimerClockState === "function"
+    ? _captureFocusTimerClockState()
+    : { legacyClockState: true, timer: Object.assign({}, _focusTimer),
+        remainderMs: _focusElapsedRemainderMs };
+  function restoreOperationSnapshot() {
+    if (!operationSnapshot.legacyClockState
+        && typeof _restoreFocusTimerClockState === "function") {
+      _restoreFocusTimerClockState(operationSnapshot);
+    } else {
+      Object.assign(_focusTimer, operationSnapshot.timer);
+      _focusElapsedRemainderMs = operationSnapshot.remainderMs;
+      if (_focusTimer.running) _startDisplayTick();
+      else _stopDisplayTick();
+    }
+    _renderFocusTimer();
+  }
+  function stopNativeServiceAfterDurablePause() {
+    if (typeof _stopNativeStopwatchForegroundService === "function")
+      _stopNativeStopwatchForegroundService(nativeSessionToken);
+  }
+
   if (elapsedTotal > 4 * 3600 || (backgroundReturn && elapsedTotal >= targetNow)) {
     var segmentStart = typeof _focusTimer.startedAt === "number" ? _focusTimer.startedAt : Date.now();
     var remainingAtResumeMs = Math.max(
@@ -10241,16 +10263,18 @@ function _catchUp(backgroundReturn) {
     _focusTimer.awaitingConfirmation = true;
     _focusTimer.nativeClockActive = false;
     _focusTimer.nativeRestorePending = false;
-    if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
     if (!_saveFocusTimer()) {
-      _renderFocusTimer();
-      showAlertModal("⚠️ تعذر حفظ الجلسة المعلقة", "تم إيقاف المؤقت وإبقاء الجلسة معلقة في الذاكرة، لكن التخزين لم يؤكد حفظها. لا تغلق التطبيق قبل تصدير نسخة احتياطية والتحقق من مساحة التخزين.");
+      restoreOperationSnapshot();
+      showAlertModal("⚠️ تعذر حفظ الجلسة المعلقة",
+        "لم يُحفظ إيقاف المؤقت؛ أُعيدت حالة التشغيل والساعة السابقة، وبقيت خدمة Android والإشعار حتى لا يُفقد الوقت.");
       return;
     }
+    stopNativeServiceAfterDurablePause();
     _renderFocusTimer();
     _showAwaySessionConfirmation();
     return;
   }
+
   var safety = 20, transitions = 0;
   while (safety-- > 0) {
     var target = _phaseTargetSec();
@@ -10273,16 +10297,21 @@ function _catchUp(backgroundReturn) {
       _focusTimer.running = false;
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
-      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
       _focusTimer.baseElapsed = elapsed;
       _focusElapsedRemainderMs = elapsedParts.remainderMs;
       _focusTimer.startedAt = null;
-      var retrySaved = _saveFocusTimer();
+      _stopDisplayTick();
+      if (!_saveFocusTimer()) {
+        restoreOperationSnapshot();
+        showAlertModal("⚠️ فشل تسجيل جلسة مكتملة",
+          "تعذر تسجيل الجلسة وحفظ حالة الإيقاف. أُعيدت الساعة السابقة وبقيت الخدمة والإشعار حتى يمكن إعادة المحاولة بأمان.");
+        return;
+      }
+      stopNativeServiceAfterDurablePause();
       _renderFocusTimer();
       try { renderFocusSessionsCard(); } catch (e) {}
       showAlertModal("⚠️ فشل تسجيل جلسة مكتملة",
-        "تعذر تسجيل الجلسة في التخزين. أُوقف المؤقت مع إبقاء الوقت والمرحلة للمحاولة مجددًا." +
-        (retrySaved ? "" : "<br><br>تعذر حفظ حالة التوقف؛ لا تغلق التطبيق قبل تصدير بياناتك أو تحرير مساحة التخزين."));
+        "تعذر تسجيل الجلسة في التخزين. أُوقف المؤقت مع إبقاء الوقت والمرحلة للمحاولة مجددًا.");
       return;
     }
     if (completedPhase === "work") {
@@ -10308,20 +10337,25 @@ function _catchUp(backgroundReturn) {
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
       _stopDisplayTick();
-      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
       var pausedStateSaved = _saveFocusTimer();
+      if (pausedStateSaved) {
+        stopNativeServiceAfterDurablePause();
+      } else {
+        restoreOperationSnapshot();
+      }
       _renderFocusTimer();
       renderFocusSessionsCard();
       showAlertModal(
         "⚠️ تعذر حفظ انتقال المؤقت",
         pausedStateSaved
-          ? "تم تسجيل الجلسة، لكن تعذر حفظ الانتقال أثناء التشغيل. أُوقف المؤقت وحُفظت المرحلة التالية متوقفة؛ راجعها قبل المتابعة."
-          : "تم تسجيل الجلسة، لكن تعذر حفظ حالة المؤقت حتى بعد إيقافه. لا تغلق التطبيق قبل تصدير نسخة احتياطية والتحقق من التخزين."
+          ? "تم تسجيل الجلسة، لكن تعذر حفظ الانتقال أثناء التشغيل. أُوقف المؤقت وحُفظت المرحلة التالية متوقفة."
+          : "تم تسجيل الجلسة، لكن تعذر حفظ انتقال المؤقت أو حالة إيقافه. أُعيدت آخر حالة ساعة موثوقة وبقيت خدمة Android والإشعار للتعافي."
       );
       return;
     }
     renderFocusSessionsCard();
-    if (_focusTimer.running) if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();
+    if (_focusTimer.running && typeof _attachNativeStopwatchClockToRunningTimer === "function")
+      _attachNativeStopwatchClockToRunningTimer();
     _notifyPhaseTransition();
   }
 }
