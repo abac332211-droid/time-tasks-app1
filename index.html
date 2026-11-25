@@ -9400,13 +9400,35 @@ function _applyHydratedFocusTimerRecord(candidate) {
 function _runWithFreshNativeStopwatchClock(action) {
   if (typeof action !== "function") return Promise.resolve(false);
   if (!_focusTimer.running || !_focusTimer.nativeClockActive) return action();
-  return _refreshNativeStopwatchClock(false).then(function(synced) {
-    if (!synced || !_focusTimer.running) {
-      showToast("تعذر التحقق من ساعة Android؛ لم تُنفّذ العملية على مدة قديمة.");
+
+  // Drain durable notification actions before a newer native clock sample.
+  var plugin = _nativeStopwatchPlugin();
+  var refreshThenAct = function() {
+    return _refreshNativeStopwatchClock(false).then(function(synced) {
+      if (!synced || !_focusTimer.running) {
+        showToast("تعذر التحقق من ساعة Android؛ لم تُنفّذ العملية على مدة قديمة.");
+        return false;
+      }
+      return action();
+    });
+  };
+  if (plugin && typeof plugin.peekNotificationAction === "function") {
+    return Promise.resolve(plugin.peekNotificationAction()).then(function(pending) {
+      if (pending && pending.hasAction !== false) {
+        return _consumeNativeStopwatchNotificationAction().then(function() {
+          return false;
+        });
+      }
+      return refreshThenAct();
+    }).catch(function(error) {
+      storageRecoveryRequired = true;
+      console.warn("Could not check notification actions before native clock refresh:", error);
+      showAlertModal("تعذر التحقق من طابور الإشعارات",
+        "لم تُنفّذ العملية ولم نحدّث الساعة لأن طابور Android لا يمكن التحقق منه.");
       return false;
-    }
-    return action();
-  });
+    });
+  }
+  return refreshThenAct();
 }
 
 function _nativeStopwatchPlugin() {
