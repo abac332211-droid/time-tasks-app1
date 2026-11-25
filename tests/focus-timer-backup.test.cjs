@@ -51,6 +51,18 @@ function loadTopLevelFunction(name) {
 const buildSnapshot = loadTopLevelFunction('_buildFocusTimerBackupSnapshot');
 const validateSnapshot = loadTopLevelFunction('_validateFocusTimerBackupSnapshot');
 
+
+function loadFocusTimerFromContext(context) {
+  const names = [
+    '_isNativeStopwatchUuid',
+    '_normalizeFocusTimerRecord',
+    '_applyHydratedFocusTimerRecord',
+    '_loadFocusTimer'
+  ];
+  const source = names.map(extractTopLevelSource).join('\\n') + '\\n_loadFocusTimer';
+  return vm.runInNewContext(source, context);
+}
+
 function timer(overrides = {}) {
   return {
     mode: 'pomodoro',
@@ -663,6 +675,7 @@ function loadTimerContext(snapshot, taskRows = [{ id: 10 }]) {
     _focusTimer: state,
     tasks: taskRows,
     _trackSecondaryStorageRead: (_key, raw) => raw,
+    _validatePendingStopwatchTransaction: () => true,
     _clearFocusTimerClock: () => {},
     _anchorFocusTimerClock: () => {},
     _phaseTargetSec: () => 1_500,
@@ -692,10 +705,7 @@ test('timer loader pauses a running Stopwatch after a cold restart at the last p
     taskId: 10
   });
   const harness = loadTimerContext(snapshot);
-  const loadTimer = vm.runInNewContext(
-    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
-    harness.context
-  );
+  const loadTimer = loadFocusTimerFromContext(harness.context);
 
   loadTimer();
 
@@ -722,10 +732,7 @@ test('timer loader pauses a running Pomodoro after a cold restart without counti
     pendingPhaseEndedAt: null
   });
   const harness = loadTimerContext(snapshot);
-  const loadTimer = vm.runInNewContext(
-    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
-    harness.context
-  );
+  const loadTimer = loadFocusTimerFromContext(harness.context);
 
   loadTimer();
 
@@ -806,10 +813,7 @@ test('cold restart preserves a Pomodoro phase that expired after its last checkp
   snapshot.savedAt = 60_000;
   const harness = loadTimerContext(snapshot);
   harness.context._phaseTargetSec = () => 1_500;
-  const loadTimer = vm.runInNewContext(
-    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
-    harness.context
-  );
+  const loadTimer = loadFocusTimerFromContext(harness.context);
   const finalizeRestore = vm.runInNewContext(
     '(' + loadTopLevelFunction('_finalizeFocusTimerColdStartRestore') + ')',
     harness.context
@@ -842,10 +846,7 @@ test('cold restart finalization keeps an unexpired Pomodoro paused without creat
   snapshot.savedAt = 60_000;
   const harness = loadTimerContext(snapshot);
   harness.context._phaseTargetSec = () => 1_500;
-  const loadTimer = vm.runInNewContext(
-    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
-    harness.context
-  );
+  const loadTimer = loadFocusTimerFromContext(harness.context);
   const finalizeRestore = vm.runInNewContext(
     '(' + loadTopLevelFunction('_finalizeFocusTimerColdStartRestore') + ')',
     harness.context
@@ -904,10 +905,7 @@ test('timer loader restores a backed-up Pomodoro snapshot in paused state', () =
     new Set([10])
   );
   const harness = loadTimerContext(snapshot);
-  const loadTimer = vm.runInNewContext(
-    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
-    harness.context
-  );
+  const loadTimer = loadFocusTimerFromContext(harness.context);
 
   loadTimer();
 
@@ -928,10 +926,7 @@ test('timer loader preserves an ended Pomodoro phase pending user confirmation',
     new Set([10])
   );
   const harness = loadTimerContext(snapshot);
-  const loadTimer = vm.runInNewContext(
-    '(' + loadTopLevelFunction('_loadFocusTimer') + ')',
-    harness.context
-  );
+  const loadTimer = loadFocusTimerFromContext(harness.context);
 
   loadTimer();
 
@@ -983,10 +978,7 @@ test('paused stopwatch backup rehydrates from storage without restarting', () =>
     _focusTimer: state,
     _saveFocusTimer() { writes++; return true; }
   };
-  const load = vm.runInNewContext(
-    '(' + extractTopLevelSource('_loadFocusTimer') + ')',
-    context
-  );
+  const load = loadFocusTimerFromContext(context);
 
   load();
 
@@ -1042,10 +1034,7 @@ test('pending Pomodoro confirmation survives timer rehydration without auto-resu
     _focusTimer: state,
     _saveFocusTimer() { return true; }
   };
-  const load = vm.runInNewContext(
-    '(' + extractTopLevelSource('_loadFocusTimer') + ')',
-    context
-  );
+  const load = loadFocusTimerFromContext(context);
 
   load();
 
@@ -1096,10 +1085,7 @@ test('timer rehydration removes a reference to a task absent from restored tasks
       return true;
     }
   };
-  const load = vm.runInNewContext(
-    '(' + extractTopLevelSource('_loadFocusTimer') + ')',
-    context
-  );
+  const load = loadFocusTimerFromContext(context);
 
   load();
 
