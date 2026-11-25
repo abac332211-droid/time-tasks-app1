@@ -628,3 +628,41 @@
 - يبقى PR #10 مفتوحًا كمسودة وغير مدمج. لا تغيير على `main` أو رقم الإصدار، ولا Release أو نشر.
 - هذه المزامنة لا تغلق اختبار Android WebView الميداني أو المراجعة المستقلة أو بوابات CI الجديدة على رأس الدمج.
 
+
+
+---
+
+## تحديث متابعة PR #10 بعد مزامنة القاعدة واختبارات الرأس — 25 نوفمبر 2026
+
+### الرأس وعلاقة الفرعين
+- **رأس الكود والاختبارات:** `247075e20736403a99e49c685d6ff2fad895d454`.
+- **فرع الأساس:** `codex/v2.9.1-stability` عند `0e24770af42041569f050f9d597e17e89ede5f9d`.
+- المقارنة المباشرة: PR متقدم 145 التزامًا، ومتأخر صفرًا؛ لم تعد حالة التباعد/التعارض `dirty`.
+- المزامنة حُفظت في commit ذي أبوين `3a36b4857e83f359f159c48f258ff868ececc3e5`؛ لم يُستخدم force-push أو rebase قسري. احتُفظ بتغييرات PR وبملف التدقيق القادم من قاعدة الاستقرار.
+- تغيير الأساس الذي أضاف `_resetSecondaryStorageTracking()` لم يُنقل حرفيًا؛ تنفيذ PR الأقوى `_resetSecondaryStorageTrackingAfterReset()` يعيد مزامنة القيم المخزنة ويحتفظ بعلامة الاسترداد إذا فشلت القراءة. اختبار السلوك الفعلي موجود في تغطية D-01.
+
+### تقوية اختبار Stopwatch Reset
+- أُضيفت إلى اختبار Chromium مقارنة `taskId` في الذاكرة والتخزين، و`lastStopwatchTransactionId`، و`pendingStopwatchTransaction.id` في الذاكرة والتخزين قبل Reset وبعده.
+- التغيير في `tests/multi-window-browser.test.cjs`، ولا يغيّر منطق التطبيق.
+- أضيفت معلومات تشخيص مفاتيح التخزين التي تتغير إذا فشل اختبار منع التصدير/النسخ الدوّارة من النافذة القديمة.
+
+### نتائج CI على الرأس أعلاه
+| البوابة | التشغيل | النتيجة |
+|---|---:|---|
+| Push PWA / Chromium | [45573337307](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45573337307) | 330/330، صفر فشل، صفر تخطٍ |
+| PR PWA / Chromium | [45573346047](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45573346047) | 330/330، صفر فشل، صفر تخطٍ |
+| Android Debug | [45573337311](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45573337311) | 297 ناجحًا، صفر فشل، 33 تخطيًا لاختبارات Chromium |
+
+- سجلات PWA وAndroid تطابق `Verified source SHA` و`Expected source SHA` مع `247075e20736403a99e49c685d6ff2fad895d454`.
+- Android: `BUILD SUCCESSFUL`، وفحوص Manifest للأذونات `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK` ناجحة.
+- APK Debug: Artifact ID `15002913277`، الحجم 5,477,258 بايت، digest `sha256:e77b801c351b885d21d38ca7c7a408ebb657043ce98d415dbdfb1f2a8dd45ae2`.
+- حزمة المصدر للمراجعة: Artifact ID `15002149252`، الحجم 983,073 بايت، digest `sha256:d4763ee5c840dc401c13bed44ae6420aa3fcb5e2cb3d59bbb60de7b4408080bd`. تشمل أرشيف المصدر والاختبارات وWorkflows والفرق الثنائي الكامل من merge-base وسجل الالتزامات وmanifest وSHA256SUMS.
+
+### ملاحظة شفافية عن إعادة التشغيل
+- تشغيل PR PWA السابق على `6920b3c9480ed82a795920933b7a975bdc8b29f8` سجل إخفاقًا واحدًا في تأكيد عدم تغير التخزين أثناء انتظار النسخة الدوّارة؛ Push PWA على ذلك الرأس نجح. أضيفت تفاصيل تشخيصية للمتغيرات المتغيرة، ثم اجتاز كلا التشغيلين الجديدين على `247075e20736403a99e49c685d6ff2fad895d454` جميع الاختبارات 330/330 دون تخطٍ. لا يُخفى التشغيل السابق ولا يُحتسب نجاحًا.
+
+### بوابات لم تُغلق
+- لا يوجد اختبار مثبت على جهاز Android فعلي/Android System WebView لهذا الـAPK؛ لم يُقَس بعد `window.location.origin` و`window.isSecureContext` ووجود `navigator.locks.request` على الجهاز، ولم تُنفذ دورة Finish/Reset/Force Stop/إعادة فتح ميدانية.
+- لا توجد مراجعة `APPROVED` مستقلة على الرأس الحالي. المراجعة الوحيدة المسجلة `COMMENTED` من مؤلف PR، ومثبتة على SHA أقدم.
+- PR #10 ما زال Open/Draft وغير مدمج. لا تغيير على `main`، ولا Release أو نشر أو تغيير إصدار.
+
