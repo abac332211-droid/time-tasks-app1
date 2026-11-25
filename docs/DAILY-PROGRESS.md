@@ -666,3 +666,67 @@
 - لا توجد مراجعة `APPROVED` مستقلة على الرأس الحالي. المراجعة الوحيدة المسجلة `COMMENTED` من مؤلف PR، ومثبتة على SHA أقدم.
 - PR #10 ما زال Open/Draft وغير مدمج. لا تغيير على `main`، ولا Release أو نشر أو تغيير إصدار.
 
+
+
+---
+
+## متابعة F-07 وF-08 وإعادة بوابات CI — 25 نوفمبر 2026
+
+### رأس الاختبارات
+
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`
+- SHA الموحد الذي اختبرته Push PWA وPR PWA وAndroid Debug: `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7`
+- الالتزام: `test: trace stale backup writers and cover Reset baseline read retry`
+- تغيير هذا الالتزام محصور في `tests/multi-window-browser.test.cjs`؛ لا تغيير في `index.html` أو منطق الإنتاج.
+
+### F-07 — تشخيص كاتب التخزين في اختبار النافذة القديمة
+
+- الإخفاق التاريخي [PR PWA run 45572927743](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45572927743) على SHA `6920b3c9480ed82a795920933b7a975bdc8b29f8` سجل فشل `storageUnchanged`، لكنه لم يسجل أسماء المفاتيح المتغيرة ولا مصدر الكتابة. لذلك لا يمكن إثبات السبب الجذري لذلك التشغيل بأثر رجعي.
+- عُدّل اختبار `a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal` ليرصد عمليات `setItem/removeItem/clear` ومكدس الاستدعاء في صفحة المالك والصفحة القديمة، ويلتقط أحداث `storage` الواردة ويصنف تغيّر المفاتيح بحسب مصدره.
+- يكرر الاختبار محاولة التصدير والنسخة الدوّارة **ثلاث مرات** في كل تشغيل. في Push PWA وPR PWA (ست محاولات إجمالًا):
+  - `exportChangedKeys=[]`
+  - `stalePageWrites=[]`
+  - `changedKeys=[]`
+  - رفض النسخة الدوّارة كان بالسبب المتوقع `external_storage_conflict`.
+  - كتابتا إعداد المعاملة المرصودتان من صفحة المالك حدثتا في مرحلة تجهيز المعاملة قبل نافذة القياس؛ لم تُرصد كتابة من الصفحة القديمة أو تغيير متزامن خلالها.
+- **القرار:** اختبار الحماية المعزّز ناجح ويثبت أن النافذة القديمة لا تكتب في السيناريو المعاد تشغيله. لكن **السبب التاريخي للإخفاق الأصلي يظل غير محسوم** لأن سجله لم يحفظ المفاتيح المتغيرة؛ لا ندّعي إثبات أنه كان سباقًا من المالك أو خللًا في التطبيق.
+
+### F-08 — فشل قراءة baseline بعد Reset ثم إعادة المحاولة
+
+- أضيف اختبار Chromium: `Reset baseline read failure retains its marker and write gate until a verified retry`.
+- يحقن الاختبار فشل `localStorage.getItem(PROJECTS_KEY)` في القراءة الثانية بعد حذف المفتاح والتحقق من حذفه؛ أي في مرحلة إعادة مزامنة baseline بعد Reset، وليس أثناء فحص الحذف نفسه.
+- في المحاولة الأولى يثبت الاختبار:
+  - Reset لا يعلن النجاح.
+  - علامة Reset الدائمة تبقى.
+  - `storageRecoveryRequired=true` وتعارض `PROJECTS_KEY` مفعّل، والكتابة محظورة.
+  - cache المشاريع وإشعار الجلسات غير الصالحة وإشعار تعارض المؤقت لا تُنظف قبل اكتمال جميع قراءات baseline.
+- بعد إزالة حقن الفشل ينفذ الاختبار `retryStorageRecovery()` الحقيقي، ويثبت نجاح الاسترداد، ومسح العلامة، وإزالة التعارض، وتحديث baseline إلى null، وعودة بوابة الكتابة، وتنظيف cache والإشعارات.
+- **القرار:** فجوة تغطية فشل baseline ثم إعادة المحاولة أُغلقت باختبار Chromium ناجح. لم يتغير منطق الإنتاج في هذا الالتزام.
+
+### CI على SHA واحد
+
+| البوابة | التشغيل | النتيجة |
+|---|---:|---|
+| Push PWA / Chromium | [45581160191](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160191) | **331/331، 0 فشل، 0 تخطٍ** |
+| PR PWA / Chromium | [45581169405](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581169405) | **331/331، 0 فشل، 0 تخطٍ** |
+| Android Debug | [45581160102](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160102) | **297 نجاحًا، 0 فشل، 34 تخطيًا من 331** |
+
+- سجلات التشغيل الثلاثة تثبت تطابق `Verified source SHA` و`Expected source SHA` مع `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7`.
+- في Android، التخطيّات الـ34 تخص اختبارات Playwright/Chromium التي لا تُنفّذ في وظيفة Android؛ لا تُحسب نجاحات Android، وقد اجتازت في بوابتي PWA.
+- Android: `BUILD SUCCESSFUL`، وفحوص Manifest ناجحة لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- APK Debug artifact: [ID 15007070724](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160102/artifacts/15007070724)، الحجم 5,477,259 بايت، ZIP SHA-256: `62a45150c07ed83a4b1b410c9e5baedc8366932a163a1d437587e88cfc8e2d92`.
+- حزمة المصدر: [Artifact 15006188172](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160191/artifacts/15006188172)، الحجم 991,559 بايت، ZIP SHA-256: `45837101062ec2b0dbadd48619dd0a8f8d2bfb1861350a3a674076d2275bb3e1`.
+
+### حالة المستودع والبوابات الخارجية
+
+- PR #10 مفتوح كـDraft وغير مدمج، ورأسه عند `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7` وقاعدته `codex/v2.9.1-stability` عند `0e24770af42041569f050f9d597e17e89ede5f9d`. المقارنة: 147 التزامًا متقدمًا وصفر متأخرة؛ `mergeable=true` يثبت قابلية دمج التاريخ فقط ولا يمثل موافقة.
+- سجل المراجعات لا يزال يحوي `COMMENTED` واحدة من مؤلف PR نفسه على رأس قديم؛ لا توجد `APPROVED` مستقلة.
+- لا يوجد اختبار Android System WebView فعلي على جهاز؛ لا يثبت CI وجود `navigator.locks` على الجهاز أو دورة Reset/Force Stop/إعادة الفتح الميدانية.
+- `main` لم يتغير: `0a4dcd13af4fd3bb1779550907234cfc64b05523`.
+- لا دمج، ولا تغيير حالة PR، ولا Release أو نشر أو تغيير إصدار.
+
+### القرار
+
+- **F-08:** تغطية الفشل وإعادة المحاولة ناجحة؛ تُعد هذه الفجوة في الاختبار مغلقة.
+- **F-07:** اختبار الحماية المعزّز ناجح عبر 6 محاولات PWA، لكن تفسير الإخفاق التاريخي يظل غير محسوم؛ لا يُعلن إغلاق السبب الجذري.
+- **بوابات الدمج:** ما زالت المراجعة المستقلة واختبار Android الميداني مطلوبين. لا دمج.
