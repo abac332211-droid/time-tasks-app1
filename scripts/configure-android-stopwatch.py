@@ -301,7 +301,15 @@ public final class {PLUGIN} extends Plugin {{
                 JSONArray queue = readActionQueue(prefs);
                 JSONArray acked = readAckedIds(prefs);
                 boolean alreadyAcked = contains(acked, actionId);
-                if (!alreadyAcked && queue.length() > 0) {{
+                boolean queuedAction = false;
+                for (int i = 0; i < queue.length(); i++) {{
+                    JSONObject queued = queue.optJSONObject(i);
+                    if (queued != null && actionId.equals(queued.optString("actionId"))) {{
+                        queuedAction = true;
+                        break;
+                    }}
+                }}
+                if (queuedAction) {{
                     JSONObject oldest = queue.optJSONObject(0);
                     if (oldest == null
                         || !actionId.equals(oldest.optString("actionId"))
