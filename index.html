@@ -1561,6 +1561,7 @@ function _isTimerControlBlocked() {
     || _resetInFlight
     || _focusCommitInFlight
     || _focusTimerExternalConflict
+    || _nativeStopwatchSyncInFlight
   );
 }
 
@@ -9124,7 +9125,14 @@ var _focusTimer = {
   awaitingConfirmation: false,
   pendingPhaseEndedAt: null,
   clockAdjusted: false,
-  pendingStopwatchTransaction: null
+  pendingStopwatchTransaction: null,
+  nativeClockActive: false,
+  nativeAnchorElapsedRealtimeMs: null,
+  nativeAnchorBootCount: null,
+  nativeAnchorBaseMs: null,
+  nativeAnchorWallMs: null,
+  nativeRestorePending: false,
+  nativeBootMismatch: false
 };
 
 var _focusDisplayInterval = null;
@@ -9140,6 +9148,239 @@ var _focusWallClockAnchor = null;
 var _focusFallbackLastWall = null;
 var _focusFallbackElapsedMs = 0;
 var _focusElapsedRemainderMs = 0;
+
+var _nativeStopwatchSyncInFlight = false;
+var _nativeStopwatchSyncPromise = null;
+var _nativeStopwatchRestoreScheduled = false;
+
+function _nativeStopwatchPlugin() {
+  try {
+    return window.Capacitor && window.Capacitor.Plugins
+      ? window.Capacitor.Plugins.NativeStopwatchClock || null : null;
+  } catch (e) { return null; }
+}
+
+function _readNativeStopwatchClock() {
+  var plugin = _nativeStopwatchPlugin();
+  if (!plugin || typeof plugin.getClock !== "function") return Promise.resolve(null);
+  return Promise.resolve().then(function() { return plugin.getClock(); }).then(function(clock) {
+    return clock && Number.isFinite(clock.elapsedRealtimeMs) && clock.elapsedRealtimeMs >= 0
+      && Number.isFinite(clock.wallTimeMs) && clock.wallTimeMs > 0 ? clock : null;
+  }).catch(function(error) {
+    console.warn("Native stopwatch clock read failed:", error);
+    return null;
+  });
+}
+
+function _setNativeFocusClockAnchor(clock, totalElapsedMs) {
+  if (!clock || !Number.isFinite(clock.elapsedRealtimeMs)
+      || !Number.isFinite(totalElapsedMs) || totalElapsedMs < 0) return false;
+  _focusTimer.nativeClockActive = true;
+  _focusTimer.nativeAnchorElapsedRealtimeMs = clock.elapsedRealtimeMs;
+  _focusTimer.nativeAnchorBootCount = clock.bootCountAvailable === true
+      && Number.isInteger(clock.bootCount) && clock.bootCount >= 0 ? clock.bootCount : null;
+  _focusTimer.nativeAnchorBaseMs = Math.floor(totalElapsedMs);
+  _focusTimer.nativeAnchorWallMs = clock.wallTimeMs;
+  _focusTimer.nativeRestorePending = false;
+  _focusTimer.nativeBootMismatch = false;
+  return true;
+}
+
+function _computeNativeFocusElapsedMs(clock, requireBootIdentity) {
+  if (!clock || !Number.isFinite(clock.elapsedRealtimeMs)
+      || !Number.isFinite(_focusTimer.nativeAnchorElapsedRealtimeMs)
+      || !Number.isFinite(_focusTimer.nativeAnchorBaseMs) || _focusTimer.nativeAnchorBaseMs < 0)
+    return { ok: false, reason: "native_anchor_missing" };
+  var currentBootKnown = clock.bootCountAvailable === true
+    && Number.isInteger(clock.bootCount) && clock.bootCount >= 0;
+  var anchorBootKnown = Number.isInteger(_focusTimer.nativeAnchorBootCount)
+    && _focusTimer.nativeAnchorBootCount >= 0;
+  if (requireBootIdentity && (!currentBootKnown || !anchorBootKnown))
+    return { ok: false, reason: "boot_identity_unavailable" };
+  if (currentBootKnown && anchorBootKnown && clock.bootCount !== _focusTimer.nativeAnchorBootCount)
+    return { ok: false, reason: "device_rebooted" };
+  if (clock.elapsedRealtimeMs < _focusTimer.nativeAnchorElapsedRealtimeMs)
+    return { ok: false, reason: "elapsed_realtime_regressed" };
+  var total = _focusTimer.nativeAnchorBaseMs
+    + clock.elapsedRealtimeMs - _focusTimer.nativeAnchorElapsedRealtimeMs;
+  return Number.isFinite(total) && total >= _focusTimer.nativeAnchorBaseMs
+    ? { ok: true, totalElapsedMs: Math.floor(total) }
+    : { ok: false, reason: "native_elapsed_invalid" };
+}
+
+function _markNativeFocusClockUntrusted(reason) {
+  _focusTimer.running = false;
+  _focusTimer.startedAt = null;
+  _focusTimer.nativeClockActive = false;
+  _focusTimer.nativeRestorePending = false;
+  _focusTimer.nativeBootMismatch = true;
+  _focusTimer.clockAdjusted = true;
+  _stopDisplayTick();
+  _clearFocusTimerClock();
+  _saveFocusTimer();
+  return { ok: false, reason: reason || "native_clock_untrusted" };
+}
+
+function _startNativeStopwatchForegroundService() {
+  var plugin = _nativeStopwatchPlugin();
+  if (!plugin || typeof plugin.startForegroundTimer !== "function"
+      || !_focusTimer.running || !_focusTimer.nativeClockActive) return Promise.resolve(false);
+  var task = _focusTimer.taskId === null ? null
+    : tasks.find(function(item) { return item && item.id === _focusTimer.taskId; });
+  var elapsedMs = _focusTimer.baseElapsed * 1000 + _focusElapsedRemainderMs;
+  var start = function() {
+    return Promise.resolve(plugin.startForegroundTimer({
+      title: _focusTimer.mode === "pomodoro" ? "جلسة التركيز تعمل" : "ساعة التوقيت تعمل",
+      taskName: task ? task.name : "",
+      elapsedMs: Math.max(0, elapsedMs)
+    })).then(function() { return true; }).catch(function(error) {
+      console.warn("Native stopwatch foreground service start failed:", error);
+      return false;
+    });
+  };
+  var localNotifications = window.Capacitor && window.Capacitor.Plugins
+    ? window.Capacitor.Plugins.LocalNotifications : null;
+  if (localNotifications && typeof localNotifications.checkPermissions === "function") {
+    return Promise.resolve(localNotifications.checkPermissions()).then(function(permission) {
+      if (permission && permission.display === "granted") return true;
+      if (typeof localNotifications.requestPermissions !== "function") return false;
+      return localNotifications.requestPermissions().then(function(result) {
+        return !!result && result.display === "granted";
+      }).catch(function() { return false; });
+    }).catch(function() { return false; }).then(start);
+  }
+  return start();
+}
+
+function _stopNativeStopwatchForegroundService() {
+  var plugin = _nativeStopwatchPlugin();
+  if (!plugin || typeof plugin.stopForegroundTimer !== "function") return Promise.resolve(false);
+  return Promise.resolve(plugin.stopForegroundTimer()).then(function() { return true; })
+    .catch(function(error) {
+      console.warn("Native stopwatch foreground service stop failed:", error);
+      return false;
+    });
+}
+
+function _attachNativeStopwatchClockToRunningTimer() {
+  if (!_nativeStopwatchPlugin() || !_focusTimer.running) return Promise.resolve(false);
+  if (_nativeStopwatchSyncPromise) return _nativeStopwatchSyncPromise;
+  var sessionStartAt = _focusTimer.sessionStartAt, taskId = _focusTimer.taskId;
+  _nativeStopwatchSyncInFlight = true;
+  _nativeStopwatchSyncPromise = _withStopwatchTransactionLock(function() {
+    return _readNativeStopwatchClock().then(function(clock) {
+      if (!clock || !_focusTimer.running || _focusTimer.sessionStartAt !== sessionStartAt
+          || _focusTimer.taskId !== taskId) return false;
+      var parts = _getFocusTimerElapsedParts();
+      if (!_focusTimer.running) return false;
+      var total = parts.seconds * 1000 + parts.remainderMs;
+      _focusTimer.baseElapsed = parts.seconds;
+      _focusElapsedRemainderMs = parts.remainderMs;
+      if (!_setNativeFocusClockAnchor(clock, total)) return false;
+      _focusTimer.startedAt = clock.wallTimeMs;
+      _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
+      return _saveFocusTimer();
+    });
+  }).then(function(saved) {
+    return saved ? _startNativeStopwatchForegroundService() : false;
+  }).catch(function(error) {
+    console.warn("Native stopwatch anchor attach failed:", error);
+    return false;
+  }).finally(function() {
+    _nativeStopwatchSyncPromise = null;
+    _nativeStopwatchSyncInFlight = false;
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
+  });
+  return _nativeStopwatchSyncPromise;
+}
+
+function _refreshNativeStopwatchClock(requireBootIdentity) {
+  if (!_nativeStopwatchPlugin() || !_focusTimer.running || !_focusTimer.nativeClockActive)
+    return Promise.resolve(true);
+  if (_nativeStopwatchSyncPromise) return _nativeStopwatchSyncPromise;
+  _nativeStopwatchSyncInFlight = true;
+  _nativeStopwatchSyncPromise = _withStopwatchTransactionLock(function() {
+    return _readNativeStopwatchClock().then(function(clock) {
+      if (!clock) return { ok: false, retryable: true, reason: "native_clock_unavailable" };
+      if (!_focusTimer.running || !_focusTimer.nativeClockActive) return { ok: true };
+      var computed = _computeNativeFocusElapsedMs(clock, requireBootIdentity === true);
+      if (!computed.ok) return _markNativeFocusClockUntrusted(computed.reason);
+      _focusTimer.baseElapsed = Math.floor(computed.totalElapsedMs / 1000);
+      _focusElapsedRemainderMs = computed.totalElapsedMs % 1000;
+      if (!_setNativeFocusClockAnchor(clock, computed.totalElapsedMs))
+        return { ok: false, reason: "native_anchor_update_failed" };
+      _focusTimer.startedAt = clock.wallTimeMs;
+      _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
+      if (!_saveFocusTimer()) return { ok: false, reason: "native_checkpoint_failed" };
+      return { ok: true };
+    });
+  }).then(function(result) {
+    if (result && result.ok && _focusTimer.running) {
+      _startNativeStopwatchForegroundService();
+      return true;
+    }
+    if (result && !result.retryable && result.reason) {
+      showAlertModal("⏸ تعذرت مزامنة ساعة المؤقت",
+        "أوقف التطبيق المؤقت بأمان واحتفظ بآخر مدة موثوقة؛ لم يُحتسب زمن تخميني. السبب: " + result.reason);
+    }
+    return false;
+  }).catch(function(error) {
+    console.warn("Native stopwatch synchronization failed:", error);
+    return false;
+  }).finally(function() {
+    _nativeStopwatchSyncPromise = null;
+    _nativeStopwatchSyncInFlight = false;
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
+  });
+  return _nativeStopwatchSyncPromise;
+}
+
+function _restoreNativeStopwatchSessionAfterStartup() {
+  if (!_focusTimer.nativeRestorePending || !_nativeStopwatchPlugin()) return Promise.resolve(false);
+  return _refreshNativeStopwatchClock(true).then(function(ok) {
+    if (ok && _focusTimer.running) {
+      _startDisplayTick();
+      if (_focusTimer.mode === "pomodoro") _catchUp(true);
+      return _startNativeStopwatchForegroundService().then(function() {
+        _renderFocusTimer();
+        return true;
+      });
+    }
+    if (!_focusTimer.nativeRestorePending && _focusTimer.nativeBootMismatch) {
+      showAlertModal("تحتاج جلسة المؤقت إلى مراجعة",
+        "اكتشف التطبيق إعادة تشغيل الجهاز أو تعذر التحقق من هوية الإقلاع. احتفظ بآخر مدة مؤكدة ولم يحتسب وقت انطفاء الهاتف.");
+    }
+    return false;
+  }).finally(function() {
+    _nativeStopwatchRestoreScheduled = false;
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
+  });
+}
+
+function _scheduleNativeStopwatchRestore() {
+  if (!_focusTimer.nativeRestorePending || _nativeStopwatchRestoreScheduled
+      || !_nativeStopwatchPlugin()) return;
+  _nativeStopwatchRestoreScheduled = true;
+  setTimeout(function() {
+    _restoreNativeStopwatchSessionAfterStartup().then(function() {
+      if (!_focusTimer.nativeRestorePending) _consumeNativeStopwatchNotificationAction();
+    });
+  }, 0);
+}
+
+function _consumeNativeStopwatchNotificationAction() {
+  var plugin = _nativeStopwatchPlugin();
+  if (!plugin || typeof plugin.consumeNotificationAction !== "function") return Promise.resolve("");
+  return Promise.resolve(plugin.consumeNotificationAction()).then(function(result) {
+    var action = result && result.action;
+    if (action === "pause") { toggleTimer(); return action; }
+    if (action === "finish") { finishTimer(); return action; }
+    return "";
+  }).catch(function(error) {
+    console.warn("Native stopwatch notification action failed:", error);
+    return "";
+  });
+}
 
 function _readFocusMonotonicNow() {
   try {
@@ -9207,6 +9448,19 @@ function _loadFocusTimer() {
     _focusTimer.awaitingConfirmation = d.awaitingConfirmation === true;
     _focusTimer.pendingPhaseEndedAt = (typeof d.pendingPhaseEndedAt === 'number' && Number.isFinite(d.pendingPhaseEndedAt)) ? d.pendingPhaseEndedAt : null;
     _focusTimer.pendingStopwatchTransaction = d.pendingStopwatchTransaction || null;
+    _focusTimer.nativeClockActive = d.nativeClockActive === true
+      && Number.isFinite(d.nativeAnchorElapsedRealtimeMs)
+      && Number.isFinite(d.nativeAnchorBaseMs) && d.nativeAnchorBaseMs >= 0;
+    _focusTimer.nativeAnchorElapsedRealtimeMs = _focusTimer.nativeClockActive
+      ? d.nativeAnchorElapsedRealtimeMs : null;
+    _focusTimer.nativeAnchorBootCount = Number.isInteger(d.nativeAnchorBootCount)
+      && d.nativeAnchorBootCount >= 0 ? d.nativeAnchorBootCount : null;
+    _focusTimer.nativeAnchorBaseMs = _focusTimer.nativeClockActive
+      ? Math.floor(d.nativeAnchorBaseMs) : null;
+    _focusTimer.nativeAnchorWallMs = Number.isFinite(d.nativeAnchorWallMs)
+      ? d.nativeAnchorWallMs : null;
+    _focusTimer.nativeRestorePending = wasRunning && _focusTimer.nativeClockActive;
+    _focusTimer.nativeBootMismatch = d.nativeBootMismatch === true;
     if (_focusTimer.pendingStopwatchTransaction
         && !_validatePendingStopwatchTransaction(_focusTimer.pendingStopwatchTransaction)) {
       storageRecoveryRequired = true;
@@ -9251,6 +9505,13 @@ function _loadFocusTimer() {
 function _finalizeFocusTimerColdStartRestore() {
   if (!_focusTimerColdStartWasRunning) return;
   _focusTimerColdStartWasRunning = false;
+
+  // Preserve an Android monotonic anchor until the boot identity is checked.
+  if (_focusTimer.nativeRestorePending && _focusTimer.nativeClockActive) {
+    _focusTimerSavedAtAtLoad = null;
+    if (!_saveFocusTimer()) console.warn("Could not preserve native stopwatch recovery state.");
+    return;
+  }
 
   // A Pomodoro may have crossed its phase boundary after the last checkpoint
   // while the app was in the background. Preserve the pending confirmation,
@@ -9312,6 +9573,13 @@ function _saveFocusTimer() {
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
       clockAdjusted: _focusTimer.clockAdjusted === true,
       pendingStopwatchTransaction: _focusTimer.pendingStopwatchTransaction || null,
+      nativeClockActive: _focusTimer.nativeClockActive === true,
+      nativeAnchorElapsedRealtimeMs: _focusTimer.nativeAnchorElapsedRealtimeMs,
+      nativeAnchorBootCount: _focusTimer.nativeAnchorBootCount,
+      nativeAnchorBaseMs: _focusTimer.nativeAnchorBaseMs,
+      nativeAnchorWallMs: _focusTimer.nativeAnchorWallMs,
+      nativeRestorePending: _focusTimer.nativeRestorePending === true,
+      nativeBootMismatch: _focusTimer.nativeBootMismatch === true,
       savedAt: now
     });
     if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, focusTimerRaw)) return false;
