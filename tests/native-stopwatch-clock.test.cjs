@@ -244,8 +244,8 @@ test('a stored JSON null timer record is corrupt while an absent key is a valid 
   const presentEmpty = load('');
   assert.equal(presentEmpty.h.storageRecoveryRequired, true);
   assert.equal(presentEmpty.timer.baseElapsed, 99);
-  assert.equal(presentEmpty.preserved, null,
-    'invalid JSON is rejected by the parse error path without rewriting it');
+  assert.equal(presentEmpty.preserved, '',
+    'invalid JSON bytes are preserved by the parse error path without rewriting them');
 });
 
 test('timer normalization distinguishes a valid empty record from a corrupt record', () => {
