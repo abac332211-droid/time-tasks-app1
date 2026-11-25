@@ -277,9 +277,11 @@ def configure(root: Path) -> None:
     package_line = re.search(r"(?m)^package\s+[^;]+;\s*$", activity)
     if not package_line:
         raise ValueError("Could not find the MainActivity package declaration")
-    import_line = f"import {package}.{PLUGIN};"
-    if import_line not in activity:
-        activity = activity[:package_line.end()] + "\n\n" + import_line + activity[package_line.end():]
+    import_lines = [f"import {package}.{PLUGIN};", "import android.content.Intent;"]
+    for import_line in import_lines:
+        if import_line not in activity:
+            package_line = re.search(r"(?m)^package\\s+[^;]+;\\s*$", activity)
+            activity = activity[:package_line.end()] + "\\n\\n" + import_line + activity[package_line.end():]
 
     registration = f"registerPlugin({PLUGIN}.class);"
     if registration not in activity:
@@ -303,6 +305,17 @@ def configure(root: Path) -> None:
                 "    }\n"
             )
             activity = activity[:last_brace] + method + activity[last_brace:]
+
+    if "onNewIntent(Intent intent)" not in activity:
+        last_brace = activity.rfind("}")
+        method = (
+            "\\n    @Override\\n"
+            "    public void onNewIntent(Intent intent) {\\n"
+            "        super.onNewIntent(intent);\\n"
+            "        setIntent(intent);\\n"
+            "    }\\n"
+        )
+        activity = activity[:last_brace] + method + activity[last_brace:]
     activity_path.write_text(activity, encoding="utf-8")
 
     manifest = manifest_path.read_text(encoding="utf-8")
