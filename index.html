@@ -11533,7 +11533,20 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   }
   _unlockAudioContext();
   if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return false; }
-  var previous = _captureFocusTimerClockState();
+  var previous = typeof _captureFocusTimerClockState === "function"
+    ? _captureFocusTimerClockState()
+    : { legacyClockState: true, timer: Object.assign({}, _focusTimer),
+        remainderMs: _focusElapsedRemainderMs };
+  function restorePrevious() {
+    if (!previous.legacyClockState
+        && typeof _restoreFocusTimerClockState === "function")
+      return restorePrevious();
+    Object.assign(_focusTimer, previous.timer);
+    _focusElapsedRemainderMs = previous.remainderMs;
+    if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
+    else if (typeof _stopDisplayTick === "function") _stopDisplayTick();
+    return true;
+  }
   var previousToken = _focusTimer.nativeSessionToken;
   if (_focusTimer.running) {
     var elapsedParts = _getFocusTimerElapsedParts();
@@ -11545,7 +11558,7 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
     _focusTimer.nativeRestorePending = false;
     _stopDisplayTick();
     if (!_saveFocusTimer()) {
-      _restoreFocusTimerClockState(previous);
+      restorePrevious();
       showAlertModal(
         "تعذر حفظ إيقاف المؤقت",
         "لم يُحفظ الإيقاف؛ أُعيد المؤقت إلى حالته السابقة وسيظل مستمرًا. لا تغلق التطبيق قبل معالجة مشكلة التخزين."
@@ -11560,7 +11573,7 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
     if (nativePlugin && !_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
       _focusTimer.nativeSessionToken = _createNativeStopwatchSessionToken();
       if (!_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
-        _restoreFocusTimerClockState(previous);
+        restorePrevious();
         showAlertModal("تعذر تشغيل المؤقت بأمان",
           "لا يمكن إنشاء هوية جلسة Android آمنة على هذا الجهاز. لم يبدأ المؤقت.");
         return false;
@@ -11570,7 +11583,7 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
     _focusTimer.running = true;
     _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
     if (!_saveFocusTimer()) {
-      _restoreFocusTimerClockState(previous);
+      restorePrevious();
       showAlertModal(
         "تعذر حفظ تشغيل المؤقت",
         "لم يُحفظ بدء المؤقت؛ أُعيدت الحالة السابقة ولم يبدأ العد. تحقق من التخزين ثم أعد المحاولة."
@@ -11713,7 +11726,20 @@ function _captureFocusTimerSnapshot() {
 }
 
 function _freezeFocusTimerForDecision() {
-  var previous = _captureFocusTimerClockState();
+  var previous = typeof _captureFocusTimerClockState === "function"
+    ? _captureFocusTimerClockState()
+    : { legacyClockState: true, timer: Object.assign({}, _focusTimer),
+        remainderMs: _focusElapsedRemainderMs };
+  function restorePrevious() {
+    if (!previous.legacyClockState
+        && typeof _restoreFocusTimerClockState === "function")
+      return restorePrevious();
+    Object.assign(_focusTimer, previous.timer);
+    _focusElapsedRemainderMs = previous.remainderMs;
+    if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
+    else if (typeof _stopDisplayTick === "function") _stopDisplayTick();
+    return true;
+  }
   var sessionToken = _focusTimer.nativeSessionToken;
   _stopDisplayTick();
   if (_focusTimer.running) {
@@ -11726,7 +11752,7 @@ function _freezeFocusTimerForDecision() {
     _focusTimer.nativeRestorePending = false;
   }
   if (!_saveFocusTimer()) {
-    _restoreFocusTimerClockState(previous);
+    restorePrevious();
     _renderFocusTimer();
     showAlertModal("تعذر حفظ حالة المؤقت","تعذر تأكيد تجميد المؤقت؛ أُعيدت الحالة السابقة ولم نتابع العملية.");
     return null;
@@ -11735,7 +11761,7 @@ function _freezeFocusTimerForDecision() {
   var snapshot = _captureFocusTimerSnapshot();
   if (!snapshot) {
     storageRecoveryRequired = true;
-    _restoreFocusTimerClockState(previous);
+    restorePrevious();
     showAlertModal("تعذر تثبيت لقطة المؤقت","لم تجتز حالة المؤقت التحقق بعد تجميدها.");
     return null;
   }
@@ -12980,7 +13006,20 @@ function _resetAfterSession() {
     showAlertModal("تعارض حالة المؤقت", "لم نُصفّر المؤقت لأن نافذة أخرى غيّرت حالته. أعد تحميل التطبيق أولًا.");
     return false;
   }
-  var previous = _captureFocusTimerClockState();
+  var previous = typeof _captureFocusTimerClockState === "function"
+    ? _captureFocusTimerClockState()
+    : { legacyClockState: true, timer: Object.assign({}, _focusTimer),
+        remainderMs: _focusElapsedRemainderMs };
+  function restorePrevious() {
+    if (!previous.legacyClockState
+        && typeof _restoreFocusTimerClockState === "function")
+      return restorePrevious();
+    Object.assign(_focusTimer, previous.timer);
+    _focusElapsedRemainderMs = previous.remainderMs;
+    if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
+    else if (typeof _stopDisplayTick === "function") _stopDisplayTick();
+    return true;
+  }
   var oldSessionToken = _focusTimer.nativeSessionToken;
   _stopDisplayTick();
   _focusTimer.running = false;
@@ -13004,7 +13043,7 @@ function _resetAfterSession() {
   _focusTimer.pendingNotificationFinish = null;
   var resetSaved = _saveFocusTimer();
   if (!resetSaved) {
-    _restoreFocusTimerClockState(previous);
+    restorePrevious();
     _renderFocusTimer();
     showAlertModal("تعذر حفظ تصفير المؤقت", "لم يُحفظ التصفير؛ أُعيدت حالة المؤقت السابقة كي لا تختلف الواجهة عن التخزين.");
     return false;
