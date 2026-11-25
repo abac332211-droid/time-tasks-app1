@@ -11820,7 +11820,7 @@ function _freezeFocusTimerForDecision() {
     else if (typeof _stopDisplayTick === "function") _stopDisplayTick();
     return true;
   }
-  var sessionToken = _focusTimer.nativeSessionToken;
+  var sessionToken = _focusTimer.nativeSessionToken || null;
   _stopDisplayTick();
   if (_focusTimer.running) {
     var parts = _getFocusTimerElapsedParts();
@@ -11833,19 +11833,21 @@ function _freezeFocusTimerForDecision() {
   }
   if (!_saveFocusTimer()) {
     restorePrevious();
-    _renderFocusTimer();
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
     showAlertModal("تعذر حفظ حالة المؤقت","تعذر تأكيد تجميد المؤقت؛ أُعيدت الحالة السابقة ولم نتابع العملية.");
     return null;
   }
-  _stopNativeStopwatchForegroundService(sessionToken);
   var snapshot = _captureFocusTimerSnapshot();
   if (!snapshot) {
     storageRecoveryRequired = true;
     restorePrevious();
-    showAlertModal("تعذر تثبيت لقطة المؤقت","لم تجتز حالة المؤقت التحقق بعد تجميدها.");
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
+    showAlertModal("تعذر تثبيت لقطة المؤقت","لم تجتز حالة المؤقت التحقق بعد تجميده؛ أبقينا خدمة Android والإشعار قائمين.");
     return null;
   }
-  _renderFocusTimer();
+  if (typeof _stopNativeStopwatchForegroundService === "function")
+    _stopNativeStopwatchForegroundService(sessionToken);
+  if (typeof _renderFocusTimer === "function") _renderFocusTimer();
   return snapshot;
 }
 
