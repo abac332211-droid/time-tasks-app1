@@ -10575,7 +10575,10 @@ function _renderFocusTimer() {
     && _isTimerControlBlocked();
   var startBtn = document.getElementById('timerStartBtn');
   if (startBtn) {
-    startBtn.textContent = _focusTimer.running ? '⏸ إيقاف' : '▶ ابدأ';
+    var startLabel = '▶ ابدأ';
+    if (_focusTimer.running) startLabel = '⏸ إيقاف';
+    else if (_focusTimer.mode === 'stopwatch' && elapsed > 0) startLabel = '▶ استئناف';
+    startBtn.textContent = startLabel;
     startBtn.className = _focusTimer.running ? 'btn-warning' : 'btn-primary';
     startBtn.disabled = timerControlsBlocked;
   }
