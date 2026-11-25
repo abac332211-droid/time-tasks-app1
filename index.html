@@ -10238,10 +10238,10 @@ function _catchUp(backgroundReturn) {
     } else {
       Object.assign(_focusTimer, operationSnapshot.timer);
       _focusElapsedRemainderMs = operationSnapshot.remainderMs;
-      if (_focusTimer.running) _startDisplayTick();
-      else _stopDisplayTick();
+      if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
+      else if (typeof _stopDisplayTick === "function") _stopDisplayTick();
     }
-    _renderFocusTimer();
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
   }
   function stopNativeServiceAfterDurablePause() {
     if (typeof _stopNativeStopwatchForegroundService === "function")
@@ -10382,10 +10382,10 @@ function _showAwaySessionConfirmation() {
     } else {
       Object.assign(_focusTimer, snapshot.timer);
       _focusElapsedRemainderMs = snapshot.remainderMs;
-      if (_focusTimer.running) _startDisplayTick();
-      else _stopDisplayTick();
+      if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
+      else if (typeof _stopDisplayTick === "function") _stopDisplayTick();
     }
-    _renderFocusTimer();
+    if (typeof _renderFocusTimer === "function") _renderFocusTimer();
   }
   function resetPendingPhaseForNextStage(cancelWholeSession) {
     _focusTimer.running = false;
@@ -10396,7 +10396,6 @@ function _showAwaySessionConfirmation() {
       _focusTimer.sessionStartAt = null;
       _focusTimer.cyclePosition = 0;
       _focusTimer.phase = "work";
-      _focusTimer.taskId = null;
       _focusTimer.nativeSessionToken = null;
       _focusTimer.pendingNotificationFinish = null;
     } else {
