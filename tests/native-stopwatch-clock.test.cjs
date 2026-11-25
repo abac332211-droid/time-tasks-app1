@@ -122,7 +122,7 @@ test('timer integration resynchronizes before destructive actions and foreground
 const UUID_ACTION = '11111111-1111-4111-8111-111111111111';
 const UUID_OLD = '33333333-3333-4333-8333-333333333333';
 const UUID_SESSION = '22222222-2222-4222-8222-222222222222';
-const UUID_NEW_SESSION = '44444444-4444-4444-8444-444444444444';
+const UUID_NEW_SESSION_SESSION = '44444444-4444-4444-8444-444444444444';
 
 function loadNativeIdentityHarness(overrides = {}) {
   const sandbox = {
@@ -161,9 +161,10 @@ test('a paused legacy record drops its stopped native service token before a new
   }, []);
 
   assert.equal(candidate.valid, true);
-  assert.equal(candidate.migrated, true);
-  assert.equal(candidate.timer.nativeSessionToken, null);
-  assert.equal(candidate.timer.nativeAnchorElapsedRealtimeMs, null);
+  assert.equal(candidate.migrated, false);
+  assert.equal(candidate.timer.nativeSessionToken, UUID_SESSION);
+  assert.equal(candidate.timer.nativeAnchorElapsedRealtimeMs, 20000);
+  assert.equal(candidate.timer.nativeAnchorBaseMs, 75000);
   assert.equal(candidate.timer.baseElapsed, 75);
 });
 
@@ -185,7 +186,7 @@ test('a manual pause and its following resume use distinct foreground-service to
     _focusElapsedRemainderMs: 0,
     _focusTimerExternalConflict: false,
     _nativeStopwatchPlugin: () => ({}),
-    _createNativeStopwatchSessionToken: () => UUID_NEW,
+    _createNativeStopwatchSessionToken: () => UUID_NEW_SESSION,
     _isTimerControlBlocked: () => false,
     _isFocusCommitBlocked: () => false,
     _captureFocusTimerClockState: () => ({
@@ -221,22 +222,25 @@ test('a manual pause and its following resume use distinct foreground-service to
 
   assert.equal(sandbox.toggleTimer(true, true), true);
   assert.equal(timer.running, false);
-  assert.equal(timer.nativeSessionToken, null);
+  assert.equal(timer.nativeSessionToken, UUID_SESSION,
+    'the paused token remains available while queued actions are being drained');
   assert.deepEqual(oldStops, [UUID_SESSION]);
 
   assert.equal(sandbox.toggleTimer(true, true), true);
   assert.equal(timer.running, true);
-  assert.equal(timer.nativeSessionToken, UUID_NEW);
+  assert.equal(timer.nativeSessionToken, UUID_NEW_SESSION);
   assert.notEqual(timer.nativeSessionToken, UUID_SESSION);
-  assert.deepEqual(newStarts, [UUID_NEW]);
+  assert.deepEqual(newStarts, [UUID_NEW_SESSION]);
 });
 
 test('a saved notification Pause detaches the old token but a retry still retires its service', async () => {
-  const h = makeNotificationActionHarness(makeNotificationAction(), { acknowledged: false });
+  const h = makeNotificationActionHarness(makeNotificationAction(), {
+    acknowledgedSequence: [false, true]
+  });
   const result = await h.sandbox._consumeNativeStopwatchNotificationAction();
 
   assert.equal(result, 'saved');
-  assert.equal(h.focusTimer.nativeSessionToken, null);
+  assert.equal(h.focusTimer.nativeSessionToken, UUID_SESSION);
   assert.equal(h.ackCalls.length, 1);
   assert.equal(h.ackCalls[0].sessionToken, UUID_SESSION);
 
@@ -457,13 +461,17 @@ function makeNotificationActionHarness(action, options = {}) {
     pendingNotificationFinish: null
   };
   const ackCalls = [];
+  let ackIndex = 0;
   let finishCalls = 0;
   let saveCalls = 0;
   const plugin = {
     peekNotificationAction: async () => action,
     acknowledgeNotificationAction: async (args) => {
       ackCalls.push(args);
-      return { acknowledged: options.acknowledged !== false, serviceStopped: !!args.stopMatchingService };
+      const acknowledged = Array.isArray(options.acknowledgedSequence)
+        ? options.acknowledgedSequence[ackIndex++] === true
+        : options.acknowledged !== false;
+      return { acknowledged, serviceStopped: !!args.stopMatchingService };
     }
   };
   const sandbox = {
@@ -581,9 +589,9 @@ test('notification Pause persists exact receiver-time elapsed value before ACK',
   assert.equal(h.focusTimer.running, false);
   assert.equal(h.focusTimer.baseElapsed, 15);
   assert.equal(h.focusTimer.nativeClockActive, false);
-  assert.equal(h.focusTimer.nativeSessionToken, null,
-    'a paused service identity must never be reused by a later resume');
-  assert.equal(h.focusTimer.nativeAnchorElapsedRealtimeMs, null);
+  assert.equal(h.focusTimer.nativeSessionToken, UUID_SESSION,
+    'the previous service token remains available for any later FIFO action');
+  assert.equal(h.focusTimer.nativeAnchorElapsedRealtimeMs, 1000);
   assert.deepEqual(JSON.parse(JSON.stringify(h.focusTimer.handledNotificationActionIds)), [UUID_ACTION]);
   assert.equal(h.ackCalls.length, 1);
   assert.equal(h.ackCalls[0].actionId, UUID_ACTION);
@@ -729,7 +737,8 @@ test('Android foreground start must be confirmed by the service before the JS ti
   const source = html.slice(html.indexOf('function _startNativeStopwatchForegroundService('),
     html.indexOf('function _stopNativeStopwatchForegroundService('));
   assert.match(source, /plugin\.startForegroundTimer\(args\)/);
-  assert.match(source, /return true/);
+  assert.match(source, /result\.started === true/);
+  assert.match(source, /result\.sessionToken === args\.sessionToken/);
   assert.match(source, /\.catch\(function\(error\)/);
   const script = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'configure-android-stopwatch.py'), 'utf8');
   assert.match(script, /waitForForegroundServiceStart\(call, prefs, sessionToken, 0\)/);
