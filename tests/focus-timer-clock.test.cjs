@@ -17,6 +17,17 @@ function extractFunction(name) {
   return html.slice(start, end + 2);
 }
 
+function installFocusTimerHydration(sandbox) {
+  const names = [
+    '_isNativeStopwatchUuid',
+    '_validatePendingStopwatchTransaction',
+    '_normalizeFocusTimerRecord',
+    '_applyHydratedFocusTimerRecord',
+    '_loadFocusTimer'
+  ];
+  vm.runInNewContext(names.map(extractFunction).join('\n'), sandbox);
+}
+
 function createClockHarness(options = {}) {
   const clock = {
     wall: options.wallStart ?? 1_800_000_000_000,
@@ -337,7 +348,7 @@ test('cold start restores the durable millisecond remainder and resumes without 
   h.sandbox._focusTimerSavedAtAtLoad = null;
   h.sandbox.tasks = [];
   h.sandbox._phaseTargetSec = () => 1_500;
-  vm.runInNewContext(extractFunction('_loadFocusTimer'), h.sandbox);
+  installFocusTimerHydration(h.sandbox);
   h.sandbox._loadFocusTimer();
 
   assert.equal(h.timer.running, false, 'cold start must remain paused');
@@ -545,7 +556,7 @@ function restoreFocusTimerForClockTest(h, stored, phaseTargetSec = 1_500) {
   h.sandbox._focusTimerColdStartWasRunning = false;
   h.sandbox._focusTimerSavedAtAtLoad = null;
   h.sandbox._phaseTargetSec = () => phaseTargetSec;
-  vm.runInNewContext(extractFunction('_loadFocusTimer'), h.sandbox);
+  installFocusTimerHydration(h.sandbox);
   h.sandbox._loadFocusTimer();
 }
 
