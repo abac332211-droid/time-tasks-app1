@@ -3651,6 +3651,14 @@ function retryStorageRecovery() {
   );
 }
 
+function _resetSecondaryStorageTracking() {
+  _secondaryStorageBaselines = Object.create(null);
+  _secondaryStorageConflicts = Object.create(null);
+  _focusTimerExternalConflict = false;
+  if (typeof _focusTimerConflictNoticeShown !== "undefined") _focusTimerConflictNoticeShown = false;
+  if (typeof _invalidFocusSessionsNoticeShown !== "undefined") _invalidFocusSessionsNoticeShown = false;
+}
+
 function resetAll() {
   showConfirmModal(
     "🗑️ حذف كل البيانات",
@@ -3721,6 +3729,7 @@ function resetAll() {
           return;
         }
 
+        _resetSecondaryStorageTracking();
         storageRecoveryRequired = false;
         showToast("✅ تم حذف كل البيانات");
       });
