@@ -9836,11 +9836,14 @@ function _consumeNativeStopwatchNotificationAction() {
         "أبقينا إجراء الإشعار الحالي في طابور Android حتى يُحسم طلب الإنهاء السابق.");
       return "untrusted";
     }
-    var currentElapsedMs = _focusTimer.baseElapsed * 1000 + _focusElapsedRemainderMs;
-    if (!Number.isFinite(currentElapsedMs) || eventElapsedMs < currentElapsedMs) {
+    var durableElapsedFloorMs = _focusTimer.running === true
+        && _focusTimer.nativeClockActive === true
+      ? _focusTimer.nativeAnchorBaseMs
+      : (_focusTimer.baseElapsed * 1000 + _focusElapsedRemainderMs);
+    if (!Number.isFinite(durableElapsedFloorMs) || eventElapsedMs < durableElapsedFloorMs) {
       storageRecoveryRequired = true;
       showAlertModal("ترتيب إجراءات المؤقت غير موثوق",
-        "وقت الإجراء أقدم من المدة المحفوظة للجلسة. لم نرجع الساعة إلى الخلف ولم نقرّ الإجراء.");
+        "وقت الإجراء أقدم من آخر نقطة حفظ موثوقة للجلسة. لم نرجع الساعة إلى الخلف ولم نقرّ الإجراء.");
       return "untrusted";
     }
     var previous = _captureFocusTimerClockState();
