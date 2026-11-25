@@ -105,7 +105,10 @@ test('native clock refuses missing or malformed persisted anchors', () => {
 test('timer integration resynchronizes before destructive actions and foreground return', () => {
   assert.match(html, /function _runWithFreshNativeStopwatchClock\(action\)/);
   const freshSource = extractFunction('_runWithFreshNativeStopwatchClock');
-  assert.ok(freshSource.indexOf('peekNotificationAction') < freshSource.indexOf('_refreshNativeStopwatchClock'));
+  assert.ok(freshSource.includes('peekNotificationAction'));
+  assert.ok(freshSource.indexOf('_consumeNativeStopwatchNotificationAction')
+    < freshSource.lastIndexOf('return refreshThenAct()'),
+    'the pending-action branch must return before the no-action refresh branch');
   assert.ok(extractFunction('toggleTimer').includes('_runWithFreshNativeStopwatchClock'));
   assert.ok(extractFunction('finishTimer').includes('_runWithFreshNativeStopwatchClock'));
   assert.match(html, /function syncClockAfterQueue\(\)/);
