@@ -59,7 +59,7 @@ function loadFocusTimerFromContext(context) {
     '_applyHydratedFocusTimerRecord',
     '_loadFocusTimer'
   ];
-  const source = names.map(extractTopLevelSource).join('\\n') + '\\n_loadFocusTimer';
+  const source = names.map(extractTopLevelSource).join('\n') + '\n_loadFocusTimer';
   return vm.runInNewContext(source, context);
 }
 
