@@ -1087,6 +1087,11 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
   await withBrowserPages(async ({ pageA }) => {
     await waitForSafeStartup(pageA, 'cold-start Stopwatch recovery');
 
+    // Stopwatch lives inside the Tasks page, which is hidden on initial load.
+    // Open the real page before asserting and exercising its controls.
+    await pageA.locator('nav button[data-page="tasks"]').click();
+    await pageA.locator('#timerCard').waitFor({ state: 'visible' });
+
     const restored = await pageA.evaluate(() => ({
       blocked: _isTimerControlBlocked(),
       running: _focusTimer.running,
@@ -1161,6 +1166,10 @@ test('cold-start Stopwatch reset discards only the current interval and preserve
   const initial = makeColdStartStopwatchSeed();
   await withBrowserPages(async ({ pageA }) => {
     await waitForSafeStartup(pageA, 'cold-start Stopwatch reset');
+
+    // The reset control is also inside the initially hidden Tasks page.
+    await pageA.locator('nav button[data-page="tasks"]').click();
+    await pageA.locator('#timerCard').waitFor({ state: 'visible' });
 
     const before = await pageA.evaluate(() => ({
       blocked: _isTimerControlBlocked(),
