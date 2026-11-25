@@ -9635,9 +9635,14 @@ function _refreshNativeStopwatchClock(requireBootIdentity) {
       if (!computed.ok) return _markNativeFocusClockUntrusted(computed.reason);
       _focusTimer.baseElapsed = Math.floor(computed.totalElapsedMs / 1000);
       _focusElapsedRemainderMs = computed.totalElapsedMs % 1000;
-      if (!_setNativeFocusClockAnchor(clock, computed.totalElapsedMs))
-        return { ok: false, reason: "native_anchor_update_failed" };
-      if (isRestoring) _focusTimer.running = true;
+      // Keep the native service anchor fixed for the entire active session.
+      // Rotating it here would desynchronize the Android receiver's persisted
+      // checkpoint from JavaScript and make a later notification action unverifiable.
+      if (isRestoring) {
+        _focusTimer.nativeRestorePending = false;
+        _focusTimer.nativeBootMismatch = false;
+        _focusTimer.running = true;
+      }
       _focusTimer.startedAt = clock.wallTimeMs;
       _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
       _nativeStopwatchLastSyncAt = clock.wallTimeMs;
