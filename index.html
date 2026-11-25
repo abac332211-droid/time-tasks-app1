@@ -9782,6 +9782,9 @@ function _consumeNativeStopwatchNotificationAction() {
         || !Number.isFinite(action.anchorBaseMs)
         || !Number.isInteger(action.anchorBootCount)
         || action.anchorBootCount !== action.bootCount
+        || action.anchorElapsedRealtimeMs !== _focusTimer.nativeAnchorElapsedRealtimeMs
+        || action.anchorBaseMs !== _focusTimer.nativeAnchorBaseMs
+        || action.anchorBootCount !== _focusTimer.nativeAnchorBootCount
         || action.elapsedRealtimeMs < action.anchorElapsedRealtimeMs) {
       storageRecoveryRequired = true;
       _focusTimer.nativeBootMismatch = true;
