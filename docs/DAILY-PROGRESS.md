@@ -567,3 +567,35 @@
 
 ### الخطوة التالية
 اكتمال PWA/Chromium وAndroid Debug على الرأس الجديد الناتج عن هذه الإضافة، ثم مراجعة مستقلة من حساب مختلف، واستكمال سجل الاختبار الميداني على APK المطابق للرأس قبل أي قرار دمج.
+
+
+---
+
+## نتائج CI لتأكيدات استئناف Stopwatch — 25 نوفمبر 2026
+
+### الرأس البرمجي الذي اختُبر
+- Commit: [`74e06065c8b45c4e0a95aeefaba31b862a7d92f4`](https://github.com/abac332211-droid/time-tasks-app1/commit/74e06065c8b45c4e0a95aeefaba31b862a7d92f4).
+- الملفات البرمجية المتغيرة في الالتزام: `tests/multi-window-browser.test.cjs` فقط. الالتزام الأب هو `ca87a145f3e6a0b42babd1ae5dc78bb427ad9639`.
+- لم يتغير `index.html` أو أي من ملفات التخزين/المعاملات.
+
+### نتائج PWA/Chromium
+- [run 45569887739](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569887739): **330/330 ناجحًا، 0 فشل، 0 تخطٍ**.
+- سجل التشغيل أكد `Verified source SHA` و`Expected source SHA` متطابقين مع `74e06065c8b45c4e0a95aeefaba31b862a7d92f4`.
+- ثُبت Playwright Chromium ونُفذت اختبارات المتصفح متعددة النوافذ.
+
+### نتائج Android Debug
+- [run 45569887776](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569887776): نجاح كامل.
+- اختبارات Node: **297 ناجحًا، 0 فشل، 33 متخطاة من أصل 330**. التخطي يخص اختبارات Playwright/Chromium غير المشغلة في وظيفة Android؛ لا تُحتسب هذه الاختبارات نجاحًا على Android، وقد اجتازت كلها في بوابة PWA أعلاه.
+- سجل checkout أكد تطابق SHA المصدر مع `74e06065c8b45c4e0a95aeefaba31b862a7d92f4`.
+- Gradle: `BUILD SUCCESSFUL`.
+- نجح فحص Manifest لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- Artifact: [time-tasks-app-apk — ID 15000814588](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569887776/artifacts/15000814588)، الحجم 5,477,259 بايت، digest أرشيف ZIP ‏`sha256:9124ba4e3ffea317072666a674f57fc9d784900685a99a76d7e0d05cc1325115`. هذه بصمة أرشيف ZIP وليست بصمة APK المستخرج.
+
+### حالة المراجعة والقبول
+- PR #10 باقٍ مفتوحًا كمسودة وغير مدمج.
+- لم تظهر مراجعة مستقلة جديدة أو `APPROVED`؛ المراجعة الرسمية المسجلة `COMMENTED` من حساب مالك المستودع وعلى رأس أقدم.
+- اختبار Android Debug آلي فقط؛ لا يثبت Android WebView الفعلي أو Doze أو Force Stop أو إعادة التشغيل على جهاز.
+- تقرير اللقطات الميداني السابق يؤكد تفاعل البدء/الإيقاف بعد الاستعادة، لكنه لا يحدد SHA أو Artifact الذي اختُبر، ولا يغطي كامل الإنهاء وإعادة الضبط وإعادة الفتح؛ لذلك لا يغلق بوابة الاختبار الميداني.
+
+### القرار
+نجحت بوابات PWA/Chromium وAndroid Debug على الرأس البرمجي `74e06065c8b45c4e0a95aeefaba31b862a7d92f4`. تحسين تسمية «استئناف» مغطى آليًا مع ثوابت عدم تكرار دقائق المهمة أو إنشاء معاملة/جلسة جديدة أو تعديل السجلات التاريخية. **PR #10 غير جاهز للدمج بعد** بسبب غياب المراجعة المستقلة واكتمال الاختبار الميداني المطابق لـAPK/SHA.
