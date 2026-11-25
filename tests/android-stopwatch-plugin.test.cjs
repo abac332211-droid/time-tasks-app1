@@ -50,8 +50,9 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   assert.match(plugin, /if \(queuedAction\)/);
   assert.match(plugin, /queue\.optJSONObject\(0\)/);
   assert.match(plugin, /يجب إقرار أقدم إجراء في الطابور/);
-  const ackMethod = plugin.slice(plugin.indexOf('public void acknowledgeNotificationAction'),
-    plugin.indexOf('public void stopForegroundTimer'));
+  const ackStart = plugin.indexOf('public void acknowledgeNotificationAction');
+  const ackEnd = plugin.indexOf('@PluginMethod', ackStart + 10);
+  const ackMethod = plugin.slice(ackStart, ackEnd < 0 ? plugin.length : ackEnd);
   assert.ok(ackMethod.includes('synchronized (ACTION_LOCK)'));
   assert.ok(ackMethod.includes('if (stopService)'));
   assert.ok(ackMethod.includes('stopService(new Intent'));
