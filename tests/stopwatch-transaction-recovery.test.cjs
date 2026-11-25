@@ -161,6 +161,7 @@ function createRuntime(storage, options = {}) {
       rollingSnapshots.push(reason);
       return true;
     },
+    _stopNativeStopwatchForegroundService() { return Promise.resolve(false); },
     _stopDisplayTick() {},
     _renderFocusTimer() {},
     _clearFocusTimerClock() {},
