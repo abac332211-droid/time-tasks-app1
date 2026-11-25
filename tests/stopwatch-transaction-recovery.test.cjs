@@ -992,10 +992,13 @@ function installFinishTimer(runtime) {
   sandbox._formatDuration = (seconds) => String(seconds) + 's';
   sandbox._setupModalFocusTrap = () => () => {};
   sandbox._modalKeyHandler = null;
+  sandbox._pendingFinishDialogShown = false;
+  sandbox._cancelPendingNotificationFinish = () => true;
   sandbox.closeModal = () => {};
   vm.runInNewContext(
     [extractFunction('_freezeFocusTimerForDecision'),
       extractFunction('_applyTimerFinish'),
+      extractFunction('_continueFocusTimerFinish'),
       extractFunction('finishTimer')].join('\n'),
     sandbox
   );
