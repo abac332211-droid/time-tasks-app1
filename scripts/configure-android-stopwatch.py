@@ -341,7 +341,10 @@ public final class {PLUGIN} extends Plugin {{
                     nextAcked = trimmed;
                 }}
                 String activeToken = prefs.getString(ACTIVE_SESSION_TOKEN_KEY, null);
-                stopService = stopMatching && sessionToken.equals(activeToken)
+                // Only the first ACK that actually removes this queued action may
+                // stop a service. A duplicate historical ACK has no authority to stop
+                // a later service, even if a caller supplies a different session token.
+                stopService = found && stopMatching && sessionToken.equals(activeToken)
                     && nextQueue.length() == 0;
                 SharedPreferences.Editor editor = prefs.edit()
                     .putString(ACTION_QUEUE_KEY, nextQueue.toString())
