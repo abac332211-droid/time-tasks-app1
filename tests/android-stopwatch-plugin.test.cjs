@@ -37,15 +37,31 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   const plugin = fs.readFileSync(path.join(f.java, 'StopwatchClockPlugin.java'), 'utf8');
   assert.match(plugin, /SystemClock\.elapsedRealtime\(\)/);
   assert.match(plugin, /Settings\.Global\.BOOT_COUNT/);
+  assert.match(plugin, /peekNotificationAction/);
+  assert.match(plugin, /acknowledgeNotificationAction/);
+  assert.match(plugin, /ACTION_QUEUE_KEY/);
+  assert.match(plugin, /MAX_PENDING_ACTIONS = 20/);
+  assert.match(plugin, /\.commit\(\)/);
+  assert.match(plugin, /stopMatching && sessionToken\.equals\(activeToken\)/);
   const service = fs.readFileSync(path.join(f.java, 'StopwatchForegroundService.java'), 'utf8');
   assert.match(service, /FOREGROUND_SERVICE_TYPE_SPECIAL_USE/);
+  assert.match(service, /PendingIntent\.getBroadcast/);
   assert.match(service, /إيقاف مؤقت/);
   assert.match(service, /إنهاء الجلسة/);
+  const receiver = fs.readFileSync(path.join(f.java, 'StopwatchNotificationActionReceiver.java'), 'utf8');
+  assert.match(receiver, /goAsync\(\)/);
+  assert.match(receiver, /SystemClock\.elapsedRealtime\(\)/);
+  assert.match(receiver, /UUID\.randomUUID\(\)/);
+  assert.match(receiver, /\.commit\(\)/);
+  assert.match(receiver, /MAX_PENDING_ACTIONS/);
+  assert.match(receiver, /bootCountAvailable/);
+  assert.match(receiver, /elapsedMs/);
   const manifest = fs.readFileSync(path.join(f.src, 'AndroidManifest.xml'), 'utf8');
   assert.match(manifest, /android\.permission\.FOREGROUND_SERVICE_SPECIAL_USE/);
   assert.match(manifest, /android:foregroundServiceType="specialUse"/);
   assert.match(manifest, /PROPERTY_SPECIAL_USE_FGS_SUBTYPE/);
   assert.match(manifest, /android\.permission\.POST_NOTIFICATIONS/);
+  assert.match(manifest, /android:name="\.StopwatchNotificationActionReceiver"[^>]*android:exported="false"/);
 });
 
 test('configuration is idempotent', (t) => {
@@ -55,10 +71,13 @@ test('configuration is idempotent', (t) => {
   const manifestPath = path.join(f.src, 'AndroidManifest.xml');
   const beforeActivity = fs.readFileSync(activityPath, 'utf8');
   const beforeManifest = fs.readFileSync(manifestPath, 'utf8');
+  const receiverPath = path.join(f.java, 'StopwatchNotificationActionReceiver.java');
+  const beforeReceiver = fs.readFileSync(receiverPath, 'utf8');
   const second = run(f.root);
   assert.equal(second.status, 0, second.stderr);
   assert.equal(fs.readFileSync(activityPath, 'utf8'), beforeActivity);
   assert.equal(fs.readFileSync(manifestPath, 'utf8'), beforeManifest);
+  assert.equal(fs.readFileSync(receiverPath, 'utf8'), beforeReceiver);
 });
 
 test('rejects ambiguous Android namespace', (t) => {
