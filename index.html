@@ -9128,6 +9128,9 @@ var _focusTimer = {
   clockAdjusted: false,
   pendingStopwatchTransaction: null,
   nativeClockActive: false,
+  nativeSessionToken: null,
+  handledNotificationActionIds: [],
+  pendingNotificationFinish: null,
   nativeAnchorElapsedRealtimeMs: null,
   nativeAnchorBootCount: null,
   nativeAnchorBaseMs: null,
@@ -9154,6 +9157,237 @@ var _nativeStopwatchSyncInFlight = false;
 var _nativeStopwatchSyncPromise = null;
 var _nativeStopwatchRestoreScheduled = false;
 var _nativeStopwatchLastSyncAt = 0;
+var _nativeStopwatchActionSyncPromise = null;
+var _pendingFinishDialogShown = false;
+
+function _isNativeStopwatchUuid(value) {
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function _createNativeStopwatchSessionToken() {
+  try {
+    var cryptoApi = window.crypto;
+    if (!cryptoApi || typeof cryptoApi.getRandomValues !== "function") return null;
+    var bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    var hex = Array.from(bytes).map(function(value) {
+      return value.toString(16).padStart(2, "0");
+    }).join("");
+    return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-"
+      + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+  } catch (e) {
+    return null;
+  }
+}
+
+function _captureFocusTimerClockState() {
+  return {
+    timer: Object.assign({}, _focusTimer, {
+      handledNotificationActionIds: Array.isArray(_focusTimer.handledNotificationActionIds)
+        ? _focusTimer.handledNotificationActionIds.slice() : [],
+      pendingNotificationFinish: _focusTimer.pendingNotificationFinish
+        ? Object.assign({}, _focusTimer.pendingNotificationFinish) : null
+    }),
+    remainderMs: _focusElapsedRemainderMs,
+    monotonicStart: _focusMonotonicStart,
+    monotonicLastSample: _focusMonotonicLastSample,
+    monotonicLastWallSample: _focusMonotonicLastWallSample,
+    monotonicClockFailed: _focusMonotonicClockFailed,
+    wallClockAnchor: _focusWallClockAnchor,
+    fallbackLastWall: _focusFallbackLastWall,
+    fallbackElapsedMs: _focusFallbackElapsedMs,
+    displayTickActive: typeof _focusDisplayInterval !== "undefined"
+      && _focusDisplayInterval !== null
+  };
+}
+
+function _restoreFocusTimerClockState(snapshot) {
+  if (!snapshot || !snapshot.timer) return false;
+  Object.assign(_focusTimer, snapshot.timer);
+  _focusElapsedRemainderMs = snapshot.remainderMs;
+  _focusMonotonicStart = snapshot.monotonicStart;
+  _focusMonotonicLastSample = snapshot.monotonicLastSample;
+  _focusMonotonicLastWallSample = snapshot.monotonicLastWallSample;
+  _focusMonotonicClockFailed = snapshot.monotonicClockFailed;
+  _focusWallClockAnchor = snapshot.wallClockAnchor;
+  _focusFallbackLastWall = snapshot.fallbackLastWall;
+  _focusFallbackElapsedMs = snapshot.fallbackElapsedMs;
+  if (snapshot.displayTickActive) {
+    if (typeof _startDisplayTick === "function") _startDisplayTick();
+  } else if (typeof _stopDisplayTick === "function") {
+    _stopDisplayTick();
+  }
+  return true;
+}
+
+function _normalizeFocusTimerRecord(record, taskRows) {
+  if (record === null) {
+    return {
+      valid: true,
+      migrated: false,
+      coldStartWasRunning: false,
+      savedAt: null,
+      timer: {
+        mode: "pomodoro", phase: "work", running: false, baseElapsed: 0,
+        startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: null,
+        awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false,
+        pendingStopwatchTransaction: null, nativeClockActive: false,
+        nativeAnchorElapsedRealtimeMs: null, nativeAnchorBootCount: null,
+        nativeAnchorBaseMs: null, nativeAnchorWallMs: null,
+        nativeRestorePending: false, nativeBootMismatch: false,
+        nativeSessionToken: null, handledNotificationActionIds: [],
+        pendingNotificationFinish: null
+      },
+      remainderMs: 0
+    };
+  }
+  if (!record || typeof record !== "object" || Array.isArray(record))
+    return { valid: false, reason: "timer_not_object" };
+  var owns = function(key) { return Object.prototype.hasOwnProperty.call(record, key); };
+  var invalid = function(reason) { return { valid: false, reason: reason }; };
+  var mode = owns("mode") ? record.mode : "pomodoro";
+  if (mode !== "pomodoro" && mode !== "stopwatch") return invalid("invalid_mode");
+  var phase = owns("phase") ? record.phase : "work";
+  if (["work", "short-break", "long-break"].indexOf(phase) < 0) return invalid("invalid_phase");
+  if (owns("running") && typeof record.running !== "boolean") return invalid("invalid_running");
+  var wasRunning = record.running === true;
+  var baseElapsed = owns("baseElapsed") ? record.baseElapsed : 0;
+  if (typeof baseElapsed !== "number" || !Number.isFinite(baseElapsed) || baseElapsed < 0)
+    return invalid("invalid_base_elapsed");
+  var remainder = owns("elapsedRemainderMs") ? record.elapsedRemainderMs : 0;
+  if (!Number.isInteger(remainder) || remainder < 0 || remainder >= 1000)
+    return invalid("invalid_remainder");
+  var cycle = owns("cyclePosition") ? record.cyclePosition : 0;
+  if (!Number.isInteger(cycle) || cycle < 0 || cycle > 3) return invalid("invalid_cycle");
+  var taskId = owns("taskId") ? record.taskId : null;
+  if (taskId !== null && (!Number.isSafeInteger(taskId) || taskId <= 0
+      || !Array.isArray(taskRows) || !taskRows.some(function(task) { return task && task.id === taskId; })))
+    return invalid("task_reference_invalid");
+  var sessionStartAt = owns("sessionStartAt") ? record.sessionStartAt : null;
+  if (sessionStartAt !== null
+      && (typeof sessionStartAt !== "number" || !Number.isFinite(sessionStartAt) || sessionStartAt < 0))
+    return invalid("invalid_session_start");
+  var awaiting = owns("awaitingConfirmation") ? record.awaitingConfirmation : false;
+  if (typeof awaiting !== "boolean") return invalid("invalid_confirmation_flag");
+  var pendingEnd = owns("pendingPhaseEndedAt") ? record.pendingPhaseEndedAt : null;
+  if (pendingEnd !== null
+      && (typeof pendingEnd !== "number" || !Number.isFinite(pendingEnd) || pendingEnd < 0))
+    return invalid("invalid_pending_phase_end");
+  if (awaiting && (mode !== "pomodoro" || sessionStartAt === null))
+    return invalid("incomplete_pending_phase");
+  if (awaiting && pendingEnd !== null && pendingEnd < sessionStartAt)
+    return invalid("pending_phase_precedes_session");
+  if (!awaiting && pendingEnd !== null) return invalid("unexpected_pending_phase_end");
+  var clockAdjusted = owns("clockAdjusted") ? record.clockAdjusted : false;
+  if (typeof clockAdjusted !== "boolean") return invalid("invalid_clock_adjusted");
+  var pendingTransaction = owns("pendingStopwatchTransaction")
+    ? record.pendingStopwatchTransaction : null;
+  if (pendingTransaction !== null && pendingTransaction !== undefined
+      && (typeof _validatePendingStopwatchTransaction !== "function"
+        || !_validatePendingStopwatchTransaction(pendingTransaction)))
+    return invalid("invalid_pending_stopwatch_transaction");
+  var sessionToken = owns("nativeSessionToken") ? record.nativeSessionToken : null;
+  if (sessionToken !== null && sessionToken !== undefined && !_isNativeStopwatchUuid(sessionToken))
+    return invalid("invalid_native_session_token");
+  if (sessionToken === undefined) sessionToken = null;
+  var handled = owns("handledNotificationActionIds")
+    ? record.handledNotificationActionIds : [];
+  if (!Array.isArray(handled) || handled.length > 10) return invalid("invalid_handled_action_ids");
+  var handledSet = new Set();
+  for (var hi = 0; hi < handled.length; hi++) {
+    if (!_isNativeStopwatchUuid(handled[hi]) || handledSet.has(handled[hi]))
+      return invalid("invalid_or_duplicate_handled_action_id");
+    handledSet.add(handled[hi]);
+  }
+  var pendingFinish = owns("pendingNotificationFinish")
+    ? record.pendingNotificationFinish : null;
+  if (pendingFinish !== null && pendingFinish !== undefined) {
+    if (!pendingFinish || typeof pendingFinish !== "object" || Array.isArray(pendingFinish)
+        || !_isNativeStopwatchUuid(pendingFinish.actionId)
+        || !_isNativeStopwatchUuid(pendingFinish.sessionToken)
+        || pendingFinish.sessionToken !== sessionToken
+        || pendingFinish.action !== "finish"
+        || !Number.isFinite(pendingFinish.elapsedRealtimeMs) || pendingFinish.elapsedRealtimeMs < 0
+        || !Number.isInteger(pendingFinish.bootCount) || pendingFinish.bootCount < 0
+        || !Number.isFinite(pendingFinish.wallTimeMs) || pendingFinish.wallTimeMs <= 0
+        || !Number.isFinite(pendingFinish.elapsedMs) || pendingFinish.elapsedMs < 0)
+      return invalid("invalid_pending_notification_finish");
+    if (handledSet.has(pendingFinish.actionId) === false)
+      return invalid("pending_finish_action_not_handled");
+  }
+  var nativeActive = owns("nativeClockActive") ? record.nativeClockActive : false;
+  if (typeof nativeActive !== "boolean") return invalid("invalid_native_clock_flag");
+  var anchorElapsed = owns("nativeAnchorElapsedRealtimeMs") ? record.nativeAnchorElapsedRealtimeMs : null;
+  var anchorBoot = owns("nativeAnchorBootCount") ? record.nativeAnchorBootCount : null;
+  var anchorBase = owns("nativeAnchorBaseMs") ? record.nativeAnchorBaseMs : null;
+  var anchorWall = owns("nativeAnchorWallMs") ? record.nativeAnchorWallMs : null;
+  var migrated = false;
+  if (nativeActive && sessionToken === null) {
+    // Older timer records predate native session identity. Keep the last proven
+    // elapsed value, but do not restore an unidentifiable native service session.
+    nativeActive = false;
+    anchorElapsed = null;
+    anchorBoot = null;
+    anchorBase = null;
+    anchorWall = null;
+    clockAdjusted = true;
+    migrated = true;
+  }
+  if (nativeActive && (!Number.isFinite(anchorElapsed) || anchorElapsed < 0
+      || !Number.isFinite(anchorBase) || anchorBase < 0
+      || !Number.isFinite(anchorWall) || anchorWall <= 0
+      || (anchorBoot !== null && (!Number.isInteger(anchorBoot) || anchorBoot < 0))))
+    return invalid("invalid_native_clock_anchor");
+  var nativeRestore = owns("nativeRestorePending") ? record.nativeRestorePending : false;
+  var nativeMismatch = owns("nativeBootMismatch") ? record.nativeBootMismatch : false;
+  if (typeof nativeRestore !== "boolean" || typeof nativeMismatch !== "boolean")
+    return invalid("invalid_native_restore_flags");
+  nativeRestore = (wasRunning || nativeRestore) && nativeActive;
+  return {
+    valid: true,
+    migrated: migrated,
+    coldStartWasRunning: wasRunning,
+    savedAt: owns("savedAt") && Number.isFinite(record.savedAt) ? record.savedAt : null,
+    remainderMs: remainder,
+    timer: {
+      mode: mode,
+      phase: phase,
+      running: false,
+      baseElapsed: Math.floor(baseElapsed),
+      startedAt: null,
+      cyclePosition: cycle,
+      taskId: taskId,
+      sessionStartAt: sessionStartAt,
+      awaitingConfirmation: awaiting,
+      pendingPhaseEndedAt: pendingEnd,
+      clockAdjusted: clockAdjusted,
+      pendingStopwatchTransaction: pendingTransaction || null,
+      nativeClockActive: nativeActive,
+      nativeAnchorElapsedRealtimeMs: nativeActive ? anchorElapsed : null,
+      nativeAnchorBootCount: nativeActive ? anchorBoot : null,
+      nativeAnchorBaseMs: nativeActive ? Math.floor(anchorBase) : null,
+      nativeAnchorWallMs: nativeActive ? anchorWall : null,
+      nativeRestorePending: nativeRestore,
+      nativeBootMismatch: nativeMismatch,
+      nativeSessionToken: sessionToken,
+      handledNotificationActionIds: handled.slice(-10),
+      pendingNotificationFinish: pendingFinish ? Object.assign({}, pendingFinish) : null
+    }
+  };
+}
+
+function _applyHydratedFocusTimerRecord(candidate) {
+  if (!candidate || candidate.valid !== true || !candidate.timer) return false;
+  Object.assign(_focusTimer, candidate.timer);
+  _focusElapsedRemainderMs = candidate.remainderMs;
+  _focusTimerColdStartWasRunning = candidate.coldStartWasRunning === true;
+  _focusTimerSavedAtAtLoad = Number.isFinite(candidate.savedAt) ? candidate.savedAt : null;
+  _clearFocusTimerClock();
+  return true;
+}
 
 function _runWithFreshNativeStopwatchClock(action) {
   if (typeof action !== "function") return Promise.resolve(false);
@@ -9476,49 +9710,23 @@ function _loadFocusTimer() {
   try {
     var raw = _trackSecondaryStorageRead(FOCUS_TIMER_KEY, localStorage.getItem(FOCUS_TIMER_KEY));
     if (!raw) return;
-    var d = JSON.parse(raw);
-    if (!d || typeof d !== 'object') return;
-    var wasRunning = d.running === true;
-    _focusTimerColdStartWasRunning = wasRunning;
-    _focusTimerSavedAtAtLoad = (typeof d.savedAt === 'number' && Number.isFinite(d.savedAt)) ? d.savedAt : null;
-    _focusTimer.clockAdjusted = d.clockAdjusted === true
-      || (_focusTimerSavedAtAtLoad !== null && Date.now() < _focusTimerSavedAtAtLoad - 60000);
-    _focusTimer.mode = (d.mode === 'stopwatch') ? 'stopwatch' : 'pomodoro';
-    _focusTimer.phase = (['work','short-break','long-break'].indexOf(d.phase) !== -1) ? d.phase : 'work';
-    _focusTimer.running = false;
-    _focusTimer.baseElapsed = (typeof d.baseElapsed === 'number' && Number.isFinite(d.baseElapsed) && d.baseElapsed >= 0) ? Math.floor(d.baseElapsed) : 0;
-    _focusElapsedRemainderMs = (typeof d.elapsedRemainderMs === 'number'
-      && Number.isFinite(d.elapsedRemainderMs) && d.elapsedRemainderMs >= 0
-      && d.elapsedRemainderMs < 1000) ? Math.floor(d.elapsedRemainderMs) : 0;
-    // A fresh JS runtime restores the last durable checkpoint, never away time.
-    _focusTimer.startedAt = null;
-    _focusTimer.cyclePosition = (typeof d.cyclePosition === 'number' && d.cyclePosition >= 0 && d.cyclePosition <= 3) ? d.cyclePosition : 0;
-    _focusTimer.taskId = (typeof d.taskId === 'number') ? d.taskId : null;
-    _focusTimer.sessionStartAt = (typeof d.sessionStartAt === 'number' && Number.isFinite(d.sessionStartAt))
-      ? d.sessionStartAt : null;
-    _focusTimer.awaitingConfirmation = d.awaitingConfirmation === true;
-    _focusTimer.pendingPhaseEndedAt = (typeof d.pendingPhaseEndedAt === 'number' && Number.isFinite(d.pendingPhaseEndedAt)) ? d.pendingPhaseEndedAt : null;
-    _focusTimer.pendingStopwatchTransaction = d.pendingStopwatchTransaction || null;
-    _focusTimer.nativeClockActive = d.nativeClockActive === true
-      && Number.isFinite(d.nativeAnchorElapsedRealtimeMs)
-      && Number.isFinite(d.nativeAnchorBaseMs) && d.nativeAnchorBaseMs >= 0;
-    _focusTimer.nativeAnchorElapsedRealtimeMs = _focusTimer.nativeClockActive
-      ? d.nativeAnchorElapsedRealtimeMs : null;
-    _focusTimer.nativeAnchorBootCount = Number.isInteger(d.nativeAnchorBootCount)
-      && d.nativeAnchorBootCount >= 0 ? d.nativeAnchorBootCount : null;
-    _focusTimer.nativeAnchorBaseMs = _focusTimer.nativeClockActive
-      ? Math.floor(d.nativeAnchorBaseMs) : null;
-    _focusTimer.nativeAnchorWallMs = Number.isFinite(d.nativeAnchorWallMs)
-      ? d.nativeAnchorWallMs : null;
-    _focusTimer.nativeRestorePending = (wasRunning || d.nativeRestorePending === true)
-      && _focusTimer.nativeClockActive;
-    _focusTimer.nativeBootMismatch = d.nativeBootMismatch === true;
-    if (_focusTimer.pendingStopwatchTransaction
-        && !_validatePendingStopwatchTransaction(_focusTimer.pendingStopwatchTransaction)) {
+    var parsed = JSON.parse(raw);
+    var normalized = _normalizeFocusTimerRecord(parsed, typeof tasks !== "undefined" ? tasks : []);
+    if (!normalized.valid) {
       storageRecoveryRequired = true;
-      console.error("A pending Stopwatch transaction record is invalid; storage writes remain blocked.");
+      if (typeof _preserveCorruptStorageSnapshot === "function") {
+        try { _preserveCorruptStorageSnapshot(FOCUS_TIMER_KEY, raw); } catch (preserveError) {}
+      }
+      console.error("A corrupt focus timer record was preserved and rejected:", normalized.reason);
+      return;
     }
-    var changed = wasRunning || _focusTimer.clockAdjusted;
+    if (!_applyHydratedFocusTimerRecord(normalized)) {
+      storageRecoveryRequired = true;
+      return;
+    }
+    _focusTimer.clockAdjusted = _focusTimer.clockAdjusted
+      || (_focusTimerSavedAtAtLoad !== null && Date.now() < _focusTimerSavedAtAtLoad - 60000);
+    var changed = normalized.migrated || _focusTimerColdStartWasRunning || _focusTimer.clockAdjusted;
     var nowAtRestore = Date.now();
     if (_focusTimer.sessionStartAt !== null && _focusTimer.sessionStartAt > nowAtRestore) {
       _focusTimer.sessionStartAt = nowAtRestore - _focusTimer.baseElapsed * 1000;
@@ -9532,26 +9740,21 @@ function _loadFocusTimer() {
     }
     if (_focusTimer.awaitingConfirmation && _focusTimer.sessionStartAt !== null) {
       var restoredTarget = _phaseTargetSec();
-      var coherentEnd = _focusTimer.sessionStartAt + (Number.isFinite(restoredTarget) ? restoredTarget : _focusTimer.baseElapsed) * 1000;
-      if (_focusTimer.pendingPhaseEndedAt === null
-          || _focusTimer.pendingPhaseEndedAt < _focusTimer.sessionStartAt) {
+      var coherentEnd = _focusTimer.sessionStartAt
+        + (Number.isFinite(restoredTarget) ? restoredTarget : _focusTimer.baseElapsed) * 1000;
+      if (_focusTimer.pendingPhaseEndedAt === null) {
         _focusTimer.pendingPhaseEndedAt = coherentEnd;
         _focusTimer.clockAdjusted = true;
         changed = true;
       }
     }
-    _clearFocusTimerClock();
-    if (_focusTimer.taskId !== null) {
-      var exists = tasks.some(function(t) { return t.id === _focusTimer.taskId; });
-      if (!exists) {
-        _focusTimer.taskId = null;
-        changed = true;
-      }
-    }
     if (changed && !_saveFocusTimer()) {
-      console.warn("Could not persist the paused focus timer after restart; it remains paused in memory.");
+      console.warn("Could not persist the paused focus timer after restart; its last durable record remains intact.");
     }
-  } catch (e) {}
+  } catch (e) {
+    storageRecoveryRequired = true;
+    console.error("Could not hydrate the focus timer; persisted data was not replaced.", e);
+  }
 }
 
 function _finalizeFocusTimerColdStartRestore() {
@@ -9635,6 +9838,10 @@ function _saveFocusTimer() {
       clockAdjusted: _focusTimer.clockAdjusted === true,
       pendingStopwatchTransaction: _focusTimer.pendingStopwatchTransaction || null,
       nativeClockActive: _focusTimer.nativeClockActive === true,
+      nativeSessionToken: _focusTimer.nativeSessionToken || null,
+      handledNotificationActionIds: Array.isArray(_focusTimer.handledNotificationActionIds)
+        ? _focusTimer.handledNotificationActionIds.slice(-10) : [],
+      pendingNotificationFinish: _focusTimer.pendingNotificationFinish || null,
       nativeAnchorElapsedRealtimeMs: _focusTimer.nativeAnchorElapsedRealtimeMs,
       nativeAnchorBootCount: _focusTimer.nativeAnchorBootCount,
       nativeAnchorBaseMs: _focusTimer.nativeAnchorBaseMs,
@@ -11865,7 +12072,12 @@ function _readAndValidateResyncBundle() {
 }
 
 function _applyValidatedResyncBundle(bundle) {
-  if (!bundle) return false;
+  if (!bundle || !bundle.mainData || !Array.isArray(bundle.mainData.tasks)) return false;
+  var timerCandidate = _normalizeFocusTimerRecord(bundle.timerObj, bundle.mainData.tasks);
+  if (!timerCandidate.valid) {
+    console.error("Rejected resync bundle before applying any state:", timerCandidate.reason);
+    return false;
+  }
   tasks = bundle.mainData.tasks;
   _loadAppSettings(bundle.mainData.settings || {});
   createdByVersion = bundle.mainData.createdByVersion || APP_VERSION;
@@ -11888,55 +12100,7 @@ function _applyValidatedResyncBundle(bundle) {
   _focusTimerConflictNoticeShown = false;
   _invalidFocusSessionsNoticeShown = false;
 
-  if (bundle.timerObj === null) {
-    _focusTimer.mode = "pomodoro";
-    _focusTimer.phase = "work";
-    _focusTimer.running = false;
-    _focusTimer.baseElapsed = 0;
-    _focusElapsedRemainderMs = 0;
-    _focusTimer.startedAt = null;
-    _focusTimer.cyclePosition = 0;
-    _focusTimer.taskId = null;
-    _focusTimer.sessionStartAt = null;
-    _focusTimer.awaitingConfirmation = false;
-    _focusTimer.pendingPhaseEndedAt = null;
-    _focusTimer.clockAdjusted = false;
-    _focusTimer.pendingStopwatchTransaction = null;
-    _focusTimerColdStartWasRunning = false;
-    _clearFocusTimerClock();
-  } else {
-    var timer = bundle.timerObj;
-    _focusTimer.mode = timer.mode === "stopwatch" ? "stopwatch" : "pomodoro";
-    _focusTimer.phase = ["work", "short-break", "long-break"].indexOf(timer.phase) !== -1
-      ? timer.phase : "work";
-    _focusTimer.running = false;
-    _focusTimer.baseElapsed = typeof timer.baseElapsed === "number"
-      && Number.isFinite(timer.baseElapsed) && timer.baseElapsed >= 0
-      ? Math.floor(timer.baseElapsed) : 0;
-    _focusElapsedRemainderMs = typeof timer.elapsedRemainderMs === "number"
-      && Number.isFinite(timer.elapsedRemainderMs) && timer.elapsedRemainderMs >= 0
-      && timer.elapsedRemainderMs < 1000 ? Math.floor(timer.elapsedRemainderMs) : 0;
-    _focusTimer.startedAt = null;
-    _focusTimer.cyclePosition = typeof timer.cyclePosition === "number"
-      && timer.cyclePosition >= 0 && timer.cyclePosition <= 3 ? timer.cyclePosition : 0;
-    _focusTimer.taskId = typeof timer.taskId === "number" ? timer.taskId : null;
-    _focusTimer.sessionStartAt = typeof timer.sessionStartAt === "number"
-      && Number.isFinite(timer.sessionStartAt) ? timer.sessionStartAt : null;
-    _focusTimer.awaitingConfirmation = timer.awaitingConfirmation === true;
-    _focusTimer.pendingPhaseEndedAt = typeof timer.pendingPhaseEndedAt === "number"
-      && Number.isFinite(timer.pendingPhaseEndedAt) ? timer.pendingPhaseEndedAt : null;
-    _focusTimer.clockAdjusted = timer.clockAdjusted === true;
-    _focusTimer.pendingStopwatchTransaction = timer.pendingStopwatchTransaction || null;
-    _focusTimerColdStartWasRunning = timer.running === true;
-    _focusTimerSavedAtAtLoad = typeof timer.savedAt === "number" && Number.isFinite(timer.savedAt)
-      ? timer.savedAt : null;
-    _clearFocusTimerClock();
-    // A persisted running bit is a cold-start checkpoint, not evidence of a
-    // live cross-window write. Startup owns the exclusive Stopwatch lock here;
-    // _finalizeFocusTimerColdStartRestore() must be allowed to persist the paused
-    // checkpoint. Any still-open sibling page will observe that write through its
-    // storage listener and enter the external-conflict state itself.
-  }
+  if (!_applyHydratedFocusTimerRecord(timerCandidate)) return false;
   _loadFocusSettings();
   return true;
 }
