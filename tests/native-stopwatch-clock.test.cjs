@@ -104,8 +104,8 @@ test('native clock refuses missing or malformed persisted anchors', () => {
 
 test('timer integration resynchronizes before destructive actions and foreground return', () => {
   assert.match(html, /function _runWithFreshNativeStopwatchClock\(action\)/);
-  assert.match(html, /function toggleTimer\(_nativeClockSynchronized\)[\\s\\S]{0,250}_runWithFreshNativeStopwatchClock/);
-  assert.match(html, /function finishTimer\(_nativeClockSynchronized\)[\\s\\S]{0,250}_runWithFreshNativeStopwatchClock/);
+  assert.ok(extractFunction('toggleTimer').includes('_runWithFreshNativeStopwatchClock'));
+  assert.ok(extractFunction('finishTimer').includes('_runWithFreshNativeStopwatchClock'));
   assert.match(html, /var clockSync = _focusTimer\.nativeRestorePending/);
   assert.match(html, /_refreshNativeStopwatchClock\(false\)/);
   assert.match(html, /if \(_focusTimer\.nativeClockActive && \(fallbackDelta < 0 \|\| fallbackDelta > 120000\)\) \{\s*\/\/ The native monotonic clock will reconcile this interval/);
