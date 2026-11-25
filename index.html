@@ -9192,7 +9192,10 @@ function _setNativeFocusClockAnchor(clock, totalElapsedMs) {
   _focusTimer.nativeClockActive = true;
   _focusTimer.nativeAnchorElapsedRealtimeMs = clock.elapsedRealtimeMs;
   _focusTimer.nativeAnchorBootCount = clock.bootCountAvailable === true
-      && Number.isInteger(clock.bootCount) && clock.bootCount >= 0 ? clock.bootCount : null;
+      && Number.isInteger(clock.bootCount) && clock.bootCount >= 0
+    ? clock.bootCount
+    : (Number.isInteger(_focusTimer.nativeAnchorBootCount)
+        && _focusTimer.nativeAnchorBootCount >= 0 ? _focusTimer.nativeAnchorBootCount : null);
   _focusTimer.nativeAnchorBaseMs = Math.floor(totalElapsedMs);
   _focusTimer.nativeAnchorWallMs = clock.wallTimeMs;
   _focusTimer.nativeRestorePending = false;
