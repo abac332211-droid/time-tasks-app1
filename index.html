@@ -9374,10 +9374,14 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
       clockAdjusted: clockAdjusted,
       pendingStopwatchTransaction: pendingTransaction || null,
       nativeClockActive: nativeActive,
-      nativeAnchorElapsedRealtimeMs: nativeActive ? anchorElapsed : null,
-      nativeAnchorBootCount: nativeActive ? anchorBoot : null,
-      nativeAnchorBaseMs: nativeActive ? Math.floor(anchorBase) : null,
-      nativeAnchorWallMs: nativeActive ? anchorWall : null,
+      // Preserve the last verified service anchor while paused so FIFO
+      // notification actions already queued for this token can still be checked
+      // after process death. A resume always rotates the token before service start.
+      nativeAnchorElapsedRealtimeMs: (nativeActive || sessionToken !== null) ? anchorElapsed : null,
+      nativeAnchorBootCount: (nativeActive || sessionToken !== null) ? anchorBoot : null,
+      nativeAnchorBaseMs: (nativeActive || sessionToken !== null) && Number.isFinite(anchorBase)
+        ? Math.floor(anchorBase) : null,
+      nativeAnchorWallMs: (nativeActive || sessionToken !== null) ? anchorWall : null,
       nativeRestorePending: nativeRestore,
       nativeBootMismatch: nativeMismatch,
       nativeSessionToken: sessionToken,
