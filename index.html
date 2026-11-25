@@ -13899,7 +13899,8 @@ function _completeNormalStartupInit(options) {
   _appInitCompleted = !storageRecoveryRequired;
   if (_appInitCompleted) {
     setTimeout(function() {
-      if (_focusTimer.nativeRestorePending) _scheduleNativeStopwatchRestore();
+      if (_focusTimer.nativeRestorePending || _focusTimer.pendingNotificationFinish || _nativeStopwatchPlugin())
+        _scheduleNativeStopwatchRestore();
       else _consumeNativeStopwatchNotificationAction();
     }, 0);
   }
