@@ -43,7 +43,8 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   assert.match(plugin, /MAX_PENDING_ACTIONS = 20/);
   assert.match(plugin, /\.commit\(\)/);
   assert.match(plugin, /stopMatching && sessionToken\.equals\(activeToken\)/);
-  assert.match(plugin, /if \(!alreadyAcked && queue\.length\(\) > 0\)/);
+  assert.match(plugin, /boolean queuedAction = false/);
+  assert.match(plugin, /if \\(queuedAction\\)/);
   assert.match(plugin, /queue\.optJSONObject\(0\)/);
   assert.match(plugin, /يجب إقرار أقدم إجراء في الطابور/);
   const service = fs.readFileSync(path.join(f.java, 'StopwatchForegroundService.java'), 'utf8');
