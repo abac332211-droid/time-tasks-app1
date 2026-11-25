@@ -1000,7 +1000,7 @@ test('a rejected rolling snapshot is rolled back and cannot outrank the previous
 });
 
 
-async function withBrowserPages(run) {
+async function withBrowserPages(run, initialSeed = seed, pageCount = 2) {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -1016,13 +1016,14 @@ async function withBrowserPages(run) {
       if (localStorage.getItem('timeTasksApp_focusTimer') === null)
         localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
       if (localStorage.getItem('timeTasksApp_focusSessions') === null)
-        localStorage.setItem('timeTasksApp_focusSessions', '[]');
-    }, seed);
+        localStorage.setItem('timeTasksApp_focusSessions', JSON.stringify(initial.sessions || []));
+    }, initialSeed);
     const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
     const pageA = await context.newPage();
-    const pageB = await context.newPage();
-    await Promise.all([pageA.goto(appUrl), pageB.goto(appUrl)]);
-    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+    const pageB = pageCount > 1 ? await context.newPage() : null;
+    const pages = pageB ? [pageA, pageB] : [pageA];
+    await Promise.all(pages.map(page => page.goto(appUrl)));
+    await Promise.all(pages.map(page => page.waitForFunction(
       () => window._mainStorageBaselineReady === true
         && typeof window._withStopwatchTransactionLock === 'function',
       null, { timeout: 20000 }
@@ -1034,6 +1035,168 @@ async function withBrowserPages(run) {
     await new Promise(resolve => server.close(resolve));
   }
 }
+
+function makeColdStartStopwatchSeed() {
+  const now = Date.now();
+  const initial = JSON.parse(JSON.stringify(seed));
+  initial.main.tasks = [{
+    id: 7011,
+    name: 'Cold-start Stopwatch task',
+    type: 'معرفية',
+    status: 'pending',
+    expected: 15,
+    actual: 5,
+    plannedDate: new Date(now).toISOString().slice(0, 10),
+    plannedTime: '',
+    completedAt: null,
+    createdAt: now,
+    projectId: null,
+    priority: null,
+    recurrence: null,
+    checklist: null
+  }];
+  initial.timer = {
+    ...initial.timer,
+    mode: 'stopwatch',
+    phase: 'work',
+    running: true,
+    baseElapsed: 77,
+    startedAt: now - 77_000,
+    taskId: 7011,
+    sessionStartAt: now - 77_000,
+    savedAt: now
+  };
+  initial.sessions = [{
+    id: 1,
+    mode: 'stopwatch',
+    phase: 'work',
+    taskId: 7011,
+    taskName: 'Cold-start Stopwatch task',
+    startedAt: new Date(now - 300_000).toISOString(),
+    endedAt: new Date(now - 240_000).toISOString(),
+    durationSec: 60,
+    completed: true
+  }];
+  return initial;
+}
+
+test('cold-start restores a persisted running Stopwatch as paused and keeps start, stop and finish usable', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const initial = makeColdStartStopwatchSeed();
+  await withBrowserPages(async ({ pageA }) => {
+    await waitForSafeStartup(pageA, 'cold-start Stopwatch recovery');
+
+    const restored = await pageA.evaluate(() => ({
+      blocked: _isTimerControlBlocked(),
+      running: _focusTimer.running,
+      elapsed: _focusTimer.baseElapsed,
+      externalConflict: _focusTimerExternalConflict,
+      timerConflict: !!_secondaryStorageConflicts[FOCUS_TIMER_KEY],
+      timer: JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY)),
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]'),
+      startDisabled: document.getElementById('timerStartBtn').disabled,
+      finishDisabled: document.getElementById('timerFinishBtn').disabled
+    }));
+    assert.equal(restored.blocked, false, 'verified cold-start restore must release timer controls');
+    assert.equal(restored.running, false, 'a timer from a previous JS runtime must restore paused');
+    assert.equal(restored.elapsed, 77, 'the durable Stopwatch checkpoint must be preserved');
+    assert.equal(restored.externalConflict, false,
+      'a cold-start checkpoint must not be mislabeled as a live cross-window conflict');
+    assert.equal(restored.timerConflict, false,
+      'the startup-owned timer baseline must remain writable');
+    assert.equal(restored.timer.running, false,
+      'the paused cold-start checkpoint must be persisted');
+    assert.equal(restored.timer.baseElapsed, 77);
+    assert.equal(restored.sessions.length, 1, 'the historical session must survive startup recovery');
+    assert.equal(restored.startDisabled, false);
+    assert.equal(restored.finishDisabled, false);
+
+    await pageA.locator('#timerStartBtn').click();
+    await pageA.waitForFunction(() => _focusTimer.running === true);
+    await pageA.locator('#timerStartBtn').click();
+    await pageA.waitForFunction(() => _focusTimer.running === false);
+
+    await pageA.locator('#timerFinishBtn').click();
+    await pageA.locator('#modalFooter button.btn-primary').waitFor({ state: 'visible' });
+    await pageA.locator('#modalFooter button.btn-primary').click();
+
+    await pageA.waitForFunction(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      return main.tasks.find(task => task.id === 7011)?.actual === 6
+        && sessions.length === 2
+        && timer.running === false
+        && timer.baseElapsed === 0
+        && timer.pendingStopwatchTransaction === null;
+    }, null, { timeout: 15_000 });
+
+    const committed = await pageA.evaluate(() => ({
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1'))
+        .tasks.find(task => task.id === 7011).actual,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      blocked: _isTimerControlBlocked(),
+      recoveryRequired: storageRecoveryRequired
+    }));
+    assert.equal(committed.taskActual, 6, 'the task minutes must be added exactly once');
+    assert.equal(committed.sessions.length, 2, 'the historical session and one new session must remain');
+    assert.equal(committed.sessions[0].id, 1, 'the historical session must not be deleted');
+    const newRows = committed.sessions.filter(session =>
+      session.taskId === 7011 && session.durationSec >= 77 && session.id !== 1);
+    assert.equal(newRows.length, 1, 'the finished Stopwatch session must be recorded exactly once');
+    assert.equal(typeof newRows[0].transactionId, 'string',
+      'the new task-linked session must retain its transaction identity');
+    assert.equal(committed.timer.pendingStopwatchTransaction, null);
+    assert.equal(committed.timer.baseElapsed, 0);
+    assert.equal(committed.blocked, false);
+    assert.equal(committed.recoveryRequired, false);
+  }, initial, 1);
+});
+
+test('cold-start Stopwatch reset discards only the current interval and preserves historical sessions', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const initial = makeColdStartStopwatchSeed();
+  await withBrowserPages(async ({ pageA }) => {
+    await waitForSafeStartup(pageA, 'cold-start Stopwatch reset');
+
+    const before = await pageA.evaluate(() => ({
+      blocked: _isTimerControlBlocked(),
+      running: _focusTimer.running,
+      elapsed: _focusTimer.baseElapsed,
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]')
+    }));
+    assert.equal(before.blocked, false);
+    assert.equal(before.running, false);
+    assert.equal(before.elapsed, 77);
+    assert.equal(before.sessions.length, 1);
+
+    await pageA.locator('.timer-controls button').nth(2).click();
+    await pageA.locator('#modalFooter button.btn-danger').waitFor({ state: 'visible' });
+    await pageA.locator('#modalFooter button.btn-danger').click();
+
+    await pageA.waitForFunction(() => {
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return timer.running === false && timer.baseElapsed === 0
+        && timer.pendingStopwatchTransaction === null;
+    }, null, { timeout: 10_000 });
+
+    const after = await pageA.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY)),
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]'),
+      blocked: _isTimerControlBlocked(),
+      recoveryRequired: storageRecoveryRequired
+    }));
+    assert.equal(after.sessions.length, 1, 'reset must not delete prior session rows');
+    assert.equal(after.sessions[0].id, 1);
+    assert.equal(after.timer.baseElapsed, 0);
+    assert.equal(after.timer.running, false);
+    assert.equal(after.blocked, false);
+    assert.equal(after.recoveryRequired, false);
+  }, initial, 1);
+});
 
 test('real Chromium pages release Web Lock after owner callback throws synchronously', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
