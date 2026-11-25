@@ -9662,7 +9662,8 @@ function _getFocusTimerElapsedParts() {
           && Number.isFinite(previousWallSample)
           && monotonicDeltaSinceSample >= 0
           && monotonicDeltaSinceSample <= 1500
-          && wallDeltaSinceSample - monotonicDeltaSinceSample > 120000) {
+          && wallDeltaSinceSample - monotonicDeltaSinceSample > 120000
+          && !_focusTimer.nativeClockActive) {
         // A present but frozen monotonic source cannot prove time spent in device sleep.
         // Keep the last trusted sample, pause, and require the user to resume explicitly.
         var trustedElapsedMs = remainder + Math.max(0, previousMonotonicSample - _focusMonotonicStart);
@@ -9708,6 +9709,17 @@ function _getFocusTimerElapsedParts() {
   }
   if (_focusFallbackLastWall === null) _focusFallbackLastWall = fallbackNow;
   var fallbackDelta = fallbackNow - _focusFallbackLastWall;
+  if (_focusTimer.nativeClockActive && (fallbackDelta < 0 || fallbackDelta > 120000)) {
+    // The native monotonic clock will reconcile this interval on the foreground return.
+    // Do not add an unverified wall-clock delta while the native anchor is active.
+    var trustedNativeFallbackMs = remainder + _focusFallbackElapsedMs;
+    return {
+      seconds: base + Math.floor(trustedNativeFallbackMs / 1000),
+      remainderMs: trustedNativeFallbackMs % 1000,
+      monotonicNow: null,
+      wallNow: fallbackNow
+    };
+  }
   if (fallbackDelta < 0 || fallbackDelta > 120000) {
     // Date.now() is the only available clock here. After a large discontinuity
     // it cannot prove how much time elapsed, so pause instead of silently
