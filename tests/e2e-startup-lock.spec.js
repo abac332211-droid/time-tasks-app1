@@ -725,9 +725,11 @@ test('D-02 transition commits the old task before starting the next task timer',
         .find(button => button.textContent.includes('حفظ والانتقال'));
       if (!save) throw new Error('transition save choice was not rendered');
       save.click();
+      window.__transitionCommitPromise = window._focusCommitPendingPromise;
+      if (!window.__transitionCommitPromise) throw new Error('transition save action did not start a commit promise');
     });
     const commitResult = await page.evaluate(async () => {
-      const pending = window._focusCommitPendingPromise;
+      const pending = window.__transitionCommitPromise;
       return pending ? await pending : false;
     });
     const result = await page.evaluate(() => {
