@@ -11542,10 +11542,11 @@ function _applyValidatedResyncBundle(bundle) {
     _focusTimerSavedAtAtLoad = typeof timer.savedAt === "number" && Number.isFinite(timer.savedAt)
       ? timer.savedAt : null;
     _clearFocusTimerClock();
-    if (timer.running === true) {
-      _focusTimerExternalConflict = true;
-      _secondaryStorageConflicts[FOCUS_TIMER_KEY] = true;
-    }
+    // A persisted running bit is a cold-start checkpoint, not evidence of a
+    // live cross-window write. Startup owns the exclusive Stopwatch lock here;
+    // _finalizeFocusTimerColdStartRestore() must be allowed to persist the paused
+    // checkpoint. Any still-open sibling page will observe that write through its
+    // storage listener and enter the external-conflict state itself.
   }
   _loadFocusSettings();
   return true;
