@@ -950,6 +950,10 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
     });
     assert.equal(recovered.actual, 8);
     assert.equal(recovered.sessions.length, 500);
+    const recoveredSessionIds = recovered.sessions.map(session => session.id);
+    assert.deepEqual(recoveredSessionIds, Array.from({ length: 500 }, (_, index) => index + 2));
+    assert.equal(new Set(recoveredSessionIds).size, 500,
+      'the final 500 session IDs must be unique and remain in FIFO order');
     assert.equal(recovered.sessions[0].id, 2);
     assert.equal(recovered.sessions.filter(session => session.id === 1).length, 0);
     assert.equal(recovered.sessions.filter(session => session.id === 501).length, 1);
@@ -1201,7 +1205,14 @@ test('D-03.2 two real same-origin tabs wait for Web Locks and the second page sy
         mainExternalChange: _mainStorageExternalChangeObserved,
         appInitCompleted: _appInitCompleted,
         recoveryRequired: storageRecoveryRequired,
-        uiHasRecoveredTask: document.body.innerText.includes('Startup recovery task')
+        uiHasRecoveredTask: document.body.innerText.includes('Startup recovery task'),
+        uiTimerDisplay: document.getElementById('timerDisplay2')
+          ? document.getElementById('timerDisplay2').textContent : '',
+        expectedTimerDisplay: _formatFocusTime(_getElapsedSec()),
+        uiTimerPhaseLabel: document.getElementById('timerPhaseLabel')
+          ? document.getElementById('timerPhaseLabel').textContent : '',
+        uiSessionsCard: document.getElementById('focusSessionsCard')
+          ? document.getElementById('focusSessionsCard').innerText : ''
       };
     });
     assert.equal(waiter.tasks.length, 1);
@@ -1221,6 +1232,12 @@ test('D-03.2 two real same-origin tabs wait for Web Locks and the second page sy
     assert.equal(waiter.appInitCompleted, true);
     assert.equal(waiter.recoveryRequired, false);
     assert.equal(waiter.uiHasRecoveredTask, true);
+    assert.equal(waiter.uiTimerDisplay, waiter.expectedTimerDisplay,
+      'the rendered timer display must reflect the recovered in-memory timer');
+    assert.ok(waiter.uiTimerPhaseLabel.includes('ساعة توقيت'),
+      'the rendered timer mode must reflect the recovered Stopwatch mode');
+    assert.ok(waiter.uiSessionsCard.includes('Startup recovery task'),
+      'the rendered recent-sessions card must show the recovered session');
 
     const writer = await pageA.evaluate(() => {
       appSettings.themeMode = 'dark';
