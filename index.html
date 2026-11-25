@@ -9991,6 +9991,10 @@ function _loadFocusTimer() {
     }
   } catch (e) {
     storageRecoveryRequired = true;
+    if (typeof raw !== "undefined" && raw !== null
+        && typeof _preserveCorruptStorageSnapshot === "function") {
+      try { _preserveCorruptStorageSnapshot(FOCUS_TIMER_KEY, raw); } catch (preserveError) {}
+    }
     console.error("Could not hydrate the focus timer; persisted data was not replaced.", e);
   }
 }
