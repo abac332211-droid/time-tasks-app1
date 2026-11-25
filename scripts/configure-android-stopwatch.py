@@ -456,13 +456,12 @@ public final class {SERVICE} extends Service {{
             : new Notification.Builder(this);
         builder.setSmallIcon(icon)
             .setContentTitle(title)
-            .setContentText(task.trim().isEmpty() ? "الجلسة مستمرة" : "المهمة: " + task)
+            .setContentText(task.trim().isEmpty() ? "الوقت مستمر في الاحتساب" : "المهمة: " + task)
+            .setSubText("مؤقت التركيز يعمل في الخلفية")
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setShowWhen(true)
-            .setWhen(startWall)
-            .setUsesChronometer(true);
+            .setShowWhen(false);
         PendingIntent content = contentIntent();
         if (content != null) builder.setContentIntent(content);
         builder.addAction(new Notification.Action.Builder(
@@ -700,7 +699,7 @@ def configure(root: Path) -> None:
             raise ValueError("Could not find the application closing tag")
         receiver = (
             f'    <receiver android:name=".{RECEIVER}" android:enabled="true" '
-            'android:exported="false" />\\n'
+            'android:exported="false" />\n'
         )
         manifest = manifest[:app_close] + receiver + manifest[app_close:]
 
