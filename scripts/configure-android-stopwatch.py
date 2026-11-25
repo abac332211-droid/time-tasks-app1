@@ -498,7 +498,7 @@ public final class {SERVICE} extends Service {{
         String task = prefs.getString({PLUGIN}.TASK_KEY, "");
         String token = prefs.getString({PLUGIN}.ACTIVE_SESSION_TOKEN_KEY, null);
         long startWall = prefs.getLong({PLUGIN}.START_WALL_KEY, 0L);
-        String requestedToken = intent == null ? null
+        String requestedToken = intent == null ? token
             : intent.getStringExtra({PLUGIN}.ACTIVE_SESSION_TOKEN_KEY);
         if (token == null || !token.equals(requestedToken) || startWall <= 0L) {{
             stopSelf();
@@ -773,9 +773,15 @@ public final class StopwatchNotificationActionReceiver extends BroadcastReceiver
                         Log.e(TAG, "Action queue is full; preserving all pending actions.");
                         return;
                     }}
+                    java.util.HashSet<String> knownIds = new java.util.HashSet<>();
                     for (int i = 0; i < queue.length(); i++) {{
                         JSONObject existing = queue.optJSONObject(i);
-                        if (existing == null) {{
+                        if (existing == null
+                            || !{PLUGIN}.isUuidV4(existing.optString("actionId", null))
+                            || !{PLUGIN}.isUuidV4(existing.optString("sessionToken", null))
+                            || !("pause".equals(existing.optString("action"))
+                                || "finish".equals(existing.optString("action")))
+                            || !knownIds.add(existing.optString("actionId"))) {{
                             Log.e(TAG, "Corrupt action queue; refusing to replace it.");
                             return;
                         }}
