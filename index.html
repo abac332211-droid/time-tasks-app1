@@ -9226,7 +9226,7 @@ function _computeNativeFocusElapsedMs(clock, requireBootIdentity) {
 }
 
 function _markNativeFocusClockUntrusted(reason) {
-  _stopNativeStopwatchForegroundService();
+  if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
   _focusTimer.running = false;
   _focusTimer.startedAt = null;
   _focusTimer.nativeClockActive = false;
@@ -9837,7 +9837,7 @@ function _catchUp(backgroundReturn) {
     _focusTimer.awaitingConfirmation = true;
     _focusTimer.nativeClockActive = false;
     _focusTimer.nativeRestorePending = false;
-    _stopNativeStopwatchForegroundService();
+    if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
     if (!_saveFocusTimer()) {
       _renderFocusTimer();
       showAlertModal("⚠️ تعذر حفظ الجلسة المعلقة", "تم إيقاف المؤقت وإبقاء الجلسة معلقة في الذاكرة، لكن التخزين لم يؤكد حفظها. لا تغلق التطبيق قبل تصدير نسخة احتياطية والتحقق من مساحة التخزين.");
@@ -9869,7 +9869,7 @@ function _catchUp(backgroundReturn) {
       _focusTimer.running = false;
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
-      _stopNativeStopwatchForegroundService();
+      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
       _focusTimer.baseElapsed = elapsed;
       _focusElapsedRemainderMs = elapsedParts.remainderMs;
       _focusTimer.startedAt = null;
@@ -9904,7 +9904,7 @@ function _catchUp(backgroundReturn) {
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
       _stopDisplayTick();
-      _stopNativeStopwatchForegroundService();
+      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
       var pausedStateSaved = _saveFocusTimer();
       _renderFocusTimer();
       renderFocusSessionsCard();
@@ -9917,7 +9917,7 @@ function _catchUp(backgroundReturn) {
       return;
     }
     renderFocusSessionsCard();
-    if (_focusTimer.running) _attachNativeStopwatchClockToRunningTimer();
+    if (_focusTimer.running) if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();
     _notifyPhaseTransition();
   }
 }
@@ -9960,7 +9960,7 @@ function _showAwaySessionConfirmation() {
       _focusTimer.nativeAnchorBaseMs = null;
       _focusTimer.nativeAnchorWallMs = null;
       var saved = _saveFocusTimer();
-      _stopNativeStopwatchForegroundService();
+      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
       _renderFocusTimer();
       try { renderFocusSessionsCard(); } catch (e) {}
       if (!saved) showAlertModal("تم تسجيل الجلسة", "سُجلت الجلسة، لكن تعذر حفظ انتقال المؤقت. لا تُعد تسجيل الجلسة؛ أعد فتح التطبيق للتحقق من الحالة.");
@@ -9979,7 +9979,7 @@ function _showAwaySessionConfirmation() {
       _focusTimer.nativeAnchorBootCount = null;
       _focusTimer.nativeAnchorBaseMs = null;
       _focusTimer.nativeAnchorWallMs = null;
-      _stopNativeStopwatchForegroundService();
+      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
       _focusTimer.phase = "work";
       _focusTimer.startedAt = null;
       _focusTimer.sessionStartAt = null;
@@ -11095,6 +11095,7 @@ function setTimerMode(mode) {
 }
 
 function toggleTimer() {
+  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _toggleTimerNow();
   return _runWithFreshNativeStopwatchClock(_toggleTimerNow);
 }
 
@@ -11136,7 +11137,7 @@ function _toggleTimerNow() {
         "لم يُحفظ الإيقاف؛ أُعيد المؤقت إلى حالته السابقة وسيظل مستمرًا. لا تغلق التطبيق قبل معالجة مشكلة التخزين."
       );
     } else {
-      _stopNativeStopwatchForegroundService();
+      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
     }
   } else {
     if (_focusTimerExternalConflict) {
@@ -11159,13 +11160,14 @@ function _toggleTimerNow() {
       );
     } else {
       _startDisplayTick();
-      _attachNativeStopwatchClockToRunningTimer();
+      if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();
     }
   }
   _renderFocusTimer();
 }
 
 function resetTimer() {
+  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _resetTimerNow();
   return _runWithFreshNativeStopwatchClock(_resetTimerNow);
 }
 
@@ -11284,7 +11286,7 @@ function _freezeFocusTimerForDecision() {
     showAlertModal("تعذر حفظ حالة المؤقت","تعذر تأكيد تجميد المؤقت؛ أُعيدت الحالة السابقة ولم نتابع العملية.");
     return null;
   }
-  _stopNativeStopwatchForegroundService();
+  if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
   var snapshot = _captureFocusTimerSnapshot();
   if (!snapshot) {
     storageRecoveryRequired = true;
@@ -12396,6 +12398,7 @@ function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
 function finishTimer() {
+  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _finishTimerNow();
   return _runWithFreshNativeStopwatchClock(_finishTimerNow);
 }
 
@@ -12488,7 +12491,7 @@ function _resetAfterSession() {
     showAlertModal("تعذر حفظ تصفير المؤقت", "لم يُحفظ التصفير؛ أُعيدت حالة المؤقت السابقة كي لا تختلف الواجهة عن التخزين.");
     return false;
   }
-  _stopNativeStopwatchForegroundService();
+  if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
   _renderFocusTimer();
   return true;
 }
@@ -12551,7 +12554,7 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
       _focusTimer.running=false;_focusTimer.startedAt=null;_clearFocusTimerClock();_renderFocusTimer();
       showAlertModal("تعذر استئناف المؤقت","تعذر حفظ الاستئناف؛ بقيت الجلسة متوقفة بالمدة المحفوظة.");return;
     }
-    _startDisplayTick();_attachNativeStopwatchClockToRunningTimer();_renderFocusTimer();
+    _startDisplayTick();if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();_renderFocusTimer();
   };
   var discard=document.createElement('button');discard.className='btn-danger';discard.textContent='تجاهل';
   discard.onclick=function(){closeModal();_discardShortFocusSession({snapshot:snapshot,allowLong:true,
@@ -12576,6 +12579,7 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
 }
 
 function startTimerForTask(taskId) {
+  if (typeof _runWithFreshNativeStopwatchClock !== "function") return _startTimerForTaskNow(taskId);
   return _runWithFreshNativeStopwatchClock(function() {
     return _startTimerForTaskNow(taskId);
   });
@@ -12606,7 +12610,7 @@ function _startTimerForTaskNow(taskId) {
       _clearFocusTimerClock();_stopDisplayTick();_renderFocusTimer();
       showAlertModal("تعذر بدء جلسة التركيز","لم يُحفظ بدء الجلسة؛ أُعيدت الحالة السابقة ولم يبدأ العد.");return false;
     }
-    _startDisplayTick();_attachNativeStopwatchClockToRunningTimer();
+    _startDisplayTick();if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();
     _renderFocusTimer();_scrollToTimer();return true;
   }
   function _scrollToTimer(){
