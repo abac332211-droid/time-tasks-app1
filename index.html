@@ -9263,9 +9263,8 @@ function _normalizeFocusTimerRecord(record, taskRows) {
   var cycle = owns("cyclePosition") ? record.cyclePosition : 0;
   if (!Number.isInteger(cycle) || cycle < 0 || cycle > 3) return invalid("invalid_cycle");
   var taskId = owns("taskId") ? record.taskId : null;
-  if (taskId !== null && (!Number.isSafeInteger(taskId) || taskId <= 0
-      || !Array.isArray(taskRows) || !taskRows.some(function(task) { return task && task.id === taskId; })))
-    return invalid("task_reference_invalid");
+  var taskReferenceInvalid = taskId !== null && (!Number.isSafeInteger(taskId) || taskId <= 0
+      || !Array.isArray(taskRows) || !taskRows.some(function(task) { return task && task.id === taskId; }));
   var sessionStartAt = owns("sessionStartAt") ? record.sessionStartAt : null;
   if (sessionStartAt !== null
       && (typeof sessionStartAt !== "number" || !Number.isFinite(sessionStartAt) || sessionStartAt < 0))
@@ -9325,6 +9324,13 @@ function _normalizeFocusTimerRecord(record, taskRows) {
   var anchorBase = owns("nativeAnchorBaseMs") ? record.nativeAnchorBaseMs : null;
   var anchorWall = owns("nativeAnchorWallMs") ? record.nativeAnchorWallMs : null;
   var migrated = false;
+  if (taskReferenceInvalid) {
+    // A removed task must not invalidate unrelated elapsed timer history. Keep
+    // the full transaction only when its task identity can still be verified.
+    if (pendingTransaction) return invalid("task_reference_invalid_with_transaction");
+    taskId = null;
+    migrated = true;
+  }
   if (nativeActive && sessionToken === null) {
     // Older timer records predate native session identity. Keep the last proven
     // elapsed value, but do not restore an unidentifiable native service session.
@@ -11540,7 +11546,7 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   function restorePrevious() {
     if (!previous.legacyClockState
         && typeof _restoreFocusTimerClockState === "function")
-      return restorePrevious();
+      return _restoreFocusTimerClockState(previous);
     Object.assign(_focusTimer, previous.timer);
     _focusElapsedRemainderMs = previous.remainderMs;
     if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
@@ -11733,7 +11739,7 @@ function _freezeFocusTimerForDecision() {
   function restorePrevious() {
     if (!previous.legacyClockState
         && typeof _restoreFocusTimerClockState === "function")
-      return restorePrevious();
+      return _restoreFocusTimerClockState(previous);
     Object.assign(_focusTimer, previous.timer);
     _focusElapsedRemainderMs = previous.remainderMs;
     if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
@@ -13013,7 +13019,7 @@ function _resetAfterSession() {
   function restorePrevious() {
     if (!previous.legacyClockState
         && typeof _restoreFocusTimerClockState === "function")
-      return restorePrevious();
+      return _restoreFocusTimerClockState(previous);
     Object.assign(_focusTimer, previous.timer);
     _focusElapsedRemainderMs = previous.remainderMs;
     if (_focusTimer.running && typeof _startDisplayTick === "function") _startDisplayTick();
