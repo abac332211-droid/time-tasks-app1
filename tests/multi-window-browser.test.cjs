@@ -1207,6 +1207,92 @@ test('cold-start Stopwatch reset discards only the current interval and preserve
   }, initial, 1);
 });
 
+test('Stopwatch button label distinguishes fresh, running and paused states without starting a new session on resume', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const initial = makeColdStartStopwatchSeed();
+  initial.timer.running = false;
+  initial.timer.baseElapsed = 0;
+  initial.timer.startedAt = null;
+  initial.timer.sessionStartAt = null;
+  initial.timer.savedAt = Date.now();
+
+  await withBrowserPages(async ({ pageA }) => {
+    await waitForSafeStartup(pageA, 'Stopwatch button labels');
+    await pageA.locator('nav button[data-page="tasks"]').click();
+    await pageA.locator('#timerCard').waitFor({ state: 'visible' });
+
+    const initialState = await pageA.evaluate(() => ({
+      label: document.getElementById('timerStartBtn').textContent,
+      elapsed: _focusTimer.baseElapsed,
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]').length
+    }));
+    assert.equal(initialState.label, '▶ ابدأ', 'a fresh Stopwatch must say start');
+    assert.equal(initialState.elapsed, 0);
+    assert.equal(initialState.sessions, 1, 'the historical session must remain');
+
+    await pageA.locator('#timerStartBtn').click();
+    await pageA.waitForFunction(() =>
+      _focusTimer.running === true
+      && document.getElementById('timerStartBtn').textContent === '⏸ إيقاف'
+    );
+    const firstStartAt = await pageA.evaluate(() => _focusTimer.sessionStartAt);
+
+    await pageA.waitForTimeout(1200);
+    await pageA.locator('#timerStartBtn').click();
+    await pageA.waitForFunction(() =>
+      _focusTimer.running === false
+      && document.getElementById('timerStartBtn').textContent === '▶ استئناف'
+    );
+    const paused = await pageA.evaluate(() => ({
+      elapsed: _focusTimer.baseElapsed,
+      sessionStartAt: _focusTimer.sessionStartAt,
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]').length
+    }));
+    assert.ok(paused.elapsed > 0, 'pausing must preserve the elapsed interval');
+    assert.equal(paused.sessionStartAt, firstStartAt,
+      'pausing must retain the original session start');
+    assert.equal(paused.sessions, 1, 'pausing must not create a session row');
+
+    await pageA.locator('#timerStartBtn').click();
+    await pageA.waitForFunction(() =>
+      _focusTimer.running === true
+      && document.getElementById('timerStartBtn').textContent === '⏸ إيقاف'
+    );
+    await pageA.waitForTimeout(1100);
+    await pageA.locator('#timerStartBtn').click();
+    await pageA.waitForFunction(() =>
+      _focusTimer.running === false
+      && document.getElementById('timerStartBtn').textContent === '▶ استئناف'
+    );
+    const resumed = await pageA.evaluate(() => ({
+      elapsed: _focusTimer.baseElapsed,
+      sessionStartAt: _focusTimer.sessionStartAt,
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]').length
+    }));
+    assert.ok(resumed.elapsed > paused.elapsed,
+      'resuming must continue from the accumulated time rather than reset it');
+    assert.equal(resumed.sessionStartAt, firstStartAt,
+      'resuming must continue the same focus interval');
+    assert.equal(resumed.sessions, 1, 'resuming must not create a new session');
+
+    await pageA.locator('.timer-controls button').nth(2).click();
+    await pageA.locator('#modalFooter button.btn-danger').waitFor({ state: 'visible' });
+    await pageA.locator('#modalFooter button.btn-danger').click();
+    await pageA.waitForFunction(() =>
+      _focusTimer.baseElapsed === 0
+      && _focusTimer.running === false
+      && document.getElementById('timerStartBtn').textContent === '▶ ابدأ'
+    );
+    const reset = await pageA.evaluate(() => ({
+      sessionStartAt: _focusTimer.sessionStartAt,
+      sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]').length
+    }));
+    assert.equal(reset.sessionStartAt, null);
+    assert.equal(reset.sessions, 1, 'reset must preserve prior sessions and create none');
+  }, initial, 1);
+});
+
 test('real Chromium pages release Web Lock after owner callback throws synchronously', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
