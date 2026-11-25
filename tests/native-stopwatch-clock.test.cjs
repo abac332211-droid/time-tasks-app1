@@ -104,6 +104,8 @@ test('native clock refuses missing or malformed persisted anchors', () => {
 
 test('timer integration resynchronizes before destructive actions and foreground return', () => {
   assert.match(html, /function _runWithFreshNativeStopwatchClock\(action\)/);
+  const freshSource = extractFunction('_runWithFreshNativeStopwatchClock');
+  assert.ok(freshSource.indexOf('peekNotificationAction') < freshSource.indexOf('_refreshNativeStopwatchClock'));
   assert.ok(extractFunction('toggleTimer').includes('_runWithFreshNativeStopwatchClock'));
   assert.ok(extractFunction('finishTimer').includes('_runWithFreshNativeStopwatchClock'));
   assert.match(html, /function syncClockAfterQueue\(\)/);
@@ -342,6 +344,37 @@ function makeNotificationAction(overrides = {}) {
     ...overrides
   };
 }
+
+test('queued notification action is consumed before any fresh native clock sample', async () => {
+  const calls = [];
+  const sandbox = {
+    _focusTimer: { running: true, nativeClockActive: true },
+    _nativeStopwatchPlugin: () => ({
+      peekNotificationAction: async () => ({ hasAction: true })
+    }),
+    _consumeNativeStopwatchNotificationAction: async () => {
+      calls.push('consume');
+      return 'pause';
+    },
+    _refreshNativeStopwatchClock: async () => {
+      calls.push('refresh');
+      return true;
+    },
+    showToast() {},
+    showAlertModal() {},
+    console
+  };
+  vm.runInNewContext(extractFunction('_runWithFreshNativeStopwatchClock'), sandbox);
+  let actionCalls = 0;
+  const result = await sandbox._runWithFreshNativeStopwatchClock(() => {
+    actionCalls++;
+    return true;
+  });
+
+  assert.equal(result, false);
+  assert.deepEqual(calls, ['consume']);
+  assert.equal(actionCalls, 0);
+});
 
 test('notification Pause persists exact receiver-time elapsed value before ACK', async () => {
   const h = makeNotificationActionHarness(makeNotificationAction());
