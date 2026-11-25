@@ -3252,10 +3252,12 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
 
 test('all reviewed modal openers remove the previous shared keydown handler before registering', () => {
   for (const name of ['openSOSModal', 'openShutdownModal', '_showStopwatchSaveDialog', 'finishTimer', '_showSessionTransitionDialog']) {
-    const body = extractFunction(name);
+    const body = name === 'finishTimer'
+      ? extractFunction('finishTimer') + '\\n' + extractFunction('_continueFocusTimerFinish')
+      : extractFunction(name);
     assert.match(body,
       /if \(_modalKeyHandler\) \{\s*document\.removeEventListener\(['"]keydown['"],\s*_modalKeyHandler\);\s*\}\s*_modalKeyHandler\s*=\s*function/,
-      name + ' removes the previously registered handler');
+      name + ' or its delegated dialog renderer removes the previously registered handler');
   }
 });
 
