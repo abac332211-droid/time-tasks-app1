@@ -108,5 +108,5 @@ test('timer integration resynchronizes before destructive actions and foreground
   assert.match(html, /function finishTimer\(\)\s*\{\s*return _runWithFreshNativeStopwatchClock\(_finishTimerNow\);/);
   assert.match(html, /var clockSync = _focusTimer\.nativeRestorePending/);
   assert.match(html, /_refreshNativeStopwatchClock\(false\)/);
-  assert.match(html, /_focusTimer\.nativeClockActive\)\s*\{\s*\/\/ The native monotonic clock will reconcile this interval/);
+  assert.match(html, /if \(_focusTimer\.nativeClockActive && \(fallbackDelta < 0 \|\| fallbackDelta > 120000\)\) \{\s*\/\/ The native monotonic clock will reconcile this interval/);
 });
