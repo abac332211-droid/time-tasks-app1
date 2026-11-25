@@ -9758,8 +9758,7 @@ function _consumeNativeStopwatchNotificationAction() {
         return result && result.acknowledged === true ? "stale" : "untrusted";
       });
     }
-    if (!_focusTimer.nativeClockActive
-        || !Number.isInteger(_focusTimer.nativeAnchorBootCount)
+    if (!Number.isInteger(_focusTimer.nativeAnchorBootCount)
         || !Number.isInteger(action.bootCount) || action.bootCount < 0
         || action.bootCount !== _focusTimer.nativeAnchorBootCount
         || action.bootCountAvailable !== true
@@ -9787,10 +9786,17 @@ function _consumeNativeStopwatchNotificationAction() {
         "وقت الإجراء لا يتوافق مع المرساة المحفوظة. لم نغير الجلسة ولم نقرّ الإجراء.");
       return "untrusted";
     }
-    if (_focusTimer.running !== true) {
+    if (_focusTimer.pendingNotificationFinish) {
       storageRecoveryRequired = true;
-      showAlertModal("إجراء مؤقت يحتاج إلى مراجعة",
-        "وصل إجراء لجلسة لا تظهر حالياً بحالة تشغيل. أبقينا السجل المعلق دون تطبيق تخميني.");
+      showAlertModal("طلب إنهاء سابق لم يُحسم",
+        "أبقينا إجراء الإشعار الحالي في طابور Android حتى يُحسم طلب الإنهاء السابق.");
+      return "untrusted";
+    }
+    var currentElapsedMs = _focusTimer.baseElapsed * 1000 + _focusElapsedRemainderMs;
+    if (!Number.isFinite(currentElapsedMs) || eventElapsedMs < currentElapsedMs) {
+      storageRecoveryRequired = true;
+      showAlertModal("ترتيب إجراءات المؤقت غير موثوق",
+        "وقت الإجراء أقدم من المدة المحفوظة للجلسة. لم نرجع الساعة إلى الخلف ولم نقرّ الإجراء.");
       return "untrusted";
     }
     var previous = _captureFocusTimerClockState();
@@ -11478,32 +11484,48 @@ function setTimerMode(mode) {
   _applyModeChange();
 }
 
-function toggleTimer(_nativeClockSynchronized) {
+function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
       && typeof _runWithFreshNativeStopwatchClock === "function") {
-    return _runWithFreshNativeStopwatchClock(function() { return toggleTimer(true); });
+    return _runWithFreshNativeStopwatchClock(function() { return toggleTimer(true, false); });
   }
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
-    return;
+    return false;
   }
   if (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked()) {
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");
-    return;
+    return false;
   }
   if (_focusTimer.pendingNotificationFinish) {
-    if (!_pendingFinishDialogShown) {
-      _pendingFinishDialogShown = true;
-      finishTimer();
-    }
+    if (!_pendingFinishDialogShown) finishTimer();
     showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
     return false;
   }
+  var nativePlugin = _nativeStopwatchPlugin();
+  if (!_notificationQueueChecked && nativePlugin
+      && typeof nativePlugin.peekNotificationAction === "function") {
+    return Promise.resolve(nativePlugin.peekNotificationAction()).then(function(action) {
+      if (action && action.hasAction !== false) {
+        return _consumeNativeStopwatchNotificationAction().then(function() {
+          showToast("تمت معالجة إجراء الإشعار أو الاحتفاظ به للمراجعة؛ تحقق من المؤقت ثم أعد المحاولة.");
+          return false;
+        });
+      }
+      return toggleTimer(true, true);
+    }).catch(function(error) {
+      storageRecoveryRequired = true;
+      console.warn("Could not verify the native notification action queue before timer control:", error);
+      showAlertModal("تعذر التحقق من طابور الإشعارات",
+        "لم يبدأ المؤقت ولم نغير حالته لأن طابور إجراءات Android غير قابل للتحقق.");
+      return false;
+    });
+  }
   _unlockAudioContext();
-  if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return; }
+  if (_focusTimer.awaitingConfirmation) { _showAwaySessionConfirmation(); return false; }
   if (_focusTimerExternalConflict) {
     showAlertModal("تعارض حالة المؤقت", "تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل تعديله.");
-    return;
+    return false;
   }
   var previous = _captureFocusTimerClockState();
   var previousToken = _focusTimer.nativeSessionToken;
@@ -11529,7 +11551,7 @@ function toggleTimer(_nativeClockSynchronized) {
     if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
       _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
     }
-    if (_nativeStopwatchPlugin() && !_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
+    if (nativePlugin && !_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
       _focusTimer.nativeSessionToken = _createNativeStopwatchSessionToken();
       if (!_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
         _restoreFocusTimerClockState(previous);
@@ -11554,6 +11576,7 @@ function toggleTimer(_nativeClockSynchronized) {
     }
   }
   _renderFocusTimer();
+  return true;
 }
 
 function resetTimer(_nativeClockSynchronized) {
@@ -13099,27 +13122,36 @@ function _setupVisibilityListener() {
   function _onFocusTimerForegroundReturn() {
     if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
         || _startupResetRecoveryInFlight || !_appInitCompleted) return;
-    if (document.visibilityState !== 'visible') {
+    if (document.visibilityState !== "visible") {
       if (_focusTimer.running) _saveFocusTimer();
       return;
     }
-    var clockSync = _focusTimer.nativeRestorePending
-      ? _restoreNativeStopwatchSessionAfterStartup()
-      : _refreshNativeStopwatchClock(false);
-    Promise.resolve(clockSync).then(function() {
-      if (_focusTimer.running && _focusTimer.mode === 'pomodoro') _catchUp(true);
-      _renderFocusTimer();
-      renderFocusSessionsCard();
-      _consumeNativeStopwatchNotificationAction();
-      if (!storageRecoveryRequired) {
-        try {
-          var _genCount = _generateAndPersistRecurringTasks();
-          if (_genCount > 0) {
-            renderAll();
-            showToast('🔁 أُضيفت ' + _genCount + ' مهام لليوم الجديد');
+    function syncClockAfterQueue() {
+      return _consumeNativeStopwatchNotificationAction().then(function(action) {
+        if (action === "stale" || action === "duplicate") return syncClockAfterQueue();
+        if (action) return false;
+        var clockSync = _focusTimer.nativeRestorePending
+          ? _restoreNativeStopwatchSessionAfterStartup()
+          : _refreshNativeStopwatchClock(false);
+        return Promise.resolve(clockSync).then(function() {
+          if (_focusTimer.running && _focusTimer.mode === "pomodoro") _catchUp(true);
+          _renderFocusTimer();
+          renderFocusSessionsCard();
+          if (!storageRecoveryRequired) {
+            try {
+              var _genCount = _generateAndPersistRecurringTasks();
+              if (_genCount > 0) {
+                renderAll();
+                showToast("🔁 أُضيفت " + _genCount + " مهام لليوم الجديد");
+              }
+            } catch (e) { console.error("Recurring generation on visibility:", e); }
           }
-        } catch (e) { console.error('Recurring generation on visibility:', e); }
-      }
+          return true;
+        });
+      });
+    }
+    syncClockAfterQueue().catch(function(error) {
+      console.warn("Foreground stopwatch reconciliation failed:", error);
     });
   }
   document.addEventListener('visibilitychange', function() {
