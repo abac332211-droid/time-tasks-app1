@@ -265,6 +265,25 @@ function initialStorage() {
   });
 }
 
+function seedFullSessionHistory(storage, sessionStartAt) {
+  const sessions = Array.from({ length: 500 }, (_, index) => {
+    const startedAt = sessionStartAt - (500 - index) * 120_000;
+    return {
+      id: index + 1,
+      mode: 'stopwatch',
+      phase: 'work',
+      taskId: 7,
+      taskName: 'Historical Stopwatch session',
+      startedAt: new Date(startedAt).toISOString(),
+      endedAt: new Date(startedAt + 60_000).toISOString(),
+      durationSec: 60,
+      completed: true
+    };
+  });
+  storage.setItem('focus-sessions', JSON.stringify(sessions));
+  return sessions;
+}
+
 test('process restart after task commit but before session logging resumes without adding task minutes twice', async () => {
   const storage = initialStorage();
   const first = createRuntime(storage);
@@ -594,6 +613,68 @@ test('recovery does not adopt an exact legacy session when task.actual is target
   assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125, 'the Stopwatch is not reset');
   assert.equal(runtime.sandbox._focusTimer.pendingStopwatchTransaction.id, tx.id);
   assert.equal(runtime.sandbox.storageRecoveryRequired, true);
+});
+
+test('Stopwatch recovery at the 500-session limit evicts once and retry does not evict a second row', async () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  const originalHistory = seedFullSessionHistory(storage, timer.sessionStartAt);
+  const tx = {
+    version: 1,
+    id: 'stopwatch-fifo-capacity-transaction',
+    taskId: 7,
+    previousActual: 5,
+    targetActual: 8,
+    previousTransactionId: null,
+    minutesToAdd: 3,
+    durationSec: 125,
+    sessionStartAt: timer.sessionStartAt,
+    mode: 'stopwatch',
+    phase: 'work',
+    clockAdjusted: false,
+    elapsedRemainderMs: 0,
+    completed: true,
+    createdAt: Date.now()
+  };
+  timer.pendingStopwatchTransaction = tx;
+  storage.setItem('focus-timer', JSON.stringify(timer));
+
+  const first = createRuntime(storage);
+  const saveFocusTimer = first.sandbox._saveFocusTimer.bind(first.sandbox);
+  let saveCount = 0;
+  first.sandbox._saveFocusTimer = function() {
+    saveCount++;
+    if (saveCount === 2) return false;
+    return saveFocusTimer();
+  };
+
+  const firstResult = await first.sandbox._withStopwatchTransactionLock(
+    () => first.sandbox._recoverPendingStopwatchSave(false)
+  );
+  assert.equal(firstResult, false, 'the simulated final journal-clear failure must keep recovery pending');
+  const firstSavedHistoryRaw = storage.getItem('focus-sessions');
+  const firstSavedHistory = JSON.parse(firstSavedHistoryRaw);
+  assert.equal(firstSavedHistory.length, 500);
+  assert.equal(firstSavedHistory[0].id, 2, 'exactly the oldest historical session is removed');
+  assert.equal(firstSavedHistory[499].id, 501, 'the new transaction session receives the next unique ID');
+  assert.equal(firstSavedHistory[499].transactionId, tx.id);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
+  assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction.id, tx.id);
+  assert.equal(originalHistory.length, 500);
+
+  const retry = createRuntime(storage);
+  const retryResult = await retry.sandbox._withStopwatchTransactionLock(
+    () => retry.sandbox._recoverPendingStopwatchSave(false)
+  );
+  assert.equal(retryResult, true);
+  assert.equal(storage.getItem('focus-sessions'), firstSavedHistoryRaw,
+    'matching transaction replay must not rotate FIFO or write the history again');
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8,
+    'retry must not add the task minutes twice');
+  const completedTimer = JSON.parse(storage.getItem('focus-timer'));
+  assert.equal(completedTimer.pendingStopwatchTransaction, null);
+  assert.equal(completedTimer.baseElapsed, 0);
+  assert.equal(retry.sandbox.storageRecoveryRequired, false);
 });
 
 test('recovery accepts an existing session only when its saved transaction ID and details match', async () => {

@@ -10386,6 +10386,12 @@ function _logSession(phase, durationSec, completed, endedAtMs, transactionId) {
     durationSec: durationSec, completed: !!completed, clockAdjusted: adjusted || undefined
   };
   if (transactionId) row.transactionId = transactionId;
+  // The loaded history is validated before it reaches this point. Retain the
+  // newest FOCUS_MAX_SESSIONS rows and reserve one slot for the new session.
+  // nextId was calculated before trimming, so an evicted ID is never reused.
+  if (arr.length >= FOCUS_MAX_SESSIONS) {
+    arr.splice(0, arr.length - FOCUS_MAX_SESSIONS + 1);
+  }
   arr.push(row);
   if (!_saveSessions(arr)) { showToast("⚠️ تعذر حفظ جلسة التركيز"); return false; }
   return true;

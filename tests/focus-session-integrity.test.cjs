@@ -36,11 +36,17 @@ function validSession(overrides = {}) {
   };
 }
 
-function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult = true } = {}) {
+function createLogHarness({
+  sessionStartAt = baseStart,
+  initial = [],
+  saveResult = true,
+  maxSessions = 500
+} = {}) {
   let sessions = initial.slice();
   let saveCalls = 0;
   const toasts = [];
   const sandbox = {
+    FOCUS_MAX_SESSIONS: maxSessions,
     _focusTimer: {
       mode: 'stopwatch',
       phase: 'work',
@@ -52,7 +58,7 @@ function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult
     _loadSessions: () => sessions.slice(),
     _saveSessions(records) {
       saveCalls++;
-      if (!saveResult) return false;
+      if (!saveResult || !Array.isArray(records) || records.length > maxSessions) return false;
       sessions = records.slice();
       return true;
     },
@@ -135,6 +141,9 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
   const inverted = validSession({ endedAt: new Date(baseStart - 1).toISOString() });
   assert.equal(sandbox._saveSessions([inverted]), false,
     'an end timestamp before its start must be rejected');
+  const overLimit = Array.from({ length: 501 }, (_, index) => validSession({ id: index + 1 }));
+  assert.equal(sandbox._saveSessions(overLimit), false,
+    'the low-level saver must keep rejecting arrays above the retention limit');
   assert.equal(writes, 0);
   assert.deepEqual(sandbox._sessionsCache, []);
 });
@@ -160,6 +169,78 @@ test('session logging is idempotent for an already saved session identity', () =
   assert.equal(h.sandbox._logSession('work', 60, true, baseStart + 60_000), true);
   assert.equal(h.sessions.length, 1);
   assert.equal(h.saveCalls, 0, 'duplicate recognition must not write a second record');
+});
+
+test('session logging retains all 499 existing sessions when adding the 500th', () => {
+  const initial = Array.from({ length: 499 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const sessionStartAt = baseStart + 499 * 120_000;
+  const h = createLogHarness({ sessionStartAt, initial });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), true);
+  assert.equal(h.sessions.length, 500);
+  assert.equal(h.sessions[0].id, 1, 'the oldest row remains while capacity is still available');
+  assert.equal(h.sessions[499].id, 500);
+  assert.equal(h.saveCalls, 1);
+});
+
+test('session logging evicts exactly the oldest row before adding session 501', () => {
+  const initial = Array.from({ length: 500 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const sessionStartAt = baseStart + 500 * 120_000;
+  const h = createLogHarness({ sessionStartAt, initial });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), true);
+  assert.equal(h.sessions.length, 500);
+  assert.equal(h.sessions[0].id, 2, 'only the oldest stored row is evicted');
+  assert.equal(h.sessions[499].id, 501, 'the new row receives an ID above the pre-trim maximum');
+  assert.equal(new Set(h.sessions.map(row => row.id)).size, 500);
+  assert.equal(h.sessions[499].startedAt, new Date(sessionStartAt).toISOString());
+  assert.equal(h.saveCalls, 1);
+});
+
+test('failed FIFO save leaves all 500 persisted sessions represented in the in-memory harness', () => {
+  const initial = Array.from({ length: 500 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const before = initial.map(row => ({ ...row }));
+  const h = createLogHarness({
+    sessionStartAt: baseStart + 500 * 120_000,
+    initial,
+    saveResult: false
+  });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), false);
+  assert.deepEqual(h.sessions, before, 'a failed write must not commit the evicted view');
+  assert.equal(h.saveCalls, 1);
+});
+
+test('duplicate session recognition at capacity does not rotate or write history', () => {
+  const sessionStartAt = baseStart + 500 * 120_000;
+  const initial = Array.from({ length: 500 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: index === 499
+      ? new Date(sessionStartAt).toISOString()
+      : new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: index === 499
+      ? new Date(sessionStartAt + 60_000).toISOString()
+      : new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const h = createLogHarness({ sessionStartAt, initial });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), true);
+  assert.equal(h.sessions.length, 500);
+  assert.equal(h.sessions[0].id, 1);
+  assert.equal(h.sessions[499].id, 500);
+  assert.equal(h.saveCalls, 0, 'idempotent replay must not evict another historical row');
 });
 
 test('session logging rejects timestamps outside the JavaScript Date range without throwing', () => {
