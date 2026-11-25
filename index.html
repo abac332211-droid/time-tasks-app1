@@ -9658,10 +9658,16 @@ function _refreshNativeStopwatchClock(requireBootIdentity) {
 }
 
 function _restoreNativeStopwatchSessionAfterStartup() {
-  if (_focusTimer.pendingNotificationFinish) {
-    if (!_pendingFinishDialogShown) finishTimer();
-    return Promise.resolve(true);
+  function restorePendingFinish() {
+    return _consumeNativeStopwatchNotificationAction().then(function(action) {
+      if (action === "untrusted" || action === "saved") return false;
+      if (action === "stale") return restorePendingFinish();
+      if (_focusTimer.pendingNotificationFinish && !_pendingFinishDialogShown)
+        finishTimer();
+      return true;
+    });
   }
+  if (_focusTimer.pendingNotificationFinish) return restorePendingFinish();
   if (!_focusTimer.nativeRestorePending) return _consumeNativeStopwatchNotificationAction();
   if (!_nativeStopwatchPlugin()) {
     _markNativeFocusClockUntrusted("native_clock_plugin_missing");
@@ -9670,19 +9676,19 @@ function _restoreNativeStopwatchSessionAfterStartup() {
     return Promise.resolve(false);
   }
   return _consumeNativeStopwatchNotificationAction().then(function(action) {
-    if (action === "pause" || action === "finish" || action === "untrusted") return true;
+    if (action === "pause" || action === "finish" || action === "untrusted" || action === "saved") return true;
+    if (action === "stale") return _restoreNativeStopwatchSessionAfterStartup();
     return _refreshNativeStopwatchClock(true).then(function(ok) {
       if (ok && _focusTimer.running) {
         _startDisplayTick();
         if (_focusTimer.mode === "pomodoro") _catchUp(true);
         return _startNativeStopwatchForegroundService().then(function(started) {
-          if (!started) {
-            _markNativeFocusClockUntrusted("foreground_service_restore_failed");
-            showAlertModal("تعذر استعادة خدمة المؤقت",
-              "لم يتم تأكيد تشغيل الخدمة الأمامية بعد استعادة الجلسة؛ احتفظ التطبيق بآخر مدة موثوقة.");
-          }
+          if (started) return true;
+          _markNativeFocusClockUntrusted("foreground_service_restore_failed");
+          showAlertModal("تعذر استعادة خدمة المؤقت",
+            "لم يتم تأكيد تشغيل الخدمة الأمامية بعد استعادة الجلسة؛ احتفظ التطبيق بآخر مدة موثوقة.");
           _renderFocusTimer();
-          return started;
+          return false;
         });
       }
       if (_focusTimer.nativeRestorePending) {
@@ -9831,14 +9837,14 @@ function _consumeNativeStopwatchNotificationAction() {
     }).then(function(result) {
       if (!result || result.acknowledged !== true)
         console.warn("Native stopwatch action is saved locally but Android ACK is pending.");
+      if (!result || result.acknowledged !== true) return "saved";
       if (action.action === "finish") {
         if (!_pendingFinishDialogShown) finishTimer();
       } else {
-        if (result && result.acknowledged === true)
-          showToast("⏸ تم إيقاف المؤقت من الإشعار وحُفظت المدة.");
+        showToast("⏸ تم إيقاف المؤقت من الإشعار وحُفظت المدة.");
         _renderFocusTimer();
       }
-      return result && result.acknowledged === true ? action.action : "saved";
+      return action.action;
     });
   }).catch(function(error) {
     storageRecoveryRequired = true;
@@ -11497,11 +11503,6 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");
     return false;
   }
-  if (_focusTimer.pendingNotificationFinish) {
-    if (!_pendingFinishDialogShown) finishTimer();
-    showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
-    return false;
-  }
   var nativePlugin = typeof _nativeStopwatchPlugin === "function" ? _nativeStopwatchPlugin() : null;
   if (!_notificationQueueChecked && nativePlugin
       && typeof nativePlugin.peekNotificationAction === "function") {
@@ -11523,6 +11524,11 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   }
   if (_focusTimerExternalConflict) {
     showAlertModal("تعارض حالة المؤقت", "تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل تعديله.");
+    return false;
+  }
+  if (_focusTimer.pendingNotificationFinish) {
+    if (!_pendingFinishDialogShown) finishTimer();
+    showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
     return false;
   }
   _unlockAudioContext();
@@ -11592,11 +11598,6 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return;
   }
-  if (_focusTimer.pendingNotificationFinish) {
-    if (!_pendingFinishDialogShown) finishTimer();
-    showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
-    return false;
-  }
   var nativePlugin = typeof _nativeStopwatchPlugin === "function" ? _nativeStopwatchPlugin() : null;
   if (!_notificationQueueChecked && nativePlugin
       && typeof nativePlugin.peekNotificationAction === "function") {
@@ -11615,6 +11616,11 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
         "لم نعد تعيين المؤقت لأن طابور إجراءات Android غير قابل للتحقق.");
       return false;
     });
+  }
+  if (_focusTimer.pendingNotificationFinish) {
+    if (!_pendingFinishDialogShown) finishTimer();
+    showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
+    return false;
   }
   if(_focusTimerExternalConflict){showAlertModal("تعارض حالة المؤقت","تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل إعادة تعيينه.");return;}
   var elapsed=_getElapsedSec();
@@ -13105,11 +13111,6 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return Promise.resolve(false);
   }
-  if (_focusTimer.pendingNotificationFinish) {
-    if (!_pendingFinishDialogShown) finishTimer();
-    showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
-    return Promise.resolve(false);
-  }
   var nativePlugin = typeof _nativeStopwatchPlugin === "function" ? _nativeStopwatchPlugin() : null;
   if (!_notificationQueueChecked && nativePlugin
       && typeof nativePlugin.peekNotificationAction === "function") {
@@ -13128,6 +13129,11 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
         "لم تبدأ جلسة المهمة لأن طابور إجراءات Android غير قابل للتحقق.");
       return false;
     });
+  }
+  if (_focusTimer.pendingNotificationFinish) {
+    if (!_pendingFinishDialogShown) finishTimer();
+    showToast("⏹ أكّد أو ألغِ طلب إنهاء الجلسة المعلّق أولاً.");
+    return Promise.resolve(false);
   }
   _unlockAudioContext();
   if(_focusTimer.awaitingConfirmation){_showAwaySessionConfirmation();return Promise.resolve(false);}
