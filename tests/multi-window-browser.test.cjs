@@ -454,14 +454,26 @@ test('a stale page refuses manual and rolling backups while another page has a p
       keys.forEach(key => { before[key] = localStorage.getItem(key); });
       let exportError = null;
       try { buildBackupObject(); } catch (error) { exportError = error.message; }
+      const afterExport = {};
+      Object.keys(localStorage).sort().forEach(key => { afterExport[key] = localStorage.getItem(key); });
+      const exportChangedKeys = Array.from(new Set(Object.keys(before).concat(Object.keys(afterExport))))
+        .filter(key => before[key] !== afterExport[key]);
       const rollingQueued = _storeRollingRecoveryBackup('stale-window-test', 0);
       const rollingSaved = window._rollingRecoveryBackupPending
         ? await window._rollingRecoveryBackupPending : rollingQueued;
       const after = {};
       Object.keys(localStorage).sort().forEach(key => { after[key] = localStorage.getItem(key); });
+      const changedKeys = Array.from(new Set(Object.keys(before).concat(Object.keys(after))))
+        .filter(key => before[key] !== after[key]);
       return {
         exportError, rollingSaved, rollingFailure: _rollingRecoveryBackupLastFailure,
-        storageUnchanged: JSON.stringify(before) === JSON.stringify(after),
+        storageUnchanged: changedKeys.length === 0,
+        changedKeys, exportChangedKeys,
+        changedValues: changedKeys.map(key => ({
+          key,
+          before: before[key] == null ? null : before[key].slice(0, 180),
+          after: after[key] == null ? null : after[key].slice(0, 180)
+        })),
         pending: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')).pendingStopwatchTransaction
       };
     });
@@ -469,7 +481,7 @@ test('a stale page refuses manual and rolling backups while another page has a p
       JSON.stringify(result));
     assert.equal(result.rollingSaved, false);
     assert.equal(result.rollingFailure, 'external_storage_conflict');
-    assert.equal(result.storageUnchanged, true);
+    assert.equal(result.storageUnchanged, true, JSON.stringify(result));
     assert.equal(result.pending.id, pendingId);
     await context.close();
   } finally {
