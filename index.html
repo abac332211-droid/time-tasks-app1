@@ -9939,8 +9939,16 @@ function _clearFocusTimerClock() {
 function _loadFocusTimer() {
   try {
     var raw = _trackSecondaryStorageRead(FOCUS_TIMER_KEY, localStorage.getItem(FOCUS_TIMER_KEY));
-    if (!raw) return;
+    if (raw === null) return;
     var parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      storageRecoveryRequired = true;
+      if (typeof _preserveCorruptStorageSnapshot === "function") {
+        try { _preserveCorruptStorageSnapshot(FOCUS_TIMER_KEY, raw); } catch (preserveError) {}
+      }
+      console.error("A present focus timer storage value is not a valid object; it was preserved and rejected.");
+      return;
+    }
     var normalized = _normalizeFocusTimerRecord(parsed, typeof tasks !== "undefined" ? tasks : []);
     if (!normalized.valid) {
       storageRecoveryRequired = true;
