@@ -50,6 +50,12 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   assert.match(plugin, /if \(queuedAction\)/);
   assert.match(plugin, /queue\.optJSONObject\(0\)/);
   assert.match(plugin, /يجب إقرار أقدم إجراء في الطابور/);
+  const ackMethod = plugin.slice(plugin.indexOf('public void acknowledgeNotificationAction'),
+    plugin.indexOf('public void stopForegroundTimer'));
+  assert.match(ackMethod, /synchronized \\(ACTION_LOCK\\)[\\s\\S]*if \\(stopService\\)[\\s\\S]*stopService\\(new Intent/);
+  const stopMethod = plugin.slice(plugin.indexOf('public void stopForegroundTimer'),
+    plugin.indexOf('public void getClock'));
+  assert.match(stopMethod, /synchronized \\(ACTION_LOCK\\)[\\s\\S]*stopService\\(new Intent/);
   const service = fs.readFileSync(path.join(f.java, 'StopwatchForegroundService.java'), 'utf8');
   assert.match(service, /FOREGROUND_SERVICE_TYPE_SPECIAL_USE/);
   assert.match(service, /PendingIntent\.getBroadcast/);
@@ -59,6 +65,10 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   assert.match(service, /\.putString\(StopwatchClockPlugin\.SERVICE_STARTED_SESSION_TOKEN_KEY, token\)/);
   assert.match(service, /stopSelf\(startId\)/);
   assert.match(service, /persistedBoot != currentBoot/);
+  assert.match(service, /synchronized \\(StopwatchClockPlugin\\.ACTION_LOCK\\)/);
+  assert.ok(service.indexOf('startForeground(NOTIFICATION_ID')
+    < service.indexOf('SERVICE_STARTED_SESSION_TOKEN_KEY, token'),
+    'service acknowledges only after foreground start succeeds');
   const receiver = fs.readFileSync(path.join(f.java, 'StopwatchNotificationActionReceiver.java'), 'utf8');
   assert.match(receiver, /goAsync\(\)/);
   assert.match(receiver, /SystemClock\.elapsedRealtime\(\)/);
