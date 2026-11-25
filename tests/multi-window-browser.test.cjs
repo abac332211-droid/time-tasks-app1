@@ -369,7 +369,8 @@ test('two real same-origin pages exchange storage events and block stale main/ti
 
 
 test('a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 30000
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -391,7 +392,7 @@ test('a stale page refuses manual and rolling backups while another page has a p
     initial.timer.taskId = 7021;
     initial.timer.baseElapsed = 125;
     initial.timer.sessionStartAt = Date.now() - 125000;
-    await context.addInitScript((value) => {
+    await context.addInitScript(value => {
       if (localStorage.getItem('timeTasksApp_v1') === null)
         localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
       if (localStorage.getItem('timeTasksApp_focusTimer') === null)
@@ -408,15 +409,50 @@ test('a stale page refuses manual and rolling backups while another page has a p
       () => typeof window.buildBackupObject === 'function',
       null, { timeout: 20000 }
     )));
+
+    async function installTrace(page, label) {
+      await page.evaluate(pageLabel => {
+        const p = Storage.prototype;
+        const get = p.getItem, set = p.setItem, remove = p.removeItem;
+        const clip = value => value == null ? null : String(value).slice(0, 160);
+        window.__f07Trace = { label: pageLabel, writes: [], events: [] };
+        p.setItem = function(key, value) {
+          const k = String(key), entry = {
+            page: pageLabel, operation: 'setItem', key: k, at: performance.now(),
+            before: clip(get.call(this, k)), attempted: clip(value),
+            stack: String(new Error().stack || '').split('\n').slice(2, 6)
+          };
+          try { const result = set.call(this, key, value); entry.outcome = 'success'; return result; }
+          catch (error) { entry.outcome = 'throw'; entry.error = String(error); throw error; }
+          finally { entry.after = clip(get.call(this, k)); window.__f07Trace.writes.push(entry); }
+        };
+        p.removeItem = function(key) {
+          const k = String(key), entry = {
+            page: pageLabel, operation: 'removeItem', key: k, at: performance.now(),
+            before: clip(get.call(this, k)),
+            stack: String(new Error().stack || '').split('\n').slice(2, 6)
+          };
+          try { const result = remove.call(this, key); entry.outcome = 'success'; return result; }
+          catch (error) { entry.outcome = 'throw'; entry.error = String(error); throw error; }
+          finally { entry.after = clip(get.call(this, k)); window.__f07Trace.writes.push(entry); }
+        };
+        window.addEventListener('storage', event => window.__f07Trace.events.push({
+          page: pageLabel, key: event.key, at: performance.now(),
+          oldValue: clip(event.oldValue), newValue: clip(event.newValue), url: event.url
+        }));
+      }, label);
+    }
+    await Promise.all([installTrace(pageA, 'owner-page-A'), installTrace(pageB, 'stale-page-B')]);
+    await Promise.all([pageA, pageB].map(page => page.evaluate(() => {
+      window.__f07Trace.writes.length = 0;
+      window.__f07Trace.events.length = 0;
+    })));
+
     const pendingId = await pageA.evaluate(async () => {
-      // Startup reconciliation in the second page may legitimately write default metadata.
-      // Refresh the owner page's in-memory main record and durable-key baselines before the test.
       _mainStorageExternalChangeObserved = false;
       _focusTimerExternalConflict = false;
       _secondaryStorageConflicts = Object.create(null);
-      const loaded = await _withStopwatchTransactionLock(function() {
-        return loadData();
-      });
+      const loaded = await _withStopwatchTransactionLock(() => loadData());
       if (loaded !== true) throw new Error('loadData did not complete under Stopwatch Web Lock');
       _setMainStorageBaseline(localStorage.getItem(STORAGE_KEY));
       _secondaryStorageBaselines[FOCUS_TIMER_KEY] = localStorage.getItem(FOCUS_TIMER_KEY);
@@ -430,66 +466,98 @@ test('a stale page refuses manual and rolling backups while another page has a p
       return _withStopwatchTransactionLock(async () => {
         const release = _acquireRollingRecoveryCheckpointHold(true);
         try {
-        const tx = {
-          version: 1, id: 'stopwatch-export-test-7021', taskId: task.id,
-          previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
-          sessionStartAt: _focusTimer.sessionStartAt, mode: 'stopwatch', phase: 'work',
-          clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
-        };
-        _focusTimer.pendingStopwatchTransaction = tx;
-        if (!_saveFocusTimer()) throw new Error('could not persist pending journal');
-        task.actual = 8;
-        task.lastStopwatchTransactionId = tx.id;
-        if (!saveData()) throw new Error('could not commit task with transaction marker');
-        return tx.id;
+          const tx = {
+            version: 1, id: 'stopwatch-export-test-7021', taskId: task.id,
+            previousActual: 5, targetActual: 8, minutesToAdd: 3, durationSec: 125,
+            sessionStartAt: _focusTimer.sessionStartAt, mode: 'stopwatch', phase: 'work',
+            clockAdjusted: false, elapsedRemainderMs: 0, createdAt: Date.now()
+          };
+          _focusTimer.pendingStopwatchTransaction = tx;
+          if (!_saveFocusTimer()) throw new Error('could not persist pending journal');
+          task.actual = 8;
+          task.lastStopwatchTransactionId = tx.id;
+          if (!saveData()) throw new Error('could not commit task with transaction marker');
+          return tx.id;
         } finally { release(); }
       });
     });
-    const result = await pageB.evaluate(async () => {
-      window._mainStorageExternalChangeObserved = false;
-      window._focusTimerExternalConflict = false;
-      window._secondaryStorageConflicts = Object.create(null);
-      const keys = Object.keys(localStorage).sort();
-      const before = {};
-      keys.forEach(key => { before[key] = localStorage.getItem(key); });
-      let exportError = null;
-      try { buildBackupObject(); } catch (error) { exportError = error.message; }
-      const afterExport = {};
-      Object.keys(localStorage).sort().forEach(key => { afterExport[key] = localStorage.getItem(key); });
-      const exportChangedKeys = Array.from(new Set(Object.keys(before).concat(Object.keys(afterExport))))
-        .filter(key => before[key] !== afterExport[key]);
-      const rollingQueued = _storeRollingRecoveryBackup('stale-window-test', 0);
-      const rollingSaved = window._rollingRecoveryBackupPending
-        ? await window._rollingRecoveryBackupPending : rollingQueued;
-      const after = {};
-      Object.keys(localStorage).sort().forEach(key => { after[key] = localStorage.getItem(key); });
-      const changedKeys = Array.from(new Set(Object.keys(before).concat(Object.keys(after))))
-        .filter(key => before[key] !== after[key]);
-      return {
-        exportError, rollingSaved, rollingFailure: _rollingRecoveryBackupLastFailure,
-        storageUnchanged: changedKeys.length === 0,
-        changedKeys, exportChangedKeys,
-        changedValues: changedKeys.map(key => ({
-          key,
-          before: before[key] == null ? null : before[key].slice(0, 180),
-          after: after[key] == null ? null : after[key].slice(0, 180)
-        })),
-        pending: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')).pendingStopwatchTransaction
-      };
-    });
-    assert.ok(result.exportError && /نافذة أخرى|تغير سجل المهام|تغيرت بيانات|معاملة Stopwatch معلقة/.test(result.exportError),
-      JSON.stringify(result));
-    assert.equal(result.rollingSaved, false);
-    assert.equal(result.rollingFailure, 'external_storage_conflict');
-    assert.equal(result.storageUnchanged, true, JSON.stringify(result));
-    assert.equal(result.pending.id, pendingId);
+
+    const attempts = [];
+    for (let index = 0; index < 3; index++) {
+      attempts.push(await pageB.evaluate(async attempt => {
+        const trace = window.__f07Trace, writeStart = trace.writes.length, eventStart = trace.events.length;
+        const snapshot = () => {
+          const value = {};
+          Object.keys(localStorage).sort().forEach(key => { value[key] = localStorage.getItem(key); });
+          return value;
+        };
+        const before = snapshot();
+        let exportError = null;
+        try { buildBackupObject(); } catch (error) { exportError = error.message; }
+        const afterExport = snapshot();
+        const exportChangedKeys = Array.from(new Set(Object.keys(before).concat(Object.keys(afterExport))))
+          .filter(key => before[key] !== afterExport[key]);
+        const rollingQueued = _storeRollingRecoveryBackup('stale-window-test-' + attempt, 0);
+        const rollingSaved = window._rollingRecoveryBackupPending
+          ? await window._rollingRecoveryBackupPending : rollingQueued;
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const after = snapshot();
+        const changedKeys = Array.from(new Set(Object.keys(before).concat(Object.keys(after))))
+          .filter(key => before[key] !== after[key])
+          .map(key => ({ key, before: before[key] == null ? null : before[key].slice(0, 160),
+            after: after[key] == null ? null : after[key].slice(0, 160) }));
+        return {
+          attempt: attempt + 1, exportError, exportChangedKeys, rollingSaved,
+          rollingFailure: _rollingRecoveryBackupLastFailure, changedKeys,
+          stalePageWrites: trace.writes.slice(writeStart),
+          storageEvents: trace.events.slice(eventStart),
+          pending: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')).pendingStopwatchTransaction
+        };
+      }, index));
+    }
+    const ownerTrace = await pageA.evaluate(() => window.__f07Trace);
+    const attributionFailures = [];
+    for (const attempt of attempts) {
+      for (const change of attempt.changedKeys) {
+        const hasStorageEvent = attempt.storageEvents.some(event =>
+          event.key === change.key && event.newValue === change.after);
+        const hasOwnerWrite = ownerTrace.writes.some(write =>
+          write.key === change.key && write.after === change.after && write.outcome === 'success');
+        if (!hasStorageEvent || !hasOwnerWrite) attributionFailures.push({
+          attempt: attempt.attempt, key: change.key, after: change.after,
+          hasStorageEvent, hasOwnerWrite
+        });
+      }
+    }
+    console.log('F07_STALE_BACKUP_STORAGE_TRACE ' + JSON.stringify({
+      pendingId, attempts: attempts.map(item => ({
+        attempt: item.attempt, exportError: item.exportError,
+        exportChangedKeys: item.exportChangedKeys, rollingSaved: item.rollingSaved,
+        rollingFailure: item.rollingFailure, changedKeys: item.changedKeys,
+        stalePageWrites: item.stalePageWrites, storageEvents: item.storageEvents
+      })), ownerWrites: ownerTrace.writes, attributionFailures
+    }));
+
+    for (const attempt of attempts) {
+      assert.ok(attempt.exportError
+        && /نافذة أخرى|تغير سجل المهام|تغيرت بيانات|معاملة Stopwatch معلقة/.test(attempt.exportError),
+        JSON.stringify(attempt));
+      assert.deepEqual(attempt.exportChangedKeys, [],
+        'manual export must not write from the stale page: ' + JSON.stringify(attempt));
+      assert.equal(attempt.rollingSaved, false, JSON.stringify(attempt));
+      assert.equal(attempt.rollingFailure, 'external_storage_conflict', JSON.stringify(attempt));
+      assert.deepEqual(attempt.stalePageWrites, [],
+        'the stale page must perform no Storage mutation: ' + JSON.stringify(attempt));
+      assert.equal(attempt.pending.id, pendingId);
+    }
+    assert.deepEqual(attributionFailures, [],
+      'all cross-page storage changes during async rolling-backup work must be traced to the owner page');
     await context.close();
   } finally {
     if (browserInstance) await browserInstance.close();
     await new Promise(resolve => server.close(resolve));
   }
 });
-
 test('two same-origin pages cannot commit duplicate task-linked Stopwatch transactions', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
   timeout: 25000
@@ -1734,6 +1802,112 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
     assert.equal(result.secondaryConflicts['timeTasksApp_thoughts_v1'] || false, false);
     assert.equal(result.secondaryConflicts['timeTasksApp_projects_v1'] || false, false);
     assert.equal(result.secondaryConflicts['timeTasksApp_focusTimer'] || false, false);
+  });
+});
+
+test('Reset baseline read failure retains its marker and write gate until a verified retry', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 30000
+}, async () => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await Promise.all([pageA, pageB].map(page =>
+      waitForSafeStartup(page, 'Reset baseline read-failure acceptance')
+    ));
+    await pageB.close();
+    const outcome = await pageA.evaluate(async () => {
+      const originalReload = _reloadAfterVerifiedOperation;
+      const originalGet = Storage.prototype.getItem;
+      const originalRemove = Storage.prototype.removeItem;
+      let projectRemoved = false, projectRemovalReads = 0, injected = false;
+      _reloadAfterVerifiedOperation = function() {};
+      try {
+        _projectsCache = [{
+          id: 8801, name: 'Project cache must survive a failed baseline read',
+          description: '', status: 'active', targetDate: '',
+          createdAt: new Date().toISOString(), updatedAt: null, completedAt: null
+        }];
+        _invalidFocusSessionsNoticeShown = true;
+        _focusTimerConflictNoticeShown = true;
+        Storage.prototype.removeItem = function(key) {
+          const result = originalRemove.call(this, key);
+          if (String(key) === PROJECTS_KEY) { projectRemoved = true; projectRemovalReads = 0; }
+          return result;
+        };
+        Storage.prototype.getItem = function(key) {
+          if (projectRemoved && String(key) === PROJECTS_KEY) {
+            projectRemovalReads++;
+            // Read 1 verifies deletion; read 2 is the post-Reset baseline read.
+            if (projectRemovalReads === 2 && !injected) {
+              injected = true;
+              throw new Error('INJECTED_RESET_BASELINE_READ_FAILURE');
+            }
+          }
+          return originalGet.call(this, key);
+        };
+
+        const firstResult = await _executeResetAllTransaction();
+        const firstState = {
+          firstResult, injected,
+          markerPresent: originalGet.call(localStorage, RESET_IN_PROGRESS_KEY) !== null,
+          recoveryRequired: storageRecoveryRequired,
+          projectConflict: _secondaryStorageConflicts[PROJECTS_KEY] === true,
+          projectWritable: _secondaryStorageWriteAllowed(PROJECTS_KEY),
+          staleProjectCacheRetained: Array.isArray(_projectsCache)
+            && _projectsCache.some(project => project && project.id === 8801),
+          invalidSessionsNoticeRetained: _invalidFocusSessionsNoticeShown,
+          timerConflictNoticeRetained: _focusTimerConflictNoticeShown,
+          projectRaw: originalGet.call(localStorage, PROJECTS_KEY)
+        };
+        Storage.prototype.getItem = originalGet;
+        Storage.prototype.removeItem = originalRemove;
+
+        const retryResult = await retryStorageRecovery();
+        const retryState = {
+          retryResult,
+          marker: originalGet.call(localStorage, RESET_IN_PROGRESS_KEY),
+          recoveryRequired: storageRecoveryRequired,
+          appInitCompleted: _appInitCompleted,
+          projectBaseline: _secondaryStorageBaselines[PROJECTS_KEY],
+          projectConflict: _secondaryStorageConflicts[PROJECTS_KEY] === true,
+          projectWritable: _secondaryStorageWriteAllowed(PROJECTS_KEY),
+          projectsCache: _projectsCache,
+          invalidSessionsNotice: _invalidFocusSessionsNoticeShown,
+          timerConflictNotice: _focusTimerConflictNoticeShown
+        };
+        return { firstState, retryState };
+      } finally {
+        Storage.prototype.getItem = originalGet;
+        Storage.prototype.removeItem = originalRemove;
+        _reloadAfterVerifiedOperation = originalReload;
+      }
+    });
+
+    assert.equal(outcome.firstState.firstResult, false);
+    assert.equal(outcome.firstState.injected, true);
+    assert.equal(outcome.firstState.markerPresent, true,
+      'the durable Reset marker must survive a baseline read failure');
+    assert.equal(outcome.firstState.recoveryRequired, true);
+    assert.equal(outcome.firstState.projectConflict, true);
+    assert.equal(outcome.firstState.projectWritable, false);
+    assert.equal(outcome.firstState.staleProjectCacheRetained, true,
+      'memory cleanup must not run before all secondary baselines are read');
+    assert.equal(outcome.firstState.invalidSessionsNoticeRetained, true);
+    assert.equal(outcome.firstState.timerConflictNoticeRetained, true);
+    assert.equal(outcome.firstState.projectRaw, null,
+      'the injected failure is after successful project-key deletion');
+
+    assert.equal(outcome.retryState.retryResult, true,
+      'retryStorageRecovery must complete the durable Reset after reads recover');
+    assert.equal(outcome.retryState.marker, null);
+    assert.equal(outcome.retryState.recoveryRequired, false);
+    assert.equal(outcome.retryState.appInitCompleted, true);
+    assert.equal(outcome.retryState.projectBaseline, null);
+    assert.equal(outcome.retryState.projectConflict, false);
+    assert.equal(outcome.retryState.projectWritable, true);
+    assert.ok(outcome.retryState.projectsCache === null
+      || !outcome.retryState.projectsCache.some(project => project && project.id === 8801));
+    assert.equal(outcome.retryState.invalidSessionsNotice, false);
+    assert.equal(outcome.retryState.timerConflictNotice, false);
   });
 });
 
