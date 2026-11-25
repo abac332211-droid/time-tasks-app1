@@ -9670,7 +9670,7 @@ function _restoreNativeStopwatchSessionAfterStartup() {
     return Promise.resolve(false);
   }
   return _consumeNativeStopwatchNotificationAction().then(function(action) {
-    if (action === "pause" || action === "finish") return true;
+    if (action === "pause" || action === "finish" || action === "untrusted") return true;
     return _refreshNativeStopwatchClock(true).then(function(ok) {
       if (ok && _focusTimer.running) {
         _startDisplayTick();
@@ -9703,11 +9703,18 @@ function _restoreNativeStopwatchSessionAfterStartup() {
 }
 
 function _scheduleNativeStopwatchRestore() {
-  if (!_focusTimer.nativeRestorePending || _nativeStopwatchRestoreScheduled) return;
+  if ((!_focusTimer.nativeRestorePending && !_focusTimer.pendingNotificationFinish
+      && !_nativeStopwatchPlugin()) || _nativeStopwatchRestoreScheduled) return;
   _nativeStopwatchRestoreScheduled = true;
   setTimeout(function() {
     _restoreNativeStopwatchSessionAfterStartup().then(function() {
-      if (!_focusTimer.nativeRestorePending) _consumeNativeStopwatchNotificationAction();
+      if (!_focusTimer.nativeRestorePending && !_focusTimer.pendingNotificationFinish) {
+        _consumeNativeStopwatchNotificationAction().then(function() {
+          if (_focusTimer.pendingNotificationFinish && !_pendingFinishDialogShown) finishTimer();
+        });
+      }
+    }).finally(function() {
+      _nativeStopwatchRestoreScheduled = false;
     });
   }, 0);
 }
@@ -9720,7 +9727,7 @@ function _consumeNativeStopwatchNotificationAction() {
   _nativeStopwatchActionSyncPromise = Promise.resolve().then(function() {
     return plugin.peekNotificationAction();
   }).then(function(action) {
-    if (!action) return "";
+    if (!action || action.hasAction === false) return "";
     var actionId = action.actionId, token = action.sessionToken;
     if (!_isNativeStopwatchUuid(actionId) || !_isNativeStopwatchUuid(token)
         || (action.action !== "pause" && action.action !== "finish")) {
@@ -9828,7 +9835,8 @@ function _consumeNativeStopwatchNotificationAction() {
       return result && result.acknowledged === true ? action.action : "saved";
     });
   }).catch(function(error) {
-    console.warn("Native stopwatch notification action failed:", error);
+    storageRecoveryRequired = true;
+    console.warn("Native stopwatch notification action failed; queue remains pending:", error);
     return "untrusted";
   }).finally(function() {
     _nativeStopwatchActionSyncPromise = null;
