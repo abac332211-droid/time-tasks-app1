@@ -53,8 +53,9 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   const ackMethod = plugin.slice(plugin.indexOf('public void acknowledgeNotificationAction'),
     plugin.indexOf('public void stopForegroundTimer'));
   assert.match(ackMethod, /synchronized \\(ACTION_LOCK\\)[\\s\\S]*if \\(stopService\\)[\\s\\S]*stopService\\(new Intent/);
-  const stopMethod = plugin.slice(plugin.indexOf('public void stopForegroundTimer'),
-    plugin.indexOf('public void getClock'));
+  const stopMethodStart = plugin.indexOf('public void stopForegroundTimer');
+  const stopMethodEnd = plugin.indexOf('@PluginMethod', stopMethodStart + 10);
+  const stopMethod = plugin.slice(stopMethodStart, stopMethodEnd);
   assert.match(stopMethod, /synchronized \\(ACTION_LOCK\\)[\\s\\S]*stopService\\(new Intent/);
   const service = fs.readFileSync(path.join(f.java, 'StopwatchForegroundService.java'), 'utf8');
   assert.match(service, /FOREGROUND_SERVICE_TYPE_SPECIAL_USE/);
