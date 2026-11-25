@@ -31,6 +31,9 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   const activity = fs.readFileSync(path.join(f.java, 'MainActivity.java'), 'utf8');
   assert.match(activity, /registerPlugin\(StopwatchClockPlugin\.class\)/);
   assert.match(activity, /super\.onCreate\(savedInstanceState\)/);
+  assert.match(activity, /onNewIntent\(Intent intent\)/);
+  assert.match(activity, /setIntent\(intent\)/);
+  assert.match(activity, /import android\.content\.Intent;/);
   const plugin = fs.readFileSync(path.join(f.java, 'StopwatchClockPlugin.java'), 'utf8');
   assert.match(plugin, /SystemClock\.elapsedRealtime\(\)/);
   assert.match(plugin, /Settings\.Global\.BOOT_COUNT/);
