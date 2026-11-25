@@ -1,0 +1,8 @@
+{
+  "appId": "com.abac332211.timetasks",
+  "appName": "إدارة الوقت والمهام",
+  "webDir": "web",
+  "android": {
+    "allowMixedContent": false
+  }
+}
