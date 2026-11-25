@@ -9223,7 +9223,7 @@ function _restoreFocusTimerClockState(snapshot) {
   return true;
 }
 
-function _normalizeFocusTimerRecord(record, taskRows) {
+function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
   if (record === null) {
     return {
       valid: true,
@@ -9325,10 +9325,12 @@ function _normalizeFocusTimerRecord(record, taskRows) {
   var anchorWall = owns("nativeAnchorWallMs") ? record.nativeAnchorWallMs : null;
   var migrated = false;
   if (taskReferenceInvalid) {
+    if (strictTaskReference === true) return invalid("task_reference_invalid");
     // A removed task must not invalidate unrelated elapsed timer history. Keep
     // the full transaction only when its task identity can still be verified.
     if (pendingTransaction) return invalid("task_reference_invalid_with_transaction");
     taskId = null;
+    clockAdjusted = true;
     migrated = true;
   }
   if (nativeActive && sessionToken === null) {
@@ -12352,7 +12354,7 @@ function _readAndValidateResyncBundle() {
 
 function _applyValidatedResyncBundle(bundle) {
   if (!bundle || !bundle.mainData || !Array.isArray(bundle.mainData.tasks)) return false;
-  var timerCandidate = _normalizeFocusTimerRecord(bundle.timerObj, bundle.mainData.tasks);
+  var timerCandidate = _normalizeFocusTimerRecord(bundle.timerObj, bundle.mainData.tasks, true);
   if (!timerCandidate.valid) {
     console.error("Rejected resync bundle before applying any state:", timerCandidate.reason);
     return false;
