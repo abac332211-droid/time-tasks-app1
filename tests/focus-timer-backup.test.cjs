@@ -213,7 +213,17 @@ test('backup builder includes the paused focus timer and uses backup format v2',
     localDateTimeString: () => '2026-11-19T18:00:00',
     _loadSessions: () => [],
     _buildFocusTimerBackupSnapshot: buildSnapshot,
-    _focusTimer: timer(),
+    _focusTimer: {
+      ...timer(),
+      nativeSessionToken: '22222222-2222-4222-8222-222222222222',
+      handledNotificationActionIds: ['11111111-1111-4111-8111-111111111111'],
+      pendingNotificationFinish: {
+        actionId: '11111111-1111-4111-8111-111111111111',
+        sessionToken: '22222222-2222-4222-8222-222222222222',
+        action: 'finish', elapsedRealtimeMs: 10_000, bootCount: 17,
+        wallTimeMs: 30_000, elapsedMs: 9_000
+      }
+    },
     _focusElapsedRemainderMs: 150,
     _getElapsedSec: () => 300,
     _getFocusTimerElapsedParts: () => ({ seconds: 300, remainderMs: 420 }),
@@ -238,6 +248,10 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.equal(backup.data.focusTimer.running, false);
   assert.equal(backup.data.focusTimer.baseElapsed, 300);
   assert.equal(backup.data.focusTimer.elapsedRemainderMs, 420);
+  const exportedJson = JSON.stringify(backup);
+  assert.doesNotMatch(exportedJson, /nativeSessionToken/);
+  assert.doesNotMatch(exportedJson, /handledNotificationActionIds/);
+  assert.doesNotMatch(exportedJson, /pendingNotificationFinish/);
 });
 
 test('backup builder validates raw session records instead of silently filtering corrupted sessions', () => {
