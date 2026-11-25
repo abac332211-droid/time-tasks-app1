@@ -331,7 +331,8 @@ test('stale notification session ACK cannot request stopping the current session
   assert.equal(result, 'stale');
   assert.equal(h.ackCalls.length, 1);
   assert.equal(h.ackCalls[0].sessionToken, UUID_OLD);
-  assert.equal(h.ackCalls[0].stopMatchingService, false);
+  assert.equal(h.ackCalls[0].stopMatchingService, true,
+    'native service implementation must stop only if its active token still equals this stale token');
   assert.equal(h.focusTimer.running, true);
   assert.equal(h.focusTimer.nativeSessionToken, UUID_SESSION);
 });
