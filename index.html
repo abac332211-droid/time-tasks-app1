@@ -9354,15 +9354,6 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
   if (typeof nativeRestore !== "boolean" || typeof nativeMismatch !== "boolean")
     return invalid("invalid_native_restore_flags");
   nativeRestore = (wasRunning || nativeRestore) && nativeActive;
-  if (!nativeActive && !nativeRestore && !pendingFinish && sessionToken !== null) {
-    // A paused legacy timer must not reuse the stopped foreground-service identity.
-    sessionToken = null;
-    anchorElapsed = null;
-    anchorBoot = null;
-    anchorBase = null;
-    anchorWall = null;
-    migrated = true;
-  }
   return {
     valid: true,
     migrated: migrated,
@@ -9505,11 +9496,6 @@ function _markNativeFocusClockUntrusted(reason) {
   _focusTimer.startedAt = null;
   _focusTimer.nativeClockActive = false;
   _focusTimer.nativeRestorePending = false;
-  _focusTimer.nativeSessionToken = null;
-  _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-  _focusTimer.nativeAnchorBootCount = null;
-  _focusTimer.nativeAnchorBaseMs = null;
-  _focusTimer.nativeAnchorWallMs = null;
   _focusTimer.nativeBootMismatch = true;
   _focusTimer.clockAdjusted = true;
   _stopDisplayTick();
@@ -9629,11 +9615,6 @@ function _attachNativeStopwatchClockToRunningTimer() {
       _focusTimer.startedAt = null;
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
-      _focusTimer.nativeSessionToken = null;
-      _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-      _focusTimer.nativeAnchorBootCount = null;
-      _focusTimer.nativeAnchorBaseMs = null;
-      _focusTimer.nativeAnchorWallMs = null;
       _stopDisplayTick();
       _clearFocusTimerClock();
       if (!_saveFocusTimer()) {
@@ -9877,13 +9858,6 @@ function _consumeNativeStopwatchNotificationAction() {
     _focusTimer.nativeRestorePending = false;
     _focusTimer.nativeBootMismatch = false;
     _focusTimer.handledNotificationActionIds = handled.concat([actionId]).slice(-10);
-    if (action.action === "pause") {
-      _focusTimer.nativeSessionToken = null;
-      _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-      _focusTimer.nativeAnchorBootCount = null;
-      _focusTimer.nativeAnchorBaseMs = null;
-      _focusTimer.nativeAnchorWallMs = null;
-    }
     if (action.action === "finish") {
       _focusTimer.pendingNotificationFinish = {
         actionId: actionId,
@@ -10336,11 +10310,6 @@ function _catchUp(backgroundReturn) {
     _focusTimer.awaitingConfirmation = true;
     _focusTimer.nativeClockActive = false;
     _focusTimer.nativeRestorePending = false;
-    _focusTimer.nativeSessionToken = null;
-    _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-    _focusTimer.nativeAnchorBootCount = null;
-    _focusTimer.nativeAnchorBaseMs = null;
-    _focusTimer.nativeAnchorWallMs = null;
     if (!_saveFocusTimer()) {
       restoreOperationSnapshot();
       showAlertModal("⚠️ تعذر حفظ الجلسة المعلقة",
@@ -10375,11 +10344,6 @@ function _catchUp(backgroundReturn) {
       _focusTimer.running = false;
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
-      _focusTimer.nativeSessionToken = null;
-      _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-      _focusTimer.nativeAnchorBootCount = null;
-      _focusTimer.nativeAnchorBaseMs = null;
-      _focusTimer.nativeAnchorWallMs = null;
       _focusTimer.baseElapsed = elapsed;
       _focusElapsedRemainderMs = elapsedParts.remainderMs;
       _focusTimer.startedAt = null;
@@ -10419,11 +10383,6 @@ function _catchUp(backgroundReturn) {
       _focusTimer.startedAt = null;
       _focusTimer.nativeClockActive = false;
       _focusTimer.nativeRestorePending = false;
-      _focusTimer.nativeSessionToken = null;
-      _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-      _focusTimer.nativeAnchorBootCount = null;
-      _focusTimer.nativeAnchorBaseMs = null;
-      _focusTimer.nativeAnchorWallMs = null;
       _stopDisplayTick();
       var pausedStateSaved = _saveFocusTimer();
       if (pausedStateSaved) {
@@ -11724,11 +11683,6 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
     _focusTimer.startedAt = null;
     _focusTimer.nativeClockActive = false;
     _focusTimer.nativeRestorePending = false;
-    _focusTimer.nativeSessionToken = null;
-    _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-    _focusTimer.nativeAnchorBootCount = null;
-    _focusTimer.nativeAnchorBaseMs = null;
-    _focusTimer.nativeAnchorWallMs = null;
     _stopDisplayTick();
     if (!_saveFocusTimer()) {
       restorePrevious();
@@ -11743,7 +11697,9 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
     if (typeof _focusTimer.sessionStartAt !== "number" || !Number.isFinite(_focusTimer.sessionStartAt)) {
       _focusTimer.sessionStartAt = Date.now() - _focusTimer.baseElapsed * 1000;
     }
-    if (nativePlugin && !_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
+    if (nativePlugin) {
+      // Every resume creates a new native service generation. The old token
+      // remains available to drain queued actions but cannot match this start.
       _focusTimer.nativeSessionToken = _createNativeStopwatchSessionToken();
       if (!_isNativeStopwatchUuid(_focusTimer.nativeSessionToken)) {
         restorePrevious();
@@ -11923,13 +11879,6 @@ function _freezeFocusTimerForDecision() {
     _focusTimer.startedAt = null;
     _focusTimer.nativeClockActive = false;
     _focusTimer.nativeRestorePending = false;
-  }
-  if (!_focusTimer.pendingNotificationFinish) {
-    _focusTimer.nativeSessionToken = null;
-    _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-    _focusTimer.nativeAnchorBootCount = null;
-    _focusTimer.nativeAnchorBaseMs = null;
-    _focusTimer.nativeAnchorWallMs = null;
   }
   if (!_saveFocusTimer()) {
     restorePrevious();
@@ -13018,13 +12967,6 @@ function _cancelPendingNotificationFinish() {
   if (!_focusTimer.pendingNotificationFinish) return true;
   var previous = _captureFocusTimerClockState();
   _focusTimer.pendingNotificationFinish = null;
-  _focusTimer.nativeSessionToken = null;
-  _focusTimer.nativeClockActive = false;
-  _focusTimer.nativeRestorePending = false;
-  _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-  _focusTimer.nativeAnchorBootCount = null;
-  _focusTimer.nativeAnchorBaseMs = null;
-  _focusTimer.nativeAnchorWallMs = null;
   if (!_saveFocusTimer()) {
     _restoreFocusTimerClockState(previous);
     storageRecoveryRequired = true;
