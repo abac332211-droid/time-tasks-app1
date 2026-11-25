@@ -9226,6 +9226,7 @@ function _computeNativeFocusElapsedMs(clock, requireBootIdentity) {
 }
 
 function _markNativeFocusClockUntrusted(reason) {
+  _stopNativeStopwatchForegroundService();
   _focusTimer.running = false;
   _focusTimer.startedAt = null;
   _focusTimer.nativeClockActive = false;
@@ -9283,6 +9284,8 @@ function _attachNativeStopwatchClockToRunningTimer() {
   if (!_nativeStopwatchPlugin() || !_focusTimer.running) return Promise.resolve(false);
   if (_nativeStopwatchSyncPromise) return _nativeStopwatchSyncPromise;
   var sessionStartAt = _focusTimer.sessionStartAt, taskId = _focusTimer.taskId;
+  var previousState = Object.assign({}, _focusTimer);
+  var previousRemainderMs = _focusElapsedRemainderMs;
   _nativeStopwatchSyncInFlight = true;
   _nativeStopwatchSyncPromise = _withStopwatchTransactionLock(function() {
     return _readNativeStopwatchClock().then(function(clock) {
@@ -9296,7 +9299,14 @@ function _attachNativeStopwatchClockToRunningTimer() {
       if (!_setNativeFocusClockAnchor(clock, total)) return false;
       _focusTimer.startedAt = clock.wallTimeMs;
       _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
-      return _saveFocusTimer();
+      if (_saveFocusTimer()) return true;
+      Object.assign(_focusTimer, previousState);
+      _focusElapsedRemainderMs = previousRemainderMs;
+      _focusTimer.nativeClockActive = false;
+      _focusTimer.nativeRestorePending = false;
+      _focusTimer.startedAt = Date.now();
+      _anchorFocusTimerClock(_focusTimer.startedAt, previousRemainderMs);
+      return false;
     });
   }).then(function(saved) {
     if (!saved) return false;
@@ -9328,6 +9338,8 @@ function _refreshNativeStopwatchClock(requireBootIdentity) {
         && _focusTimer.nativeClockActive;
       if (!isRestoring && (!_focusTimer.running || !_focusTimer.nativeClockActive))
         return { ok: true };
+      var previousState = Object.assign({}, _focusTimer);
+      var previousRemainderMs = _focusElapsedRemainderMs;
       var computed = _computeNativeFocusElapsedMs(clock, requireBootIdentity === true);
       if (!computed.ok) return _markNativeFocusClockUntrusted(computed.reason);
       _focusTimer.baseElapsed = Math.floor(computed.totalElapsedMs / 1000);
@@ -9338,7 +9350,11 @@ function _refreshNativeStopwatchClock(requireBootIdentity) {
       _focusTimer.startedAt = clock.wallTimeMs;
       _anchorFocusTimerClock(_focusTimer.startedAt, _focusElapsedRemainderMs);
       _nativeStopwatchLastSyncAt = clock.wallTimeMs;
-      if (!_saveFocusTimer()) return { ok: false, reason: "native_checkpoint_failed" };
+      if (!_saveFocusTimer()) {
+        Object.assign(_focusTimer, previousState);
+        _focusElapsedRemainderMs = previousRemainderMs;
+        return _markNativeFocusClockUntrusted("native_checkpoint_failed");
+      }
       return { ok: true };
     });
   }).then(function(result) {
@@ -9375,6 +9391,11 @@ function _restoreNativeStopwatchSessionAfterStartup() {
         _renderFocusTimer();
         return true;
       });
+    }
+    if (_focusTimer.nativeRestorePending) {
+      _markNativeFocusClockUntrusted("native_clock_restore_unavailable");
+      showAlertModal("تعذر التحقق من ساعة المؤقت",
+        "لم يتمكن التطبيق من قراءة ساعة Android الأصلية. أوقف الجلسة عند آخر مدة محفوظة، ولم يحتسب زمناً غير مؤكد.");
     }
     if (!_focusTimer.nativeRestorePending && _focusTimer.nativeBootMismatch) {
       showAlertModal("تحتاج جلسة المؤقت إلى مراجعة",
@@ -12597,7 +12618,7 @@ function _startTimerForTaskNow(taskId) {
 }
 
 function _setupVisibilityListener() {
-  document.addEventListener('visibilitychange', function() {
+  function _onFocusTimerForegroundReturn() {
     if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
         || _startupResetRecoveryInFlight || !_appInitCompleted) return;
     if (document.visibilityState !== 'visible') {
@@ -12622,6 +12643,13 @@ function _setupVisibilityListener() {
         } catch (e) { console.error('Recurring generation on visibility:', e); }
       }
     });
+  }
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') _onFocusTimerForegroundReturn();
+    else if (_focusTimer.running && !storageRecoveryRequired) _saveFocusTimer();
+  });
+  window.addEventListener('focus', function() {
+    if (document.visibilityState === 'visible') _consumeNativeStopwatchNotificationAction();
   });
 }
 
