@@ -10368,63 +10368,102 @@ function _showAwaySessionConfirmation() {
   var endedAt = _focusTimer.pendingPhaseEndedAt, startedAt = _focusTimer.sessionStartAt;
   var labels = { work: "التركيز", "short-break": "الاستراحة القصيرة", "long-break": "الاستراحة الطويلة" };
   _awaySessionPromptOpen = true;
+
+  function captureDecisionState() {
+    return typeof _captureFocusTimerClockState === "function"
+      ? _captureFocusTimerClockState()
+      : { legacyClockState: true, timer: Object.assign({}, _focusTimer),
+          remainderMs: _focusElapsedRemainderMs };
+  }
+  function restoreDecisionState(snapshot) {
+    if (!snapshot) return;
+    if (!snapshot.legacyClockState && typeof _restoreFocusTimerClockState === "function") {
+      _restoreFocusTimerClockState(snapshot);
+    } else {
+      Object.assign(_focusTimer, snapshot.timer);
+      _focusElapsedRemainderMs = snapshot.remainderMs;
+      if (_focusTimer.running) _startDisplayTick();
+      else _stopDisplayTick();
+    }
+    _renderFocusTimer();
+  }
+  function resetPendingPhaseForNextStage(cancelWholeSession) {
+    _focusTimer.running = false;
+    _focusTimer.baseElapsed = 0;
+    _focusElapsedRemainderMs = 0;
+    _focusTimer.startedAt = null;
+    if (cancelWholeSession) {
+      _focusTimer.sessionStartAt = null;
+      _focusTimer.cyclePosition = 0;
+      _focusTimer.phase = "work";
+      _focusTimer.taskId = null;
+      _focusTimer.nativeSessionToken = null;
+      _focusTimer.pendingNotificationFinish = null;
+    } else {
+      _focusTimer.sessionStartAt = null;
+      _focusTimer.phase = phase === "work"
+        ? ((_focusTimer.cyclePosition + 1) % 4 === 0 ? "long-break" : "short-break")
+        : "work";
+      if (phase === "work") _focusTimer.cyclePosition = (_focusTimer.cyclePosition + 1) % 4;
+    }
+    _focusTimer.awaitingConfirmation = false;
+    _focusTimer.pendingPhaseEndedAt = null;
+    _focusTimer.nativeClockActive = false;
+    _focusTimer.nativeRestorePending = false;
+    _focusTimer.nativeBootMismatch = false;
+    _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+    _focusTimer.nativeAnchorBootCount = null;
+    _focusTimer.nativeAnchorBaseMs = null;
+    _focusTimer.nativeAnchorWallMs = null;
+    _stopDisplayTick();
+  }
+  function stopServiceAfterSave(sessionToken) {
+    if (typeof _stopNativeStopwatchForegroundService === "function")
+      _stopNativeStopwatchForegroundService(sessionToken);
+  }
+
   showConfirmModal("⏱️ انتهت المرحلة أثناء غيابك",
     "اكتمل طور " + (labels[phase] || "المؤقت") + " (" + Math.round(target / 60) +
     " دقيقة) أثناء وجود التطبيق في الخلفية أو بعد إغلاقه. هل تريد اعتماد جلسة واحدة وتسجيلها؟",
     function() {
       _awaySessionPromptOpen = false;
-      if (!_focusTimer.awaitingConfirmation || _focusTimer.phase !== phase || _focusTimer.sessionStartAt !== startedAt) return;
+      if (!_focusTimer.awaitingConfirmation || _focusTimer.phase !== phase
+          || _focusTimer.sessionStartAt !== startedAt) return;
+      var previous = captureDecisionState();
       if (!_logSession(phase, target, true, endedAt)) {
-        _saveFocusTimer();
-        showAlertModal("تعذر تسجيل الجلسة", "لم تُسجّل الجلسة. أبقيناها معلقة دون تكرار؛ تحقق من التخزين ثم أعد فتح التطبيق للمحاولة مجددًا.");
+        _renderFocusTimer();
+        try { renderFocusSessionsCard(); } catch (e) {}
+        showAlertModal("تعذر تسجيل الجلسة",
+          "لم تُسجّل الجلسة. أبقيناها معلقة دون إيقاف خدمة Android أو تكرار التسجيل؛ تحقق من التخزين ثم أعد فتح التأكيد.");
         return;
       }
-      if (phase === "work") {
-        _focusTimer.cyclePosition = (_focusTimer.cyclePosition + 1) % 4;
-        _focusTimer.phase = (_focusTimer.cyclePosition === 0) ? "long-break" : "short-break";
-      } else _focusTimer.phase = "work";
-      _focusTimer.running = false;
-      _focusTimer.baseElapsed = 0;
-      _focusElapsedRemainderMs = 0;
-      _focusTimer.startedAt = null;
-      _focusTimer.sessionStartAt = null;
-      _focusTimer.awaitingConfirmation = false;
-      _focusTimer.pendingPhaseEndedAt = null;
-      _focusTimer.nativeClockActive = false;
-      _focusTimer.nativeRestorePending = false;
-      _focusTimer.nativeBootMismatch = false;
-      _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-      _focusTimer.nativeAnchorBootCount = null;
-      _focusTimer.nativeAnchorBaseMs = null;
-      _focusTimer.nativeAnchorWallMs = null;
-      var saved = _saveFocusTimer();
-      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
+      resetPendingPhaseForNextStage(false);
+      if (!_saveFocusTimer()) {
+        restoreDecisionState(previous);
+        storageRecoveryRequired = true;
+        showAlertModal("تم تسجيل الجلسة وتعذر حفظ انتقال المؤقت",
+          "سجل الجلسة محفوظ، لكن حالة المرحلة التالية لم تُحفظ. أعد فتح التطبيق للمحاولة مجدداً؛ لن نوقف خدمة Android قبل نجاح حفظ الحالة.");
+        return;
+      }
+      stopServiceAfterSave(_focusTimer.nativeSessionToken);
       _renderFocusTimer();
       try { renderFocusSessionsCard(); } catch (e) {}
-      if (!saved) showAlertModal("تم تسجيل الجلسة", "سُجلت الجلسة، لكن تعذر حفظ انتقال المؤقت. لا تُعد تسجيل الجلسة؛ أعد فتح التطبيق للتحقق من الحالة.");
-      else showToast("✅ تم اعتماد جلسة واحدة وتسجيلها");
+      showToast("✅ تم اعتماد جلسة واحدة وتسجيلها");
     },
     function() {
       _awaySessionPromptOpen = false;
       if (!_focusTimer.awaitingConfirmation) return;
-      _focusTimer.running = false;
-      _focusTimer.baseElapsed = 0;
-      _focusElapsedRemainderMs = 0;
-      _focusTimer.nativeClockActive = false;
-      _focusTimer.nativeRestorePending = false;
-      _focusTimer.nativeBootMismatch = false;
-      _focusTimer.nativeAnchorElapsedRealtimeMs = null;
-      _focusTimer.nativeAnchorBootCount = null;
-      _focusTimer.nativeAnchorBaseMs = null;
-      _focusTimer.nativeAnchorWallMs = null;
-      if (typeof _stopNativeStopwatchForegroundService === "function") _stopNativeStopwatchForegroundService();
-      _focusTimer.phase = "work";
-      _focusTimer.startedAt = null;
-      _focusTimer.sessionStartAt = null;
-      _focusTimer.cyclePosition = 0;
-      _focusTimer.awaitingConfirmation = false;
-      _focusTimer.pendingPhaseEndedAt = null;
-      _saveFocusTimer();
+      var previous = captureDecisionState();
+      var oldSessionToken = _focusTimer.nativeSessionToken;
+      resetPendingPhaseForNextStage(true);
+      if (!_saveFocusTimer()) {
+        restoreDecisionState(previous);
+        storageRecoveryRequired = true;
+        showAlertModal("تعذر إلغاء الجلسة",
+          "لم يُحفظ الإلغاء؛ أُعيدت حالة الجلسة المعلقة وبقيت خدمة Android والإشعار حتى لا تضيع الحالة.");
+        return;
+      }
+      stopServiceAfterSave(oldSessionToken);
       _renderFocusTimer();
       showToast("⚪ أُلغيت الجلسة دون احتسابها");
     }
