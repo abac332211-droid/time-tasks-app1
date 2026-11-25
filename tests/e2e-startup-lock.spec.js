@@ -648,9 +648,11 @@ test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exact
         .find(button => button.textContent.includes('حفظ وإضافة'));
       if (!save) throw new Error('resetTimer save choice was not rendered');
       save.click();
+      window.__d02CommitPromise = window._focusCommitPendingPromise;
+      if (!window.__d02CommitPromise) throw new Error('resetTimer save action did not start a commit promise');
     });
     const result = await page.evaluate(async () => {
-      const pending = window._focusCommitPendingPromise;
+      const pending = window.__d02CommitPromise;
       const commitResult = pending ? await pending : false;
       const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
       const savedTask = main.tasks.find(item => item.id === 7011);

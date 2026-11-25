@@ -479,7 +479,8 @@ test('a stale page refuses manual and rolling backups while another page has a p
 });
 
 test('two same-origin pages cannot commit duplicate task-linked Stopwatch transactions', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 25000
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -698,7 +699,11 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
     await Promise.all(pages.map(page => page.waitForFunction(
       () => window.__stopwatchAttemptWaiting === true, null, { timeout: 10000 }
     )));
-    await pageA.evaluate(() => window.__stopwatchDiagnosticChannel.postMessage('start-stopwatch-commit'));
+    // BroadcastChannel does not deliver a message back to its sender. Each
+    // page must send once so both waiting pages receive the peer's start signal.
+    await Promise.all(pages.map(page => page.evaluate(() =>
+      window.__stopwatchDiagnosticChannel.postMessage('start-stopwatch-commit')
+    )));
     const settled = await Promise.allSettled(attempts);
     const pageDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
       calls: window.__stopwatchDiagnostic.calls,
