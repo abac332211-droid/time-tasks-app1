@@ -362,6 +362,18 @@ test('notification Finish records a pending confirmation and never commits autom
   assert.equal(h.ackCalls[0].stopMatchingService, true);
 });
 
+test('notification action anchored to a different native checkpoint is rejected without ACK', async () => {
+  const h = makeNotificationActionHarness(makeNotificationAction({
+    anchorElapsedRealtimeMs: 1001
+  }));
+  const result = await h.sandbox._consumeNativeStopwatchNotificationAction();
+
+  assert.equal(result, 'untrusted');
+  assert.equal(h.ackCalls.length, 0);
+  assert.equal(h.focusTimer.running, true);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
+
 test('a second FIFO notification action can be applied to the already-paused session', async () => {
   const second = makeNotificationAction({
     actionId: UUID_OLD, action: 'finish',
