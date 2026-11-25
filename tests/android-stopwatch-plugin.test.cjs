@@ -38,6 +38,9 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   assert.match(plugin, /SystemClock\.elapsedRealtime\(\)/);
   assert.match(plugin, /Settings\.Global\.BOOT_COUNT/);
   assert.match(plugin, /peekNotificationAction/);
+  assert.match(plugin, /waitForForegroundServiceStart\(call, prefs, sessionToken, 0\)/);
+  assert.match(plugin, /SERVICE_STARTED_SESSION_TOKEN_KEY/);
+  assert.match(plugin, /لم يؤكد Android بدء الخدمة الأمامية/);
   assert.match(plugin, /acknowledgeNotificationAction/);
   assert.match(plugin, /ACTION_QUEUE_KEY/);
   assert.match(plugin, /MAX_PENDING_ACTIONS = 20/);
@@ -52,6 +55,10 @@ test('installs native elapsedRealtime clock plugin and specialUse foreground ser
   assert.match(service, /PendingIntent\.getBroadcast/);
   assert.match(service, /إيقاف مؤقت/);
   assert.match(service, /إنهاء الجلسة/);
+  assert.match(service, /startForeground\(NOTIFICATION_ID/);
+  assert.match(service, /\.putString\(StopwatchClockPlugin\.SERVICE_STARTED_SESSION_TOKEN_KEY, token\)/);
+  assert.match(service, /stopSelf\(startId\)/);
+  assert.match(service, /persistedBoot != currentBoot/);
   const receiver = fs.readFileSync(path.join(f.java, 'StopwatchNotificationActionReceiver.java'), 'utf8');
   assert.match(receiver, /goAsync\(\)/);
   assert.match(receiver, /SystemClock\.elapsedRealtime\(\)/);
