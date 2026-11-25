@@ -1101,7 +1101,8 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
       timer: JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY)),
       sessions: JSON.parse(localStorage.getItem(FOCUS_SESSIONS_KEY) || '[]'),
       startDisabled: document.getElementById('timerStartBtn').disabled,
-      finishDisabled: document.getElementById('timerFinishBtn').disabled
+      finishDisabled: document.getElementById('timerFinishBtn').disabled,
+      startButtonText: document.getElementById('timerStartBtn').textContent
     }));
     assert.equal(restored.blocked, false, 'verified cold-start restore must release timer controls');
     assert.equal(restored.running, false, 'a timer from a previous JS runtime must restore paused');
@@ -1116,11 +1117,15 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
     assert.equal(restored.sessions.length, 1, 'the historical session must survive startup recovery');
     assert.equal(restored.startDisabled, false);
     assert.equal(restored.finishDisabled, false);
+    assert.equal(restored.startButtonText, '▶ استئناف',
+      'a restored paused Stopwatch with elapsed time must say resume');
 
     await pageA.locator('#timerStartBtn').click();
-    await pageA.waitForFunction(() => _focusTimer.running === true);
+    await pageA.waitForFunction(() => _focusTimer.running === true
+      && document.getElementById('timerStartBtn').textContent === '⏸ إيقاف');
     await pageA.locator('#timerStartBtn').click();
-    await pageA.waitForFunction(() => _focusTimer.running === false);
+    await pageA.waitForFunction(() => _focusTimer.running === false
+      && document.getElementById('timerStartBtn').textContent === '▶ استئناف');
 
     await pageA.locator('#timerFinishBtn').click();
     await pageA.locator('#modalFooter button.btn-primary').waitFor({ state: 'visible' });
@@ -1134,7 +1139,8 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
         && sessions.length === 2
         && timer.running === false
         && timer.baseElapsed === 0
-        && timer.pendingStopwatchTransaction === null;
+        && timer.pendingStopwatchTransaction === null
+        && document.getElementById('timerStartBtn').textContent === '▶ ابدأ';
     }, null, { timeout: 15_000 });
 
     const committed = await pageA.evaluate(() => ({
@@ -1143,7 +1149,8 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
       sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
       timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
       blocked: _isTimerControlBlocked(),
-      recoveryRequired: storageRecoveryRequired
+      recoveryRequired: storageRecoveryRequired,
+      startButtonText: document.getElementById('timerStartBtn').textContent
     }));
     assert.equal(committed.taskActual, 6, 'the task minutes must be added exactly once');
     assert.equal(committed.sessions.length, 2, 'the historical session and one new session must remain');
@@ -1157,6 +1164,8 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
     assert.equal(committed.timer.baseElapsed, 0);
     assert.equal(committed.blocked, false);
     assert.equal(committed.recoveryRequired, false);
+    assert.equal(committed.startButtonText, '▶ ابدأ',
+      'a finished Stopwatch must return to the start label');
   }, initial, 1);
 });
 
