@@ -9767,7 +9767,7 @@ function _consumeNativeStopwatchNotificationAction() {
     }
     if (token !== _focusTimer.nativeSessionToken) {
       return plugin.acknowledgeNotificationAction({
-        actionId: actionId, sessionToken: token, stopMatchingService: false
+        actionId: actionId, sessionToken: token, stopMatchingService: true
       }).then(function(result) {
         return result && result.acknowledged === true ? "stale" : "untrusted";
       });
