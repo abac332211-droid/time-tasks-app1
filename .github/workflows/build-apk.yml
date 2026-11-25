@@ -110,6 +110,10 @@ jobs:
           grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
           grep -q "android.permission.RECEIVE_BOOT_COMPLETED" <<< "$PERMISSIONS"
           grep -q "android.permission.WAKE_LOCK" <<< "$PERMISSIONS"
+          grep -q "android.permission.FOREGROUND_SERVICE" <<< "$PERMISSIONS"
+          grep -q "android.permission.FOREGROUND_SERVICE_SPECIAL_USE" <<< "$PERMISSIONS"
+          grep -q 'android:foregroundServiceType="specialUse"' android/app/src/main/AndroidManifest.xml
+          grep -q "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android/app/src/main/AndroidManifest.xml
 
       - name: Upload APK
         uses: actions/upload-artifact@v7.0.2
