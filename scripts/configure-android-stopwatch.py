@@ -241,6 +241,7 @@ public final class {PLUGIN} extends Plugin {{
             return;
         }}
         SharedPreferences prefs = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        boolean stopped = false;
         synchronized (ACTION_LOCK) {{
             try {{
                 String activeToken = prefs.getString(ACTIVE_SESSION_TOKEN_KEY, null);
@@ -264,14 +265,16 @@ public final class {PLUGIN} extends Plugin {{
                     call.reject("تعذر حفظ إيقاف خدمة المؤقت");
                     return;
                 }}
+                // Complete the actual component stop before allowing a new token
+                // to commit and start the same Android Service component.
+                stopped = getContext().stopService(new Intent(getContext(), {SERVICE}.class));
+                NotificationManager manager = getContext().getSystemService(NotificationManager.class);
+                if (manager != null) manager.cancel({SERVICE}.NOTIFICATION_ID);
             }} catch (JSONException error) {{
                 call.reject("تعذر التحقق من طابور إجراءات الإشعار؛ لم توقف الخدمة", error);
                 return;
             }}
         }}
-        boolean stopped = getContext().stopService(new Intent(getContext(), {SERVICE}.class));
-        NotificationManager manager = getContext().getSystemService(NotificationManager.class);
-        if (manager != null) manager.cancel({SERVICE}.NOTIFICATION_ID);
         JSObject result = new JSObject();
         result.put("stopped", true);
         result.put("serviceWasRunning", stopped);
@@ -392,15 +395,17 @@ public final class {PLUGIN} extends Plugin {{
                     call.reject("تعذر حفظ ACK؛ بقي الإجراء في طابور Android");
                     return;
                 }}
+                if (stopService) {{
+                    // Stop under the same lock as new starts; an old stop must not
+                    // run after a new session has committed its token.
+                    getContext().stopService(new Intent(getContext(), {SERVICE}.class));
+                    NotificationManager manager = getContext().getSystemService(NotificationManager.class);
+                    if (manager != null) manager.cancel({SERVICE}.NOTIFICATION_ID);
+                }}
             }} catch (JSONException error) {{
                 call.reject("تعذر إقرار الإجراء؛ بقي الطابور دون تغيير", error);
                 return;
             }}
-        }}
-        if (stopService) {{
-            getContext().stopService(new Intent(getContext(), {SERVICE}.class));
-            NotificationManager manager = getContext().getSystemService(NotificationManager.class);
-            if (manager != null) manager.cancel({SERVICE}.NOTIFICATION_ID);
         }}
         JSObject result = new JSObject();
         result.put("acknowledged", true);
@@ -440,6 +445,7 @@ public final class {SERVICE} extends Service {{
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {{
         SharedPreferences prefs = getSharedPreferences({PLUGIN}.PREFS, Context.MODE_PRIVATE);
+        synchronized ({PLUGIN}.ACTION_LOCK) {{
         String title = prefs.getString({PLUGIN}.TITLE_KEY, "");
         String task = prefs.getString({PLUGIN}.TASK_KEY, "");
         String token = prefs.getString({PLUGIN}.ACTIVE_SESSION_TOKEN_KEY, null);
@@ -472,6 +478,7 @@ public final class {SERVICE} extends Service {{
             return START_NOT_STICKY;
         }}
         return START_STICKY;
+        }}
     }}
 
     private void createNotificationChannel() {{
