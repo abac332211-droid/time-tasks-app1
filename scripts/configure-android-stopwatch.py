@@ -301,6 +301,15 @@ public final class {PLUGIN} extends Plugin {{
                 JSONArray queue = readActionQueue(prefs);
                 JSONArray acked = readAckedIds(prefs);
                 boolean alreadyAcked = contains(acked, actionId);
+                if (!alreadyAcked && queue.length() > 0) {{
+                    JSONObject oldest = queue.optJSONObject(0);
+                    if (oldest == null
+                        || !actionId.equals(oldest.optString("actionId"))
+                        || !sessionToken.equals(oldest.optString("sessionToken"))) {{
+                        call.reject("يجب إقرار أقدم إجراء في الطابور؛ لم يُحذف أي إجراء");
+                        return;
+                    }}
+                }}
                 JSONArray nextQueue = new JSONArray();
                 boolean found = false;
                 for (int i = 0; i < queue.length(); i++) {{
