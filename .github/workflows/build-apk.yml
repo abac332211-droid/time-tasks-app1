@@ -64,6 +64,9 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Configure native stopwatch clock and foreground service
+        run: python3 scripts/configure-android-stopwatch.py
+
       - name: Align Android version with app sources
         run: python3 scripts/configure-android-version.py
 
