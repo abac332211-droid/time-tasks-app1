@@ -379,6 +379,20 @@ test('queued notification action is consumed before any fresh native clock sampl
   assert.equal(actionCalls, 0);
 });
 
+test('native receiver timestamp remains authoritative after a later volatile clock sample', async () => {
+  const h = makeNotificationActionHarness(makeNotificationAction());
+  // The page refreshed its live elapsed value after the user tapped Pause,
+  // but Android recorded the tap time against the unchanged durable anchor.
+  h.focusTimer.baseElapsed = 50;
+  const result = await h.sandbox._consumeNativeStopwatchNotificationAction();
+
+  assert.equal(result, 'pause');
+  assert.equal(h.focusTimer.baseElapsed, 15);
+  assert.equal(h.ackCalls.length, 1);
+  assert.equal(h.ackCalls[0].stopMatchingService, true);
+  assert.equal(h.sandbox.storageRecoveryRequired, false);
+});
+
 test('notification Pause persists exact receiver-time elapsed value before ACK', async () => {
   const h = makeNotificationActionHarness(makeNotificationAction());
   const result = await h.sandbox._consumeNativeStopwatchNotificationAction();
