@@ -11,6 +11,6 @@
     "@capacitor/cli": "^6.2.0"
   },
   "scripts": {
-    "test": "node --test tests/regression.test.cjs tests/multi-window-storage.test.cjs tests/multi-window-browser.test.cjs tests/stopwatch-lifecycle.test.cjs tests/stopwatch-transaction-recovery.test.cjs tests/focus-session-integrity.test.cjs tests/focus-timer-backup.test.cjs tests/focus-timer-clock.test.cjs tests/android-version-config.test.cjs tests/android-debug-variant.test.cjs tests/task-notifications.test.cjs tests/startup-stopwatch-recovery.test.cjs tests/e2e-startup-lock.spec.js"
+    "test": "node --test --test-timeout=60000 tests/regression.test.cjs tests/multi-window-storage.test.cjs tests/multi-window-browser.test.cjs tests/stopwatch-lifecycle.test.cjs tests/stopwatch-transaction-recovery.test.cjs tests/focus-session-integrity.test.cjs tests/focus-timer-backup.test.cjs tests/focus-timer-clock.test.cjs tests/android-version-config.test.cjs tests/android-debug-variant.test.cjs tests/task-notifications.test.cjs tests/startup-stopwatch-recovery.test.cjs tests/e2e-startup-lock.spec.js"
   }
 }
