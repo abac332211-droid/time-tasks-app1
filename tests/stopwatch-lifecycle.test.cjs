@@ -148,6 +148,7 @@ function createStopwatchDialogHarness({ saveResult = true, logResult = true } = 
     STOPWATCH_SAVE_THRESHOLD_SEC: 60,
     tasks: [],
     _getFocusTimerElapsedParts: () => ({ seconds: 75, remainderMs: 650 }),
+    _stopNativeStopwatchForegroundService: () => Promise.resolve(false),
     _stopDisplayTick: () => calls.push('stopTick'),
     _startDisplayTick: () => calls.push('startTick'),
     _saveFocusTimer: () => {
