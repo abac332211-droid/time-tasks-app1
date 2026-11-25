@@ -529,3 +529,41 @@
 ### ملاحظة توثيقية حول هذا الالتزام
 
 هذا الملحق يوثّق نتائج الكود والاختبارات على `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`. الالتزام الذي يضيف هذا الملحق توثيقي فقط؛ تُربط به عملية التوثيق، بينما تظل بصمة الكود التي اجتازت الاختبارات هي `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`.
+
+
+---
+
+## مراجعة تسمية زر Stopwatch — 25 نوفمبر 2026
+
+### الرأس المرجعي وقرار النطاق
+- PR: [#10 — Stopwatch transaction identity and stale backup safeguards](https://github.com/abac332211-droid/time-tasks-app1/pull/10).
+- الرأس الذي راجعته قبل هذه الإضافة: `ca87a145f3e6a0b42babd1ae5dc78bb427ad9639`.
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`، والقاعدة: `codex/v2.9.1-stability`.
+- PR #10 مفتوح كمسودة وغير مدمج.
+- مصدر التسمية في `index.html` داخل `_renderFocusTimer()`: يُعرض «▶ استئناف» عندما يكون `_focusTimer.mode === 'stopwatch'` و`_focusTimer.running === false` والزمن المعروض أكبر من صفر. يعتمد القرار على حالة المؤقت الفعلية لا على نص الزر السابق.
+- لم أعدّل `index.html`؛ لم تكن هناك حاجة لتغيير منطق المؤقت.
+
+### استكمال اختبار الانحدار
+- عُزز اختبار Chromium الموجود `Stopwatch button label distinguishes fresh, running and paused states without starting a new session on resume` في `tests/multi-window-browser.test.cjs`.
+- يلتقط الاختبار `taskId` و`task.actual` وعلامة `lastStopwatchTransactionId` و`pendingStopwatchTransaction.id` ونسخة JSON كاملة من السجلات التاريخية.
+- بعد الإيقاف المؤقت والاستئناف وإعادة الضبط، يتحقق الاختبار من عدم تغير دقائق المهمة أو معرّفات المعاملات، وعدم إضافة جلسة أو تعديل أي حقل في السجلات السابقة، مع بقاء `sessionStartAt` كما هو عبر الاستئناف واستمرار الزمن المتراكم.
+- لم يتغير كود المعاملات أو التخزين أو الاستعادة أو الأقفال.
+
+### الملفات
+- `tests/multi-window-browser.test.cjs`: تأكيدات الانحدار الإضافية أعلاه فقط.
+- `docs/DAILY-PROGRESS.md`: هذا السجل.
+- `index.html`: لم يتغير في هذه الخطوة؛ مصدر تسمية «استئناف» موجود على الرأس المرجعي.
+
+### نتائج CI السابقة على الرأس المرجعي `ca87a145f3e6a0b42babd1ae5dc78bb427ad9639`
+- [PWA / regression / Chromium — run 45569036158](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569036158): نجاح، `330/330` ناجحة، 0 فشل، 0 تخطٍ؛ سجل checkout أكد SHA نفسه.
+- [Android Debug — run 45569036271](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569036271): نجاح؛ `297/330` ناجحة، 0 فشل، و33 تخطٍ لاختبارات Playwright/Chromium غير المشغلة ضمن وظيفة Android؛ سجل Gradle انتهى بـ`BUILD SUCCESSFUL`، وفحوص Manifest ورفع APK نجحت.
+- Artifact Debug: [ID 15001412023](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569036271/artifacts/15001412023)، حجم ZIP ‏5,477,262 بايت، digest ‏`sha256:86d42ccdcf3c43fe595ed30451e4e80d88792a049c4a251906ac4fbc6c1d2b34`.
+- هذه النتائج تخص الرأس المرجعي قبل إضافة تأكيدات الاختبار الجديدة؛ يجب ربط تشغيلات CI التالية بالرأس الجديد قبل اعتبار الإضافة متحققة.
+
+### المراجعة والقيود
+- المراجعة الرسمية المسجلة PR review حالتها `COMMENTED` ومؤرخة 23 نوفمبر 2026 ومربوطة برأس أقدم. التعليقات اللاحقة صادرة من حساب مالك المستودع؛ لا أعدّها مراجعة مستقلة.
+- لا توجد موافقة مستقلة `APPROVED` على الرأس الحالي.
+- نتائج CI لا تحل محل استكمال الاختبار الميداني لسيناريوهات البدء والإيقاف والاستئناف والإنهاء وإعادة الضبط وإعادة الفتح على APK ذي SHA معلوم.
+
+### الخطوة التالية
+اكتمال PWA/Chromium وAndroid Debug على الرأس الجديد الناتج عن هذه الإضافة، ثم مراجعة مستقلة من حساب مختلف، واستكمال سجل الاختبار الميداني على APK المطابق للرأس قبل أي قرار دمج.
