@@ -1858,6 +1858,32 @@ function resetAllHarness(faults = {}) {
   return { keys, values, removeCalls, alerts, toasts, confirmations, sandbox, run: () => sandbox.resetAll() };
 }
 
+
+
+test('resetAll clears stale secondary-storage conflict tracking after a successful reset', () => {
+  const harness = resetAllHarness();
+  harness.sandbox._secondaryStorageBaselines = Object.assign(Object.create(null), {
+    projects: 'old-projects',
+    thoughts: 'old-thoughts',
+    'focus-timer': 'old-focus-timer'
+  });
+  harness.sandbox._secondaryStorageConflicts = Object.assign(Object.create(null), {
+    projects: true,
+    thoughts: true,
+    'focus-timer': true
+  });
+  harness.sandbox._focusTimerExternalConflict = true;
+  harness.sandbox._focusTimerConflictNoticeShown = true;
+  harness.sandbox._invalidFocusSessionsNoticeShown = true;
+  vm.runInNewContext(extractFunction('_resetSecondaryStorageTracking'), harness.sandbox);
+  harness.sandbox._resetSecondaryStorageTracking();
+  assert.deepEqual(Object.keys(harness.sandbox._secondaryStorageBaselines), []);
+  assert.deepEqual(Object.keys(harness.sandbox._secondaryStorageConflicts), []);
+  assert.equal(harness.sandbox._focusTimerExternalConflict, false);
+  assert.equal(harness.sandbox._focusTimerConflictNoticeShown, false);
+  assert.equal(harness.sandbox._invalidFocusSessionsNoticeShown, false);
+});
+
 test('resetAll attempts every deletion and never reports full success when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
   harness.run();
