@@ -9659,10 +9659,7 @@ function _refreshNativeStopwatchClock(requireBootIdentity) {
 
 function _restoreNativeStopwatchSessionAfterStartup() {
   if (_focusTimer.pendingNotificationFinish) {
-    if (!_pendingFinishDialogShown) {
-      _pendingFinishDialogShown = true;
-      finishTimer();
-    }
+    if (!_pendingFinishDialogShown) finishTimer();
     return Promise.resolve(true);
   }
   if (!_focusTimer.nativeRestorePending) return _consumeNativeStopwatchNotificationAction();
@@ -9743,10 +9740,7 @@ function _consumeNativeStopwatchNotificationAction() {
         if (!result || result.acknowledged !== true) return "untrusted";
         if (token === _focusTimer.nativeSessionToken && _focusTimer.pendingNotificationFinish
             && _focusTimer.pendingNotificationFinish.actionId === actionId
-            && !_pendingFinishDialogShown) {
-          _pendingFinishDialogShown = true;
-          finishTimer();
-        }
+            && !_pendingFinishDialogShown) finishTimer();
         return "duplicate";
       });
     }
@@ -9822,18 +9816,16 @@ function _consumeNativeStopwatchNotificationAction() {
     return plugin.acknowledgeNotificationAction({
       actionId: actionId, sessionToken: token, stopMatchingService: true
     }).then(function(result) {
-      if (!result || result.acknowledged !== true) {
+      if (!result || result.acknowledged !== true)
         console.warn("Native stopwatch action is saved locally but Android ACK is pending.");
-        return "saved";
-      }
       if (action.action === "finish") {
-        _pendingFinishDialogShown = true;
-        finishTimer();
+        if (!_pendingFinishDialogShown) finishTimer();
       } else {
-        showToast("⏸ تم إيقاف المؤقت من الإشعار وحُفظت المدة.");
+        if (result && result.acknowledged === true)
+          showToast("⏸ تم إيقاف المؤقت من الإشعار وحُفظت المدة.");
         _renderFocusTimer();
       }
-      return action.action;
+      return result && result.acknowledged === true ? action.action : "saved";
     });
   }).catch(function(error) {
     console.warn("Native stopwatch notification action failed:", error);
@@ -12754,6 +12746,7 @@ function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
 function finishTimer(_nativeClockSynchronized) {
+  if (_focusTimer.pendingNotificationFinish && _pendingFinishDialogShown) return false;
   if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
       && typeof _runWithFreshNativeStopwatchClock === "function") {
     return _runWithFreshNativeStopwatchClock(function() { return finishTimer(true); });
@@ -12762,48 +12755,105 @@ function finishTimer(_nativeClockSynchronized) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return Promise.resolve(false);
   }
-
-  if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
-    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");return Promise.resolve(false);
+  if (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked()) {
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");
+    return Promise.resolve(false);
   }
-  var snapshot=_freezeFocusTimerForDecision();if(!snapshot)return Promise.resolve(false);
-  var elapsed=snapshot.baseElapsed;
-  if(elapsed<60){
-    var message=snapshot.mode==='pomodoro'&&snapshot.phase!=='work'
-      ?'☕ الاستراحة أقل من دقيقة — أُغلقت دون تسجيل':'⏱️ الجلسة أقل من دقيقة — أُلغيت';
-    return _discardShortFocusSession({snapshot:snapshot,successToast:message});
+  var snapshot = _freezeFocusTimerForDecision();
+  if (!snapshot) return Promise.resolve(false);
+  var elapsed = snapshot.baseElapsed;
+  if (elapsed < 60) {
+    var message = snapshot.mode === "pomodoro" && snapshot.phase !== "work"
+      ? "☕ الاستراحة أقل من دقيقة — أُغلقت دون تسجيل" : "⏱️ الجلسة أقل من دقيقة — أُلغيت";
+    _pendingFinishDialogShown = false;
+    return _discardShortFocusSession({ snapshot: snapshot, successToast: message });
   }
-  var isBreak=snapshot.mode==='pomodoro'&&snapshot.phase!=='work';
-  var task=snapshot.taskId!==null?tasks.find(function(t){return t.id===snapshot.taskId;}):null;
-  if(isBreak||!task){
-    return _commitFocusTaskSession({snapshot:snapshot,taskId:null,allowUnlinkedTaskSnapshotLink:isBreak,
-      minutesToAdd:0,completed:!isBreak,
-      successToast:isBreak?'✅ سُجّلت الاستراحة دون إضافتها إلى زمن المهمة':'✅ حُفظت الجلسة ('+_formatDuration(elapsed)+')'});
+  var isBreak = snapshot.mode === "pomodoro" && snapshot.phase !== "work";
+  var task = snapshot.taskId !== null ? tasks.find(function(t) { return t.id === snapshot.taskId; }) : null;
+  if (isBreak || !task) {
+    _pendingFinishDialogShown = false;
+    return _commitFocusTaskSession({
+      snapshot: snapshot, taskId: null, allowUnlinkedTaskSnapshotLink: isBreak,
+      minutesToAdd: 0, completed: !isBreak,
+      successToast: isBreak ? "✅ سُجّلت الاستراحة دون إضافتها إلى زمن المهمة"
+        : "✅ حُفظت الجلسة (" + _formatDuration(elapsed) + ")"
+    });
   }
-  var minutes=Math.max(1,Math.round(elapsed/60)),current=task.actual==null?0:task.actual;
-  var overlay=document.getElementById('customModalOverlay'),card=document.getElementById('modalCardElement');
-  document.getElementById('modalTitle').textContent='⏹ إنهاء الجلسة';
-  var body=document.getElementById('modalBody');
-  body.innerHTML='<p style="margin:0 0 10px;line-height:1.7;">المدة المقاسة: <b>'+_formatDuration(elapsed)+'</b></p>'+
-    '<p style="margin:0 0 10px;line-height:1.7;">المهمة: <b>'+escapeHTML(task.name)+'</b></p>'+
-    '<p style="margin:0;line-height:1.7;">المدة الفعلية الحالية: <b>'+current+' دقيقة</b></p>';
-  var footer=document.getElementById('modalFooter');footer.innerHTML='';
-  var cancel=document.createElement('button');cancel.className='btn-ghost';cancel.textContent='إلغاء';
-  cancel.onclick=function(){closeModal();_renderFocusTimer();};
-  var edit=document.createElement('button');edit.className='btn-ghost';edit.textContent='✏️ تعديل';
-  edit.onclick=function(){closeModal();showPromptModal('القيمة المضافة','أدخل عدد الدقائق المراد إضافتها إلى المدة الفعلية:',
-    String(minutes),'دقائق',function(value){
-      if(value===""){showToast('⚠️ أدخل قيمة');return;}
-      var amount=Number(value);if(!Number.isInteger(amount)||amount<0){showToast('⚠️ قيمة غير صالحة');return;}
-      _applyTimerFinish(elapsed,task,amount,snapshot.phase,snapshot);
-    });};
-  var save=document.createElement('button');save.className='btn-primary';save.textContent='+ '+minutes+' د';
-  save.onclick=function(){closeModal();_applyTimerFinish(elapsed,task,minutes,snapshot.phase,snapshot);};
-  footer.appendChild(cancel);footer.appendChild(edit);footer.appendChild(save);
-  overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
-  if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
-  _modalKeyHandler=function(e){if(e.key==='Escape'){e.preventDefault();cancel.click();}else trap(e);};
-  document.addEventListener('keydown',_modalKeyHandler);
+  var minutes = Math.max(1, Math.round(elapsed / 60)), current = task.actual == null ? 0 : task.actual;
+  var overlay = document.getElementById("customModalOverlay"), card = document.getElementById("modalCardElement");
+  document.getElementById("modalTitle").textContent = "⏹ إنهاء الجلسة";
+  var body = document.getElementById("modalBody");
+  body.innerHTML = "<p style=\"margin:0 0 10px;line-height:1.7;\">المدة المقاسة: <b>"
+    + _formatDuration(elapsed) + "</b></p>"
+    + "<p style=\"margin:0 0 10px;line-height:1.7;\">المهمة: <b>" + escapeHTML(task.name) + "</b></p>"
+    + "<p style=\"margin:0;line-height:1.7;\">المدة الفعلية الحالية: <b>" + current + " دقيقة</b></p>";
+  var footer = document.getElementById("modalFooter");
+  footer.innerHTML = "";
+  var cancel = document.createElement("button");
+  cancel.className = "btn-ghost";
+  cancel.textContent = "إلغاء";
+  cancel.onclick = function() {
+    var previous = _captureFocusTimerClockState();
+    if (_focusTimer.pendingNotificationFinish) {
+      _focusTimer.pendingNotificationFinish = null;
+      if (!_saveFocusTimer()) {
+        _restoreFocusTimerClockState(previous);
+        showAlertModal("تعذر إلغاء طلب الإنهاء",
+          "لم يُحفظ إلغاء طلب الإنهاء؛ بقي الطلب محفوظاً ولم يسمح التطبيق ببدء جلسة جديدة.");
+        _pendingFinishDialogShown = false;
+        return;
+      }
+    }
+    _pendingFinishDialogShown = false;
+    closeModal();
+    _renderFocusTimer();
+  };
+  var edit = document.createElement("button");
+  edit.className = "btn-ghost";
+  edit.textContent = "✏️ تعديل";
+  edit.onclick = function() {
+    closeModal();
+    _pendingFinishDialogShown = false;
+    showPromptModal("القيمة المضافة", "أدخل عدد الدقائق المراد إضافتها إلى المدة الفعلية:",
+      String(minutes), "دقائق", function(value) {
+        if (value === "") { showToast("⚠️ أدخل قيمة"); return; }
+        var amount = Number(value);
+        if (!Number.isInteger(amount) || amount < 0) { showToast("⚠️ قيمة غير صالحة"); return; }
+        Promise.resolve(_applyTimerFinish(elapsed, task, amount, snapshot.phase, snapshot))
+          .then(function(ok) {
+            if (!ok && _focusTimer.pendingNotificationFinish) {
+              _pendingFinishDialogShown = false;
+              finishTimer();
+            }
+          });
+      });
+  };
+  var save = document.createElement("button");
+  save.className = "btn-primary";
+  save.textContent = "+ " + minutes + " د";
+  save.onclick = function() {
+    closeModal();
+    _pendingFinishDialogShown = false;
+    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot))
+      .then(function(ok) {
+        if (!ok && _focusTimer.pendingNotificationFinish) {
+          _pendingFinishDialogShown = false;
+          finishTimer();
+        }
+      });
+  };
+  footer.appendChild(cancel);
+  footer.appendChild(edit);
+  footer.appendChild(save);
+  overlay.classList.remove("hidden");
+  _pendingFinishDialogShown = true;
+  const trap = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) document.removeEventListener("keydown", _modalKeyHandler);
+  _modalKeyHandler = function(e) {
+    if (e.key === "Escape") { e.preventDefault(); cancel.click(); }
+    else trap(e);
+  };
+  document.addEventListener("keydown", _modalKeyHandler);
 }
 
 function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot) {
