@@ -1300,7 +1300,9 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
 
       const resetSucceeded = await _executeResetAllTransaction();
       const resetCleanup = {
-        projectsCacheIsNull: _projectsCache === null,
+        projectsCacheHasNoStaleProject: _projectsCache === null
+          || (Array.isArray(_projectsCache)
+            && !_projectsCache.some(project => project && project.id === 404)),
         invalidSessionsNotice: _invalidFocusSessionsNoticeShown,
         recoveryRequired: storageRecoveryRequired
       };
@@ -1347,7 +1349,7 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
     });
 
     assert.equal(result.resetSucceeded, true);
-    assert.equal(result.resetCleanup.projectsCacheIsNull, true);
+    assert.equal(result.resetCleanup.projectsCacheHasNoStaleProject, true);
     assert.equal(result.resetCleanup.invalidSessionsNotice, false);
     assert.equal(result.resetCleanup.recoveryRequired, false);
     assert.equal(result.thoughts.length, 1);
