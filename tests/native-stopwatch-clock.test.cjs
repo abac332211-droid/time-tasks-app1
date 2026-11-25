@@ -197,6 +197,57 @@ test('native clock refresh preserves the fixed service anchor used by notificati
   assert.equal(timer.baseElapsed, 23);
 });
 
+test('a stored JSON null timer record is corrupt while an absent key is a valid empty state', () => {
+  function load(raw) {
+    const timer = { mode: 'stopwatch', phase: 'work', running: false, baseElapsed: 99,
+      startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: 5000,
+      awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false };
+    let preserved = null;
+    const h = {
+      window: { crypto: { getRandomValues(bytes) { bytes.fill(1); } } },
+      Date,
+      _focusTimer: timer,
+      _focusElapsedRemainderMs: 125,
+      _focusTimerColdStartWasRunning: false,
+      _focusTimerSavedAtAtLoad: null,
+      _trackSecondaryStorageRead: (_key, value) => value,
+      FOCUS_TIMER_KEY: 'focus-timer',
+      localStorage: { getItem: () => raw },
+      tasks: [],
+      storageRecoveryRequired: false,
+      _clearFocusTimerClock() {},
+      _saveFocusTimer: () => true,
+      _phaseTargetSec: () => 1500,
+      _validatePendingStopwatchTransaction: () => true,
+      _preserveCorruptStorageSnapshot: (_key, value) => { preserved = value; },
+      console: { error() {}, warn() {} }
+    };
+    for (const name of ['_isNativeStopwatchUuid','_normalizeFocusTimerRecord',
+      '_applyHydratedFocusTimerRecord','_loadFocusTimer']) {
+      vm.runInNewContext(extractFunction(name), h);
+    }
+    h._loadFocusTimer();
+    return { timer, h, preserved };
+  }
+
+  const absent = load(null);
+  assert.equal(absent.h.storageRecoveryRequired, false);
+  assert.equal(absent.timer.baseElapsed, 99);
+  assert.equal(absent.preserved, null);
+
+  const presentNull = load('null');
+  assert.equal(presentNull.h.storageRecoveryRequired, true);
+  assert.equal(presentNull.timer.baseElapsed, 99,
+    'corrupt JSON null must not be replaced by an empty/zero timer');
+  assert.equal(presentNull.preserved, 'null');
+
+  const presentEmpty = load('');
+  assert.equal(presentEmpty.h.storageRecoveryRequired, true);
+  assert.equal(presentEmpty.timer.baseElapsed, 99);
+  assert.equal(presentEmpty.preserved, null,
+    'invalid JSON is rejected by the parse error path without rewriting it');
+});
+
 test('timer normalization distinguishes a valid empty record from a corrupt record', () => {
   const h = loadNativeIdentityHarness();
   const empty = h._normalizeFocusTimerRecord(null, []);
