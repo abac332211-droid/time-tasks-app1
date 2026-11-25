@@ -446,3 +446,36 @@
 
 **قاعدة القرار:** لا تعتبر البنود مغلقة بمجرد تعديل الملفات. يتطلب كل بند سجل Chromium ناجحًا على SHA نهائي واحد، وتفسير أي تخطٍ دون احتسابه نجاحًا. Android Debug دليل بناء واختبارات Node وManifest فقط، وليس اختبار جهاز فعلي.
 
+
+
+---
+
+## إغلاق D-01 إلى D-04 بنتائج CI — 25 نوفمبر 2026
+
+### الرأس الذي اجتاز بوابات القبول
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`
+- SHA: `0b64faa61787ff996f3ab6bc65a27639ecfd66e1`
+- لاختبارات PWA/Chromium:
+  - [Push PWA — run 45539949615](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539949615): **327/327 ناجحًا، 0 فشل، 0 إلغاء، 0 تخطٍ**.
+  - [PR PWA — run 45539958765](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539958765): **327/327 ناجحًا، 0 فشل، 0 إلغاء، 0 تخطٍ**.
+  - تحقق كلا التشغيلين من SHA المصدر نفسه، وثبّتا Playwright/Chromium وشغّلا اختبارات المتصفح الحقيقية.
+- Android Debug — [run 45539949797](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539949797): **BUILD SUCCESSFUL**، 297 ناجحًا، 0 فشل، 30 تخطٍ من أصل 327. الاختبارات الثلاثون المتخطاة تخص Playwright/Chromium غير المثبت في وظيفة Android؛ لا تُحتسب نجاحًا على Android، وقد اجتازت كلها ضمن بوابتي PWA أعلاه.
+- فحوص Android Manifest نجحت لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- Artifact: [time-tasks-app-apk — ID 14987724788](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539949797/artifacts/14987724788)، الحجم 5,477,026 بايت، وبصمة SHA-256 لأرشيف ZIP: `a089f9c49f75e234c99f5f0673582ee6bc5183352fa0a9e1939e02bd564f6020` (ليست بصمة APK الخام).
+
+### نتائج معايير القبول
+- **D-01 — مغلق باختبارات Chromium:** `D-01 Reset allows same-page thought, project and timer writes without stale baselines` و`startup reset recovery waits for the shared lock and makes an older queued backup callback inert` اجتازا. يثبتان عدم بقاء المشروع/التنبيه القديمين، ونجاح الكتابة بعد Reset بلا إعادة تحميل، وتطابق خطوط الأساس وغياب التعارض والحماية.
+- **D-02 — مغلق باختبارات Chromium:** `D-02 resetTimer save dialog commits the linked Stopwatch transaction exactly once` و`D-02 transition commits the old task before starting the next task timer` و`D-02 transition failure does not start the next task or report success` اجتازت. اختبار `finishTimer()` القائم اجتاز ضمن المجموعة أيضًا.
+- **D-03 — مغلق باختبار Chromium متعدد النوافذ:** `D-03.2 two real same-origin tabs wait for Web Locks and the second page synchronizes memory, baselines and UI` اجتاز، مع تحقق الانتظار الفعلي على Web Locks، ومزامنة النافذة الثانية للذاكرة وخطوط الأساس والواجهة دون تعارض زائف.
+- **D-04 — مغلق باختبارات Chromium:** `D-04 Pomodoro transaction at 500 sessions evicts once and startup retry does not evict another row` و`Stopwatch recovery at the 500-session limit evicts once and retry does not evict a second row` اجتازا. بقي حد `_saveSessions()` الصارم 500 كما هو، واختبار إعادة المحاولة لم يحذف صفًا ثانيًا.
+
+### تصحيحات أدوات الاختبار أثناء الإغلاق
+- جعل مهلة الاختبارات محددة حتى لا تبقى مجموعة المتصفح معلقة بلا تشخيص.
+- أصلح اختبار تنافس النافذتين حاجز `BroadcastChannel` كي ترسل كل صفحة إشارة للصفحة الأخرى؛ القناة لا تعيد الرسالة إلى مُرسلها.
+- التقط اختبارا D-02 مرجع وعد الحفظ فور النقر، بدل قراءة المتغير العام بعد أن يمسحه `finally`.
+- عُدّل تحقق D-01 ليقبل إعادة تحميل الواجهة لقائمة مشاريع فارغة بعد إبطال الذاكرة، مع اشتراط عدم بقاء المشروع القديم.
+
+### القرار والحدود
+- القرار: **D-01 وD-02 وD-03 وD-04 مغلقة من ناحية معايير القبول والاختبارات الآلية على SHA أعلاه.**
+- هذا لا يثبت اختبار Android WebView على جهاز فعلي أو حالات Force Stop/Doze أو الإشعارات بعد إعادة التشغيل؛ تبقى هذه اختبارات ميدانية منفصلة.
+- PR #10 بقي مفتوحًا Draft وغير مدمج، وقاعدته `codex/v2.9.1-stability`. لم يتغير `main`، ولم يُنشأ Release أو نشر إنتاجي.
