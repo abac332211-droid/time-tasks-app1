@@ -545,7 +545,7 @@ test('Android foreground start must be confirmed by the service before the JS ti
     html.indexOf('function _stopNativeStopwatchForegroundService('));
   assert.match(source, /plugin\.startForegroundTimer\(args\)/);
   assert.match(source, /return true/);
-  assert.match(source, /catch\(error\)/);
+  assert.match(source, /\.catch\(function\(error\)/);
   const script = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'configure-android-stopwatch.py'), 'utf8');
   assert.match(script, /waitForForegroundServiceStart\(call, prefs, sessionToken, 0\)/);
   assert.match(script, /SERVICE_STARTED_SESSION_TOKEN_KEY/);
