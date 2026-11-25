@@ -248,6 +248,35 @@ test('a saved notification Pause detaches the old token but a retry still retire
   assert.equal(h.ackCalls[1].stopMatchingService, true);
 });
 
+test('JavaScript accepts foreground service start only for an exact confirmed token', async () => {
+  const token = UUID_SESSION;
+  const focusTimer = {
+    mode: 'stopwatch', phase: 'work', running: true, taskId: null,
+    baseElapsed: 12, nativeClockActive: true, nativeSessionToken: token,
+    nativeAnchorElapsedRealtimeMs: 1000, nativeAnchorBaseMs: 12000,
+    nativeAnchorBootCount: 17
+  };
+  let response = { started: false, sessionToken: token };
+  const sandbox = {
+    _focusTimer: focusTimer,
+    _focusElapsedRemainderMs: 0,
+    tasks: [],
+    window: {},
+    _nativeStopwatchPlugin: () => ({
+      startForegroundTimer: async () => response
+    }),
+    _isNativeStopwatchUuid: () => true,
+    console
+  };
+  vm.runInNewContext(extractFunction('_startNativeStopwatchForegroundService'), sandbox);
+
+  assert.equal(await sandbox._startNativeStopwatchForegroundService(), false);
+  response = { started: true, sessionToken: UUID_OLD };
+  assert.equal(await sandbox._startNativeStopwatchForegroundService(), false);
+  response = { started: true, sessionToken: token };
+  assert.equal(await sandbox._startNativeStopwatchForegroundService(), true);
+});
+
 test('native clock refresh preserves the fixed service anchor used by notification actions', async () => {
   const timer = {
     mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 5,
