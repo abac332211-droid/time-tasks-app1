@@ -148,6 +148,106 @@ function loadNativeIdentityHarness(overrides = {}) {
   return sandbox;
 }
 
+test('a paused legacy record drops its stopped native service token before a new run', () => {
+  const h = loadNativeIdentityHarness();
+  const candidate = h._normalizeFocusTimerRecord({
+    mode: 'stopwatch', phase: 'work', running: false, baseElapsed: 75,
+    cyclePosition: 0, taskId: null, sessionStartAt: 1000,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null,
+    nativeClockActive: false, nativeAnchorElapsedRealtimeMs: 20000,
+    nativeAnchorBootCount: 17, nativeAnchorBaseMs: 75000,
+    nativeAnchorWallMs: 80000, nativeRestorePending: false,
+    nativeSessionToken: UUID_SESSION
+  }, []);
+
+  assert.equal(candidate.valid, true);
+  assert.equal(candidate.migrated, true);
+  assert.equal(candidate.timer.nativeSessionToken, null);
+  assert.equal(candidate.timer.nativeAnchorElapsedRealtimeMs, null);
+  assert.equal(candidate.timer.baseElapsed, 75);
+});
+
+test('a manual pause and its following resume use distinct foreground-service tokens', () => {
+  const timer = {
+    mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 0,
+    startedAt: 1000, cyclePosition: 0, taskId: null, sessionStartAt: 1000,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false,
+    pendingStopwatchTransaction: null, nativeClockActive: true,
+    nativeAnchorElapsedRealtimeMs: 2000, nativeAnchorBootCount: 17,
+    nativeAnchorBaseMs: 0, nativeAnchorWallMs: 1000,
+    nativeRestorePending: false, nativeBootMismatch: false,
+    nativeSessionToken: UUID_SESSION, handledNotificationActionIds: [],
+    pendingNotificationFinish: null
+  };
+  const oldStops = [], newStarts = [];
+  const sandbox = {
+    _focusTimer: timer,
+    _focusElapsedRemainderMs: 0,
+    _focusTimerExternalConflict: false,
+    _nativeStopwatchPlugin: () => ({}),
+    _createNativeStopwatchSessionToken: () => UUID_NEW,
+    _isTimerControlBlocked: () => false,
+    _isFocusCommitBlocked: () => false,
+    _captureFocusTimerClockState: () => ({
+      timer: { ...timer }, remainderMs: sandbox._focusElapsedRemainderMs
+    }),
+    _restoreFocusTimerClockState: (snapshot) => {
+      Object.assign(timer, snapshot.timer);
+      sandbox._focusElapsedRemainderMs = snapshot.remainderMs;
+      return true;
+    },
+    _getFocusTimerElapsedParts: () => ({ seconds: 15, remainderMs: 250 }),
+    _stopDisplayTick() {},
+    _startDisplayTick() {},
+    _saveFocusTimer: () => true,
+    _stopNativeStopwatchForegroundService: (token) => {
+      oldStops.push(token);
+      return Promise.resolve(true);
+    },
+    _unlockAudioContext() {},
+    _anchorFocusTimerClock() {},
+    _attachNativeStopwatchClockToRunningTimer: () => {
+      newStarts.push(timer.nativeSessionToken);
+      return Promise.resolve(true);
+    },
+    _renderFocusTimer() {},
+    showToast() {},
+    showAlertModal() {}
+  };
+  vm.runInNewContext(
+    [extractFunction('_isNativeStopwatchUuid'), extractFunction('toggleTimer')].join('\n'),
+    sandbox
+  );
+
+  assert.equal(sandbox.toggleTimer(true, true), true);
+  assert.equal(timer.running, false);
+  assert.equal(timer.nativeSessionToken, null);
+  assert.deepEqual(oldStops, [UUID_SESSION]);
+
+  assert.equal(sandbox.toggleTimer(true, true), true);
+  assert.equal(timer.running, true);
+  assert.equal(timer.nativeSessionToken, UUID_NEW);
+  assert.notEqual(timer.nativeSessionToken, UUID_SESSION);
+  assert.deepEqual(newStarts, [UUID_NEW]);
+});
+
+test('a saved notification Pause detaches the old token but a retry still retires its service', async () => {
+  const h = makeNotificationActionHarness(makeNotificationAction(), { acknowledged: false });
+  const result = await h.sandbox._consumeNativeStopwatchNotificationAction();
+
+  assert.equal(result, 'saved');
+  assert.equal(h.focusTimer.nativeSessionToken, null);
+  assert.equal(h.ackCalls.length, 1);
+  assert.equal(h.ackCalls[0].sessionToken, UUID_SESSION);
+
+  h.sandbox._nativeStopwatchActionSyncPromise = null;
+  h.sandbox._focusTimer.handledNotificationActionIds = [UUID_ACTION];
+  const retry = await h.sandbox._consumeNativeStopwatchNotificationAction();
+  assert.equal(retry, 'duplicate');
+  assert.equal(h.ackCalls.length, 2);
+  assert.equal(h.ackCalls[1].stopMatchingService, true);
+});
+
 test('native clock refresh preserves the fixed service anchor used by notification actions', async () => {
   const timer = {
     mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 5,
@@ -452,6 +552,9 @@ test('notification Pause persists exact receiver-time elapsed value before ACK',
   assert.equal(h.focusTimer.running, false);
   assert.equal(h.focusTimer.baseElapsed, 15);
   assert.equal(h.focusTimer.nativeClockActive, false);
+  assert.equal(h.focusTimer.nativeSessionToken, null,
+    'a paused service identity must never be reused by a later resume');
+  assert.equal(h.focusTimer.nativeAnchorElapsedRealtimeMs, null);
   assert.deepEqual(JSON.parse(JSON.stringify(h.focusTimer.handledNotificationActionIds)), [UUID_ACTION]);
   assert.equal(h.ackCalls.length, 1);
   assert.equal(h.ackCalls[0].actionId, UUID_ACTION);
@@ -508,6 +611,8 @@ test('notification Finish records a pending confirmation and never commits autom
   assert.equal(h.focusTimer.running, false);
   assert.equal(h.focusTimer.pendingNotificationFinish.actionId, UUID_ACTION);
   assert.equal(h.focusTimer.pendingNotificationFinish.sessionToken, UUID_SESSION);
+  assert.equal(h.focusTimer.nativeSessionToken, UUID_SESSION,
+    'the pending Finish keeps its token until explicit confirm or cancel');
   assert.equal(h.focusTimer.pendingNotificationFinish.elapsedMs, 15000);
   assert.equal(h.finishCalls, 1);
   assert.equal(h.ackCalls[0].stopMatchingService, true);
