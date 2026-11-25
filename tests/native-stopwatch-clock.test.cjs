@@ -143,6 +143,55 @@ function loadNativeIdentityHarness(overrides = {}) {
   return sandbox;
 }
 
+test('native clock refresh preserves the fixed service anchor used by notification actions', async () => {
+  const timer = {
+    mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 5,
+    startedAt: 2000, sessionStartAt: 1000, nativeClockActive: true,
+    nativeRestorePending: false, nativeBootMismatch: false,
+    nativeAnchorElapsedRealtimeMs: 1000, nativeAnchorBootCount: 17,
+    nativeAnchorBaseMs: 5000, nativeAnchorWallMs: 2000
+  };
+  const originalAnchor = {
+    elapsed: timer.nativeAnchorElapsedRealtimeMs,
+    boot: timer.nativeAnchorBootCount,
+    base: timer.nativeAnchorBaseMs,
+    wall: timer.nativeAnchorWallMs
+  };
+  let anchorUpdates = 0;
+  const sandbox = {
+    _focusTimer: timer,
+    _focusElapsedRemainderMs: 0,
+    _nativeStopwatchSyncPromise: null,
+    _nativeStopwatchSyncInFlight: false,
+    _nativeStopwatchPlugin: () => ({}),
+    _readNativeStopwatchClock: async () => ({
+      elapsedRealtimeMs: 19000, wallTimeMs: 30000,
+      bootCount: 17, bootCountAvailable: true
+    }),
+    _withStopwatchTransactionLock: (callback) => Promise.resolve().then(callback),
+    _captureFocusTimerClockState: () => ({
+      timer: { ...timer }, remainderMs: sandbox._focusElapsedRemainderMs
+    }),
+    _restoreFocusTimerClockState: () => true,
+    _computeNativeFocusElapsedMs: () => ({ ok: true, totalElapsedMs: 23000 }),
+    _setNativeFocusClockAnchor: () => { anchorUpdates++; return true; },
+    _anchorFocusTimerClock: () => {},
+    _saveFocusTimer: () => true,
+    _renderFocusTimer: () => {}
+  };
+  vm.runInNewContext(extractFunction('_refreshNativeStopwatchClock'), sandbox);
+
+  assert.equal(await sandbox._refreshNativeStopwatchClock(false), true);
+  assert.equal(anchorUpdates, 0);
+  assert.deepEqual({
+    elapsed: timer.nativeAnchorElapsedRealtimeMs,
+    boot: timer.nativeAnchorBootCount,
+    base: timer.nativeAnchorBaseMs,
+    wall: timer.nativeAnchorWallMs
+  }, originalAnchor);
+  assert.equal(timer.baseElapsed, 23);
+});
+
 test('timer normalization distinguishes a valid empty record from a corrupt record', () => {
   const h = loadNativeIdentityHarness();
   const empty = h._normalizeFocusTimerRecord(null, []);
