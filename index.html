@@ -3780,6 +3780,12 @@ function _resetSecondaryStorageTrackingAfterReset() {
     _focusTimerExternalConflict = false;
   if (typeof _focusTimerConflictNoticeShown !== "undefined")
     _focusTimerConflictNoticeShown = false;
+  // Shared cleanup covers both normal Reset and interrupted Reset recovery.
+  // These memory-only caches/one-shot notices are cleared only after all
+  // secondary storage baselines have been read back successfully.
+  if (typeof _invalidFocusSessionsNoticeShown !== "undefined")
+    _invalidFocusSessionsNoticeShown = false;
+  if (typeof _invalidateProjectsCache === "function") _invalidateProjectsCache();
   if (typeof _sessionsCache !== "undefined") _sessionsCache = null;
   // A reset also invalidates the current window's in-memory timer state.
   // _loadFocusTimer() intentionally keeps existing state when its key is

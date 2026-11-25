@@ -229,3 +229,53 @@
 ## ملاحظة حالة التنفيذ
 
 هذا الملف هو **سجل مراجعة ومواصفات قبول**، وليس إثباتًا على أن العيوب الـ28 ما زالت موجودة في رأس الفرع الحالي أو أنها أُعيد إنتاجها على الجهاز المستهدف. يجب ربط أي قرار إصلاح أو إغلاق بند ببصمة الملف/الالتزام الذي تمت مراجعته، ونتائج الاختبارات ذات الصلة. البنود H-01 إلى H-06 تظل فرضيات/مهام تحقق حتى تقديم قياس أو تشغيل موثق.
+
+
+---
+
+## ملحق إغلاق D-01 إلى D-04 — 25 نوفمبر 2026
+
+**فرع الإصلاح:** `codex/v2.9.1-stopwatch-integrity-fix`  
+**الرأس المرجعي:** `624b98cc392fd7b0e7357e934b9d64c8d4fbb3cd`  
+**تشغيلات الفرع وروابط السجلات:** https://github.com/abac332211-droid/time-tasks-app1/actions?query=branch%3Acodex%2Fv2.9.1-stopwatch-integrity-fix
+
+### تحديث معايير القبول
+
+#### D-01 — Reset وخطوط أساس التخزين الثانوي
+- أضيف تصفير `_invalidFocusSessionsNoticeShown` وإبطال `_projectsCache` إلى `_resetSecondaryStorageTrackingAfterReset()` بعد نجاح مزامنة خطوط الأساس، ليغطي Reset العادي والاسترداد المنقطع مع إبقاء الحماية عند فشل القراءة.
+- Chromium: `D-01 Reset allows same-page thought, project and timer writes without stale baselines`.
+- الاسترداد المنقطع: `startup reset recovery waits for the shared lock and makes an older queued backup callback inert` ممتد للتحقق من زوال ذاكرة المشروع والتنبيه القديمين.
+- القبول: نجاح الكتابات الثلاث من الصفحة نفسها، تطابق خطوط الأساس مع التخزين، غياب التعارض و`storageRecoveryRequired`، ومسح الحالة القديمة بعد الاسترداد.
+- القرار: لا يغلق إلا بعد نجاح اختباري Chromium على SHA النهائي.
+
+#### D-02 — المسارات الفعلية لحفظ Stopwatch
+- لم يُعد كتابة `_commitFocusTaskSession()`؛ الاختبارات الجديدة تمر عبر مسارات التطبيق الفعلية.
+- اختبارات Chromium:
+  - `D-02 resetTimer save dialog commits the linked Stopwatch transaction exactly once`.
+  - `D-02 transition commits the old task before starting the next task timer`.
+  - `D-02 transition failure does not start the next task or report success`.
+- القبول: تحديث المهمة مرة واحدة، جلسة واحدة ومعرّف معاملة مطابق، journal ممسوح وتصفير المؤقت عند النجاح؛ والانتقال لا يبدأ إلا بعد commit. عند فشل الكتابة يبقى journal والجلسة القديمة متوقفة دون نجاح كاذب.
+- اختبار `finishTimer()` القائم لم يُكرر.
+- القرار: لا يغلق إلا بعد نجاح اختبارات المسارات الثلاثة على SHA النهائي.
+
+#### D-03 — مزامنة نافذتي الاسترداد
+- اختبار `D-03.2 two real same-origin tabs wait for Web Locks and the second page synchronizes memory, baselines and UI` يستخدم صفحة ممسكة بالقفل ويثبت وجود طلبي انتظار حقيقيين عبر `navigator.locks.query()` قبل تحرير المالك.
+- يفحص النافذة المنتظرة: tasks، `_mainStorageBaselineRaw`، خطوط أساس `FOCUS_TIMER_KEY` و`FOCUS_SESSIONS_KEY` و`PROJECTS_KEY`، `_sessionsCache`، التعارضات، اكتمال التهيئة، واجهة المهمة المستردة، وعدم مضاعفة الدقائق أو الجلسة.
+- القرار: لا يغلق إلا بعد نجاح Chromium على SHA النهائي.
+
+#### D-04 — FIFO في Pomodoro عند 500 جلسة
+- اختبار Chromium: `D-04 Pomodoro transaction at 500 sessions evicts once and startup retry does not evict another row`.
+- يهيّئ 500 سجل Pomodoro صالحًا، ينفذ `finishTimer()` بمعاملة فعلية، يحقن فشل مسح journal بعد تسجيل الجلسة، ثم يعيد تحميل التطبيق للتحقق من الاسترداد.
+- القبول: العدد 500، حذف الصف الأقدم وحده، ID الجديد 501 فريدًا، عدم تكرار الجلسة أو دقائق المهمة، وعودة `storageRecoveryRequired` إلى false. يبقى اختبار Stopwatch `Stopwatch recovery at the 500-session limit evicts once and retry does not evict a second row` وحد `_saveSessions()` الصارم دون تغيير.
+- القرار: لا يغلق إلا بعد اجتياز Pomodoro وStopwatch على SHA النهائي.
+
+### بوابات CI وربط SHA
+- Push PWA وPR PWA يتحققان من SHA المصدر الذي شغّلا عليه الاختبارات بطباعة `Verified source SHA`.
+- PR PWA يختبر SHA رأس PR مباشرةً (`pull_request.head.sha`) بدل merge commit افتراضي.
+- Android Debug يتحقق من `github.sha` ويشغل regression ثم يبني Debug ويتحقق من Manifest؛ لا يثبت تشغيل WebView على جهاز Android فعلي.
+- **روابط التشغيل:** https://github.com/abac332211-droid/time-tasks-app1/actions?query=branch%3Acodex%2Fv2.9.1-stopwatch-integrity-fix
+- اختبارات Playwright المتخطاة في Android Debug لا تُحتسب نجاحًا؛ دليل Chromium المرجعي هو PWA، ويذكر تقرير التسليم عدد كل تخطٍ وسببه وروابط سجلات الوظائف.
+- لم تتغير `main`، ولم يُدمج PR #10 أو تتغير حالته، ولم يُنشأ Release أو نشر إصدار.
+
+**الحالة عند إنشاء هذا الملحق:** أضيفت التعديلات والاختبارات، والإغلاق الرسمي ينتظر سجلات Actions الناجحة على SHA النهائي.
+

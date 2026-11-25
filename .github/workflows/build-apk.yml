@@ -14,6 +14,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify checked-out source SHA
+        run: |
+          EXPECTED_SHA="${{ github.sha }}"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Verified source SHA: $ACTUAL_SHA"
+          echo "Expected source SHA: $EXPECTED_SHA"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v7

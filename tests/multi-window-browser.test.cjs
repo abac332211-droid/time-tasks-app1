@@ -1268,6 +1268,105 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
   });
 });
 
+test('D-01 Reset allows same-page thought, project and timer writes without stale baselines', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  await withBrowserPages(async ({ pageA, pageB }) => {
+    await pageB.close();
+    await waitForSafeStartup(pageA, 'D-01 Reset acceptance page');
+
+    const result = await pageA.evaluate(async () => {
+      const oldProjects = [{
+        id: 404,
+        name: 'Stale project before Reset',
+        description: '',
+        status: 'active',
+        targetDate: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: null,
+        completedAt: null
+      }];
+      if (!_saveProjects(oldProjects)) throw new Error('Could not seed old project cache');
+      _loadProjects();
+      if (!_projectsCache || !_projectsCache.some(project => project.id === 404)) {
+        throw new Error('The pre-reset project cache was not populated');
+      }
+      _invalidFocusSessionsNoticeShown = true;
+
+      const resetSucceeded = await _executeResetAllTransaction();
+      const resetCleanup = {
+        projectsCacheIsNull: _projectsCache === null,
+        invalidSessionsNotice: _invalidFocusSessionsNoticeShown,
+        recoveryRequired: storageRecoveryRequired
+      };
+      if (!resetSucceeded) throw new Error('The real Reset transaction did not complete');
+
+      const thoughtInput = document.getElementById('thoughtInput');
+      const projectName = document.getElementById('projectName');
+      const projectDesc = document.getElementById('projectDesc');
+      const projectTarget = document.getElementById('projectTarget');
+      if (!thoughtInput || !projectName || !projectDesc || !projectTarget) {
+        throw new Error('Notebook inputs were not present in the loaded application');
+      }
+      thoughtInput.value = 'خاطرة بعد إعادة الضبط';
+      addThought();
+      projectName.value = 'مشروع بعد إعادة الضبط';
+      projectDesc.value = 'تحقق الكتابة في الصفحة نفسها دون إعادة تحميل';
+      projectTarget.value = '';
+      saveProject();
+      toggleTimer();
+
+      const thoughtsRaw = localStorage.getItem(THOUGHTS_KEY);
+      const projectsRaw = localStorage.getItem(PROJECTS_KEY);
+      const timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+      return {
+        resetSucceeded,
+        resetCleanup,
+        thoughtsRaw,
+        projectsRaw,
+        timerRaw,
+        thoughts: JSON.parse(thoughtsRaw || '[]'),
+        projects: JSON.parse(projectsRaw || '[]'),
+        timer: JSON.parse(timerRaw || 'null'),
+        thoughtBaseline: _secondaryStorageBaselines[THOUGHTS_KEY],
+        projectBaseline: _secondaryStorageBaselines[PROJECTS_KEY],
+        timerBaseline: _secondaryStorageBaselines[FOCUS_TIMER_KEY],
+        thoughtWritable: _secondaryStorageWriteAllowed(THOUGHTS_KEY),
+        projectWritable: _secondaryStorageWriteAllowed(PROJECTS_KEY),
+        timerWritable: _secondaryStorageWriteAllowed(FOCUS_TIMER_KEY),
+        secondaryConflicts: Object.assign({}, _secondaryStorageConflicts),
+        timerConflict: _focusTimerExternalConflict,
+        mainExternalChange: _mainStorageExternalChangeObserved,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+
+    assert.equal(result.resetSucceeded, true);
+    assert.equal(result.resetCleanup.projectsCacheIsNull, true);
+    assert.equal(result.resetCleanup.invalidSessionsNotice, false);
+    assert.equal(result.resetCleanup.recoveryRequired, false);
+    assert.equal(result.thoughts.length, 1);
+    assert.equal(result.thoughts[0].text, 'خاطرة بعد إعادة الضبط');
+    assert.equal(result.projects.length, 1);
+    assert.equal(result.projects[0].name, 'مشروع بعد إعادة الضبط');
+    assert.equal(result.projects.some(project => project.id === 404), false);
+    assert.ok(result.timer && result.timer.running === true,
+      'starting the timer after Reset must persist the running state');
+    assert.equal(result.thoughtBaseline, result.thoughtsRaw);
+    assert.equal(result.projectBaseline, result.projectsRaw);
+    assert.equal(result.timerBaseline, result.timerRaw);
+    assert.equal(result.thoughtWritable, true);
+    assert.equal(result.projectWritable, true);
+    assert.equal(result.timerWritable, true);
+    assert.equal(result.timerConflict, false);
+    assert.equal(result.mainExternalChange, false);
+    assert.equal(result.recoveryRequired, false);
+    assert.equal(result.secondaryConflicts['timeTasksApp_thoughts_v1'] || false, false);
+    assert.equal(result.secondaryConflicts['timeTasksApp_projects_v1'] || false, false);
+    assert.equal(result.secondaryConflicts['timeTasksApp_focusTimer'] || false, false);
+  });
+});
+
 test('retryStorageRecovery keeps writes blocked while queued and after injected cleanup failure', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
@@ -1448,6 +1547,13 @@ test('startup reset recovery waits for the shared lock and makes an older queued
     await startupPage.goto(appUrl);
     await startupPage.waitForFunction(() => _startupStopwatchRecoveryInFlight === true,
       null, { timeout: 10000 });
+    await startupPage.evaluate(() => {
+      _projectsCache = [{
+        id: 9901, name: 'stale pre-recovery project cache', status: 'active',
+        description: '', targetDate: '', createdAt: new Date().toISOString()
+      }];
+      _invalidFocusSessionsNoticeShown = true;
+    });
     await pageA.waitForFunction(async () => {
       const state = await navigator.locks.query();
       return (state.pending || []).some(lock =>
@@ -1487,7 +1593,9 @@ test('startup reset recovery waits for the shared lock and makes an older queued
       recoveryRequired: storageRecoveryRequired,
       marker: localStorage.getItem(RESET_IN_PROGRESS_KEY),
       generation: _readPersistedRollingBackupGeneration(),
-      main: JSON.parse(localStorage.getItem(STORAGE_KEY)).tasks
+      main: JSON.parse(localStorage.getItem(STORAGE_KEY)).tasks,
+      projectsCache: _projectsCache,
+      invalidSessionsNotice: _invalidFocusSessionsNoticeShown
     }));
     const staleCallbackState = await pageA.evaluate(() => ({
       lastFailure: _rollingRecoveryBackupLastFailure,
@@ -1498,6 +1606,12 @@ test('startup reset recovery waits for the shared lock and makes an older queued
     assert.equal(recoveredState.marker, null);
     assert.equal(recoveredState.generation, generationBefore + 1);
     assert.deepEqual(recoveredState.main, []);
+    assert.ok(recoveredState.projectsCache === null
+      || (Array.isArray(recoveredState.projectsCache)
+        && !recoveredState.projectsCache.some(project => project && project.id === 9901)),
+      'interrupted Reset recovery must not retain a pre-reset project cache');
+    assert.equal(recoveredState.invalidSessionsNotice, false,
+      'interrupted Reset recovery must clear the stale invalid-session notice');
     assert.equal(staleCallbackState.lastFailure, 'STALE_CALLBACK_SENTINEL');
     assert.equal(staleCallbackState.stale, false);
     await startupPage.close();
