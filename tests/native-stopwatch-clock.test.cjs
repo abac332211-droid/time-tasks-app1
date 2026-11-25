@@ -163,7 +163,7 @@ test('timer normalization rejects references not present in the candidate main b
     mode: 'stopwatch', phase: 'work', running: false, baseElapsed: 30,
     cyclePosition: 0, taskId: 91, sessionStartAt: 1000,
     awaitingConfirmation: false, pendingPhaseEndedAt: null
-  }, []);
+  }, [], true);
 
   assert.equal(candidate.valid, false);
   assert.equal(candidate.reason, 'task_reference_invalid');
@@ -203,7 +203,7 @@ test('native session token generation uses Web Crypto UUID v4 and validates iden
 
 test('resync bundle validates the timer candidate before mutating task state', () => {
   const source = extractFunction('_applyValidatedResyncBundle');
-  const validateAt = source.indexOf('_normalizeFocusTimerRecord(bundle.timerObj, bundle.mainData.tasks)');
+  const validateAt = source.indexOf('_normalizeFocusTimerRecord(bundle.timerObj, bundle.mainData.tasks, true)');
   const mutateAt = source.indexOf('tasks = bundle.mainData.tasks;');
   assert.ok(validateAt >= 0);
   assert.ok(mutateAt > validateAt);
