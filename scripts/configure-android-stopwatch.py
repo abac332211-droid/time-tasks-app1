@@ -259,11 +259,11 @@ def configure(root: Path) -> None:
         raise ValueError("Generated Android platform files are missing; add the Capacitor Android platform first.")
 
     gradle = gradle_path.read_text(encoding="utf-8")
-    namespaces = re.findall(r'(?m)^\\s*namespace\\s+["\\']([^"\\']+)["\\']', gradle)
+    namespaces = re.findall(r'(?m)^\s*namespace\s+["\']([^"\']+)["\']', gradle)
     if len(namespaces) != 1:
         raise ValueError(f"Expected exactly one Android namespace; found {len(namespaces)}")
     package = namespaces[0]
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+", package):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", package):
         raise ValueError(f"Invalid Android namespace: {package!r}")
 
     source_dir = root / "android" / "app" / "src" / "main" / "java" / Path(*package.split("."))
@@ -274,38 +274,39 @@ def configure(root: Path) -> None:
     if not activity_path.is_file():
         raise ValueError(f"Generated Capacitor MainActivity is missing: {activity_path}")
     activity = activity_path.read_text(encoding="utf-8")
+    package_line = re.search(r"(?m)^package\s+[^;]+;\s*$", activity)
+    if not package_line:
+        raise ValueError("Could not find the MainActivity package declaration")
     import_line = f"import {package}.{PLUGIN};"
     if import_line not in activity:
-        package_line = re.search(r"(?m)^package\\s+[^;]+;\\s*$", activity)
-        if not package_line:
-            raise ValueError("Could not find the MainActivity package declaration")
-        activity = activity[:package_line.end()] + "\\n\\n" + import_line + activity[package_line.end():]
+        activity = activity[:package_line.end()] + "\n\n" + import_line + activity[package_line.end():]
 
     registration = f"registerPlugin({PLUGIN}.class);"
     if registration not in activity:
-        super_call = re.search(r"(?m)^\\s*super\\.onCreate\\(savedInstanceState\\);\\s*$", activity)
+        super_call = re.search(r"(?m)^\s*super\.onCreate\(savedInstanceState\);\s*$", activity)
         if super_call:
-            indent = re.match(r"\\s*", super_call.group(0)).group(0)
-            activity = activity[:super_call.start()] + indent + registration + "\\n" + activity[super_call.start():]
+            indent = re.match(r"\s*", super_call.group(0)).group(0)
+            activity = activity[:super_call.start()] + indent + registration + "\n" + activity[super_call.start():]
         else:
-            class_match = re.search(r"\\bclass\\s+MainActivity\\s+extends\\s+BridgeActivity\\s*\\{", activity)
+            class_match = re.search(r"\bclass\s+MainActivity\s+extends\s+BridgeActivity\s*\{", activity)
             if not class_match or not activity.rstrip().endswith("}"):
                 raise ValueError("Could not safely add plugin registration to MainActivity")
             if "import android.os.Bundle;" not in activity:
-                activity = activity[:package_line.end()] + "\\nimport android.os.Bundle;" + activity[package_line.end():]
+                package_line = re.search(r"(?m)^package\s+[^;]+;\s*$", activity)
+                activity = activity[:package_line.end()] + "\nimport android.os.Bundle;" + activity[package_line.end():]
             last_brace = activity.rfind("}")
             method = (
-                "\\n    @Override\\n"
-                "    public void onCreate(Bundle savedInstanceState) {\\n"
-                f"        {registration}\\n"
-                "        super.onCreate(savedInstanceState);\\n"
-                "    }\\n"
+                "\n    @Override\n"
+                "    public void onCreate(Bundle savedInstanceState) {\n"
+                f"        {registration}\n"
+                "        super.onCreate(savedInstanceState);\n"
+                "    }\n"
             )
             activity = activity[:last_brace] + method + activity[last_brace:]
     activity_path.write_text(activity, encoding="utf-8")
 
     manifest = manifest_path.read_text(encoding="utf-8")
-    manifest_root = re.search(r"<manifest\\b[^>]*>", manifest)
+    manifest_root = re.search(r"<manifest\b[^>]*>", manifest)
     if not manifest_root:
         raise ValueError("Could not find the Android manifest root")
     permissions = [
@@ -315,7 +316,7 @@ def configure(root: Path) -> None:
     ]
     missing = [p for p in permissions if f'android:name="{p}"' not in manifest]
     if missing:
-        block = "".join(f'\\n    <uses-permission android:name="{p}" />' for p in missing)
+        block = "".join(f'\n    <uses-permission android:name="{p}" />' for p in missing)
         manifest = manifest[:manifest_root.end()] + block + manifest[manifest_root.end():]
 
     service_name = f'android:name=".{SERVICE}"'
@@ -325,10 +326,10 @@ def configure(root: Path) -> None:
             raise ValueError("Could not find the application closing tag")
         service = (
             f'    <service android:name=".{SERVICE}" android:enabled="true" '
-            'android:exported="false" android:foregroundServiceType="specialUse">\\n'
+            'android:exported="false" android:foregroundServiceType="specialUse">\n'
             '        <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" '
-            'android:value="User-started focus and stopwatch timing with an ongoing notification and pause/finish controls." />\\n'
-            '    </service>\\n'
+            'android:value="User-started focus and stopwatch timing with an ongoing notification and pause/finish controls." />\n'
+            '    </service>\n'
         )
         manifest = manifest[:app_close] + service + manifest[app_close:]
     manifest_path.write_text(manifest, encoding="utf-8")
