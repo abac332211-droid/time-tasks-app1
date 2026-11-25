@@ -9542,8 +9542,10 @@ function _startNativeStopwatchForegroundService() {
     anchorBootCount: _focusTimer.nativeAnchorBootCount
   };
   var start = function() {
-    return Promise.resolve(plugin.startForegroundTimer(args)).then(function() {
-      return true;
+    return Promise.resolve(plugin.startForegroundTimer(args)).then(function(result) {
+      return !!result && result.started === true
+        && result.sessionToken === args.sessionToken
+        && _focusTimer.nativeSessionToken === args.sessionToken;
     }).catch(function(error) {
       console.warn("Native stopwatch foreground service start failed:", error);
       return false;
