@@ -29,6 +29,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.app.NotificationManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 
@@ -54,6 +56,7 @@ public final class {PLUGIN} extends Plugin {{
     static final String TASK_KEY = "notificationTask";
     static final String START_WALL_KEY = "notificationStartWall";
     static final String ACTIVE_SESSION_TOKEN_KEY = "activeSessionToken";
+    static final String SERVICE_STARTED_SESSION_TOKEN_KEY = "serviceStartedSessionToken";
     static final String ANCHOR_ELAPSED_KEY = "anchorElapsedRealtimeMs";
     static final String ANCHOR_BASE_KEY = "anchorBaseMs";
     static final String ANCHOR_BOOT_KEY = "anchorBootCount";
@@ -169,6 +172,7 @@ public final class {PLUGIN} extends Plugin {{
                     .putString(TASK_KEY, taskName)
                     .putLong(START_WALL_KEY, startWall)
                     .putString(ACTIVE_SESSION_TOKEN_KEY, sessionToken)
+                    .remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
                     .putLong(ANCHOR_ELAPSED_KEY, anchorElapsed)
                     .putLong(ANCHOR_BASE_KEY, anchorBase)
                     .putInt(ANCHOR_BOOT_KEY, anchorBoot)
@@ -194,18 +198,39 @@ public final class {PLUGIN} extends Plugin {{
             }} else {{
                 getContext().startService(intent);
             }}
-            call.resolve();
+            waitForForegroundServiceStart(call, prefs, sessionToken, 0);
         }} catch (RuntimeException error) {{
             synchronized (ACTION_LOCK) {{
                 SharedPreferences current = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
                 if (sessionToken.equals(current.getString(ACTIVE_SESSION_TOKEN_KEY, null))) {{
                     current.edit().remove(TITLE_KEY).remove(TASK_KEY).remove(START_WALL_KEY)
-                        .remove(ACTIVE_SESSION_TOKEN_KEY).remove(ANCHOR_ELAPSED_KEY)
-                        .remove(ANCHOR_BASE_KEY).remove(ANCHOR_BOOT_KEY).commit();
+                        .remove(ACTIVE_SESSION_TOKEN_KEY).remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
+                        .remove(ANCHOR_ELAPSED_KEY).remove(ANCHOR_BASE_KEY).remove(ANCHOR_BOOT_KEY).commit();
                 }}
             }}
             call.reject("تعذر تشغيل خدمة المؤقت الأمامية", error);
         }}
+    }}
+
+    private void waitForForegroundServiceStart(
+        PluginCall call, SharedPreferences prefs, String sessionToken, int attempt
+    ) {{
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {{
+            String activeToken = prefs.getString(ACTIVE_SESSION_TOKEN_KEY, null);
+            String startedToken = prefs.getString(SERVICE_STARTED_SESSION_TOKEN_KEY, null);
+            if (sessionToken.equals(activeToken) && sessionToken.equals(startedToken)) {{
+                JSObject result = new JSObject();
+                result.put("started", true);
+                result.put("sessionToken", sessionToken);
+                call.resolve(result);
+                return;
+            }}
+            if (attempt >= 13) {{
+                call.reject("لم يؤكد Android بدء الخدمة الأمامية وإظهار إشعار الجلسة خلال المهلة.");
+                return;
+            }}
+            waitForForegroundServiceStart(call, prefs, sessionToken, attempt + 1);
+        }}, 250L);
     }}
 
     @PluginMethod
@@ -232,6 +257,7 @@ public final class {PLUGIN} extends Plugin {{
                 }}
                 boolean committed = prefs.edit().remove(TITLE_KEY).remove(TASK_KEY)
                     .remove(START_WALL_KEY).remove(ACTIVE_SESSION_TOKEN_KEY)
+                    .remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
                     .remove(ANCHOR_ELAPSED_KEY).remove(ANCHOR_BASE_KEY).remove(ANCHOR_BOOT_KEY)
                     .commit();
                 if (!committed) {{
@@ -359,8 +385,8 @@ public final class {PLUGIN} extends Plugin {{
                     .putString(ACKED_ACTION_IDS_KEY, nextAcked.toString());
                 if (stopService) {{
                     editor.remove(TITLE_KEY).remove(TASK_KEY).remove(START_WALL_KEY)
-                        .remove(ACTIVE_SESSION_TOKEN_KEY).remove(ANCHOR_ELAPSED_KEY)
-                        .remove(ANCHOR_BASE_KEY).remove(ANCHOR_BOOT_KEY);
+                        .remove(ACTIVE_SESSION_TOKEN_KEY).remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
+                        .remove(ANCHOR_ELAPSED_KEY).remove(ANCHOR_BASE_KEY).remove(ANCHOR_BOOT_KEY);
                 }}
                 if (!editor.commit()) {{
                     call.reject("تعذر حفظ ACK؛ بقي الإجراء في طابور Android");
@@ -420,8 +446,11 @@ public final class {SERVICE} extends Service {{
         long startWall = prefs.getLong({PLUGIN}.START_WALL_KEY, 0L);
         String requestedToken = intent == null ? token
             : intent.getStringExtra({PLUGIN}.ACTIVE_SESSION_TOKEN_KEY);
-        if (token == null || !token.equals(requestedToken) || startWall <= 0L) {{
-            stopSelf();
+        int persistedBoot = prefs.getInt({PLUGIN}.ANCHOR_BOOT_KEY, -1);
+        int currentBoot = {PLUGIN}.readBootCount(this);
+        if (token == null || !token.equals(requestedToken) || startWall <= 0L
+            || persistedBoot < 0 || currentBoot < 0 || persistedBoot != currentBoot) {{
+            stopSelf(startId);
             return START_NOT_STICKY;
         }}
         if (title == null || title.trim().isEmpty()) title = "مؤقت التركيز يعمل";
@@ -432,6 +461,15 @@ public final class {SERVICE} extends Service {{
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         }} else {{
             startForeground(NOTIFICATION_ID, notification);
+        }}
+        boolean acknowledged = prefs.edit()
+            .putString({PLUGIN}.SERVICE_STARTED_SESSION_TOKEN_KEY, token)
+            .commit();
+        if (!acknowledged) {{
+            if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE);
+            else stopForeground(true);
+            stopSelf(startId);
+            return START_NOT_STICKY;
         }}
         return START_STICKY;
     }}
