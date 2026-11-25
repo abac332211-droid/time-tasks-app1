@@ -12753,33 +12753,31 @@ function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
   return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
-function finishTimer(_nativeClockSynchronized) {
-  if (_focusTimer.pendingNotificationFinish && _pendingFinishDialogShown) return false;
-  if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
-      && typeof _runWithFreshNativeStopwatchClock === "function") {
-    return _runWithFreshNativeStopwatchClock(function() { return finishTimer(true); });
+function _cancelPendingNotificationFinish() {
+  if (!_focusTimer.pendingNotificationFinish) return true;
+  var previous = _captureFocusTimerClockState();
+  _focusTimer.pendingNotificationFinish = null;
+  if (!_saveFocusTimer()) {
+    _restoreFocusTimerClockState(previous);
+    storageRecoveryRequired = true;
+    showAlertModal("تعذر إلغاء طلب الإنهاء",
+      "لم يُحفظ إلغاء طلب الإنهاء؛ بقي الطلب محفوظاً ولم يسمح التطبيق ببدء جلسة جديدة.");
+    return false;
   }
-  if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
-    showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
-    return Promise.resolve(false);
-  }
-  if (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked()) {
-    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");
-    return Promise.resolve(false);
-  }
-  var snapshot = _freezeFocusTimerForDecision();
+  return true;
+}
+
+function _continueFocusTimerFinish(snapshot) {
   if (!snapshot) return Promise.resolve(false);
   var elapsed = snapshot.baseElapsed;
   if (elapsed < 60) {
     var message = snapshot.mode === "pomodoro" && snapshot.phase !== "work"
       ? "☕ الاستراحة أقل من دقيقة — أُغلقت دون تسجيل" : "⏱️ الجلسة أقل من دقيقة — أُلغيت";
-    _pendingFinishDialogShown = false;
     return _discardShortFocusSession({ snapshot: snapshot, successToast: message });
   }
   var isBreak = snapshot.mode === "pomodoro" && snapshot.phase !== "work";
   var task = snapshot.taskId !== null ? tasks.find(function(t) { return t.id === snapshot.taskId; }) : null;
   if (isBreak || !task) {
-    _pendingFinishDialogShown = false;
     return _commitFocusTaskSession({
       snapshot: snapshot, taskId: null, allowUnlinkedTaskSnapshotLink: isBreak,
       minutesToAdd: 0, completed: !isBreak,
@@ -12801,17 +12799,7 @@ function finishTimer(_nativeClockSynchronized) {
   cancel.className = "btn-ghost";
   cancel.textContent = "إلغاء";
   cancel.onclick = function() {
-    var previous = _captureFocusTimerClockState();
-    if (_focusTimer.pendingNotificationFinish) {
-      _focusTimer.pendingNotificationFinish = null;
-      if (!_saveFocusTimer()) {
-        _restoreFocusTimerClockState(previous);
-        showAlertModal("تعذر إلغاء طلب الإنهاء",
-          "لم يُحفظ إلغاء طلب الإنهاء؛ بقي الطلب محفوظاً ولم يسمح التطبيق ببدء جلسة جديدة.");
-        _pendingFinishDialogShown = false;
-        return;
-      }
-    }
+    if (!_cancelPendingNotificationFinish()) return;
     _pendingFinishDialogShown = false;
     closeModal();
     _renderFocusTimer();
@@ -12862,6 +12850,70 @@ function finishTimer(_nativeClockSynchronized) {
     else trap(e);
   };
   document.addEventListener("keydown", _modalKeyHandler);
+}
+
+function finishTimer(_nativeClockSynchronized) {
+  if (_focusTimer.pendingNotificationFinish && _pendingFinishDialogShown) return false;
+  if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
+      && typeof _runWithFreshNativeStopwatchClock === "function") {
+    return _runWithFreshNativeStopwatchClock(function() { return finishTimer(true); });
+  }
+  if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
+    showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
+    return Promise.resolve(false);
+  }
+  if (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked()) {
+    showToast("⏳ جارٍ تثبيت جلسة التركيز؛ انتظر اكتمالها");
+    return Promise.resolve(false);
+  }
+  var fromNotification = !!_focusTimer.pendingNotificationFinish;
+  var snapshot = _freezeFocusTimerForDecision();
+  if (!snapshot) return Promise.resolve(false);
+  if (fromNotification) {
+    var overlay = document.getElementById("customModalOverlay");
+    var card = document.getElementById("modalCardElement");
+    document.getElementById("modalTitle").textContent = "⏹ تأكيد إنهاء الجلسة";
+    document.getElementById("modalBody").textContent =
+      "وصل طلب إنهاء من إشعار Android. المدة المحفوظة: " + _formatDuration(snapshot.baseElapsed)
+      + ". لن تُسجل الجلسة أو تُصفّر إلا بعد تأكيدك.";
+    var footer = document.getElementById("modalFooter");
+    footer.innerHTML = "";
+    var cancel = document.createElement("button");
+    cancel.className = "btn-ghost";
+    cancel.textContent = "إلغاء الطلب";
+    cancel.onclick = function() {
+      if (!_cancelPendingNotificationFinish()) return;
+      _pendingFinishDialogShown = false;
+      closeModal();
+      _renderFocusTimer();
+    };
+    var confirm = document.createElement("button");
+    confirm.className = "btn-primary";
+    confirm.textContent = "تأكيد الإنهاء";
+    confirm.onclick = function() {
+      _pendingFinishDialogShown = false;
+      closeModal();
+      Promise.resolve(_continueFocusTimerFinish(snapshot)).then(function(ok) {
+        if (!ok && _focusTimer.pendingNotificationFinish) {
+          _pendingFinishDialogShown = false;
+          finishTimer();
+        }
+      });
+    };
+    footer.appendChild(cancel);
+    footer.appendChild(confirm);
+    overlay.classList.remove("hidden");
+    _pendingFinishDialogShown = true;
+    const trap = _setupModalFocusTrap(card);
+    if (_modalKeyHandler) document.removeEventListener("keydown", _modalKeyHandler);
+    _modalKeyHandler = function(e) {
+      if (e.key === "Escape") { e.preventDefault(); cancel.click(); }
+      else trap(e);
+    };
+    document.addEventListener("keydown", _modalKeyHandler);
+    return true;
+  }
+  return _continueFocusTimerFinish(snapshot);
 }
 
 function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot) {
