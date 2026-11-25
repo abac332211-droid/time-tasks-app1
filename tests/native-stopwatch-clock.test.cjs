@@ -524,3 +524,18 @@ test('full clock snapshot restores every monotonic fallback field and display ti
   assert.equal(sandbox._focusFallbackElapsedMs, 6);
   assert.equal(sandbox._focusDisplayInterval, 999);
 });
+
+
+test('Android foreground start must be confirmed by the service before the JS timer considers it running', () => {
+  const source = html.slice(html.indexOf('function _startNativeStopwatchForegroundService('),
+    html.indexOf('function _stopNativeStopwatchForegroundService('));
+  assert.match(source, /plugin\.startForegroundTimer\(args\)/);
+  assert.match(source, /return true/);
+  assert.match(source, /catch\(error\)/);
+  const script = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'configure-android-stopwatch.py'), 'utf8');
+  assert.match(script, /waitForForegroundServiceStart\(call, prefs, sessionToken, 0\)/);
+  assert.match(script, /SERVICE_STARTED_SESSION_TOKEN_KEY/);
+  assert.match(script, /\.putString\(\{PLUGIN\}\.SERVICE_STARTED_SESSION_TOKEN_KEY, token\)/);
+  assert.match(script, /stopSelf\(startId\)/);
+});
+
