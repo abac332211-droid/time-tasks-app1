@@ -2446,3 +2446,121 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+test('closing a real Chromium page persists the conservative PWA pause before a fresh page reads storage', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 60000
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 9902,
+      name: 'Real page close credit guard',
+      type: 'معرفية',
+      status: 'pending',
+      expected: 25,
+      actual: 11,
+      plannedDate: '2026-11-26',
+      plannedTime: '',
+      completedAt: null,
+      createdAt: Date.now(),
+      projectId: null,
+      priority: null,
+      recurrence: null,
+      checklist: null
+    }];
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+
+    const sourcePage = await context.newPage();
+    await sourcePage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(sourcePage, 'real page-close source');
+    const started = await sourcePage.evaluate(async () => {
+      const result = await _withStopwatchTransactionLock(() => {
+        _focusTimer.mode = 'pomodoro';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 41;
+        _focusElapsedRemainderMs = 237;
+        _focusTimer.startedAt = null;
+        _focusTimer.cyclePosition = 0;
+        _focusTimer.taskId = 9902;
+        _focusTimer.sessionStartAt = Date.now() - 41_237;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        _focusTimer.nativeClockActive = false;
+        _focusTimer.nativeRestorePending = false;
+        _focusTimer.pendingStopwatchTransaction = null;
+        _clearFocusTimerClock();
+        return toggleTimer(true, true);
+      });
+      const toggleResult = await result;
+      return {
+        toggleResult,
+        timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+        taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+          .find(item => item.id === 9902).actual
+      };
+    });
+    assert.equal(started.toggleResult, true);
+    assert.equal(started.timer.running, true);
+    assert.ok(Number.isInteger(started.timer.elapsedRemainderMs));
+    assert.equal(started.taskActual, 11);
+
+    // Exercise an actual browser page close. The observer snapshots LocalStorage
+    // in an init script before the application startup coordinator can normalize it.
+    await sourcePage.close({ runBeforeUnload: true });
+    assert.equal(sourcePage.isClosed(), true);
+
+    const observer = await context.newPage();
+    await observer.addInitScript(() => {
+      window.__timerRawBeforeAppInit = localStorage.getItem('timeTasksApp_focusTimer');
+      window.__mainRawBeforeAppInit = localStorage.getItem('timeTasksApp_v1');
+      window.__sessionsRawBeforeAppInit = localStorage.getItem('timeTasksApp_focusSessions');
+    });
+    await observer.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    const beforeNormalization = await observer.evaluate(() => ({
+      timer: window.__timerRawBeforeAppInit,
+      main: window.__mainRawBeforeAppInit,
+      sessions: window.__sessionsRawBeforeAppInit
+    }));
+    assert.ok(beforeNormalization.timer, 'the closed page must leave a readable timer record');
+    const timer = JSON.parse(beforeNormalization.timer);
+    const main = JSON.parse(beforeNormalization.main);
+    const sessions = JSON.parse(beforeNormalization.sessions || '[]');
+    assert.equal(timer.running, false,
+      'a real page close must persist a stopped timer before another page reads storage');
+    assert.equal(timer.startedAt, null);
+    assert.equal(timer.clockAdjusted, true);
+    assert.equal(timer.baseElapsed, started.timer.baseElapsed,
+      'a real page close must not credit time beyond the last durable checkpoint');
+    assert.equal(timer.elapsedRemainderMs, started.timer.elapsedRemainderMs);
+    assert.equal(main.tasks.find(item => item.id === 9902).actual, 11,
+      'a real page close must not change the linked task balance');
+    assert.equal(sessions.length, 0,
+      'a page close must not synthesize a completed focus session');
+
+    await waitForSafeStartup(observer, 'real page-close observer');
+    await context.close();
+  } finally {
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
