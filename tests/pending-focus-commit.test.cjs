@@ -256,6 +256,8 @@ function recoveryHarness(state) {
       return true;
     },
     _persistPendingFocusCommitStage: (journal, stage) => {
+      const order = { prepared: 0, credit_applied: 1, session_applied: 2, timer_applied: 3 };
+      if (order[stage] <= order[journal.stage]) return true;
       if (failOnce('stage:' + stage)) return false;
       const next = { ...journal, stage, updatedAt: '2026-11-26T10:02:00.000Z' };
       state.journal = JSON.parse(JSON.stringify(next));
