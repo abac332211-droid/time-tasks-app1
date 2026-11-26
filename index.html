@@ -12431,6 +12431,57 @@ function _discardShortFocusSession(params) {
   return pending;
 }
 
+function _assertCreditMigrationReady() {
+  // This is a precondition gate, not the migration itself. It must run while
+  // owning the shared Stopwatch Web Lock and must never repair ambiguous state.
+  if (!(typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0))
+    return { ok:false, reason:"lock_required" };
+
+  if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
+      || _startupStopwatchRecoveryFailed
+      || (_pendingCorruptStorageSnapshots && _pendingCorruptStorageSnapshots.length))
+    return { ok:false, reason:"recovery_required" };
+
+  var markerKeys = [
+    RESET_IN_PROGRESS_KEY,
+    ROLLING_RESTORE_IN_PROGRESS_KEY,
+    IMPORT_IN_PROGRESS_KEY,
+    MIGRATION_IN_PROGRESS_KEY
+  ];
+  try {
+    for (var i = 0; i < markerKeys.length; i++) {
+      if (localStorage.getItem(markerKeys[i]) !== null)
+        return { ok:false, reason:"blocking_marker" };
+    }
+
+    var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    var timerRecord = null;
+    if (timerRaw !== null) {
+      timerRecord = JSON.parse(timerRaw);
+      if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord))
+        return { ok:false, reason:"invalid_timer_record" };
+      if (Object.prototype.hasOwnProperty.call(timerRecord, "pendingStopwatchTransaction")
+          && timerRecord.pendingStopwatchTransaction !== null
+          && timerRecord.pendingStopwatchTransaction !== undefined)
+        return { ok:false, reason:"pending_legacy_transaction" };
+    }
+    if (_focusTimer && _focusTimer.pendingStopwatchTransaction !== null
+        && _focusTimer.pendingStopwatchTransaction !== undefined)
+      return { ok:false, reason:"pending_memory_transaction" };
+
+    if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)
+        || _secondaryStorageConflicts[FOCUS_TIMER_KEY]
+        || timerRaw !== _secondaryStorageBaselines[FOCUS_TIMER_KEY])
+      return { ok:false, reason:"timer_baseline_conflict" };
+
+    return { ok:true, reason:null };
+  } catch (error) {
+    console.error("Credit migration readiness check failed:", error);
+    return { ok:false, reason:"storage_read_failed" };
+  }
+}
+
 function _validatePendingStopwatchTransaction(tx) {
   if(!tx||typeof tx!=="object"||Array.isArray(tx))return false;
   if(tx.version!==1||typeof tx.id!=="string"||tx.id.length<8||tx.id.length>160)return false;
