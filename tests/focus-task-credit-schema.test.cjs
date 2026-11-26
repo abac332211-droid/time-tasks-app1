@@ -284,12 +284,11 @@ test('retrying an older operation after a newer one remains a duplicate, not a n
 
   assert.equal(app._classifyCreditOperationAttempt(ledger, first).status, 'duplicate');
   assert.equal(app._classifyCreditOperationAttempt(ledger, {
-    ...first, creditedSeconds: 41, targetSeconds: 1541
+    ...first, source: 'user_adjusted', creditedSeconds: 41, targetSeconds: 1541
   }).status, 'conflict', 'same identity with different payload is a conflict');
   assert.equal(app._classifyCreditOperationAttempt(ledger, {
-    ...second, operationId: '523e4567-e89b-42d3-a456-426614174004',
-    sessionId: '523e4567-e89b-42d3-a456-426614174004'
-  }).status, 'conflict', 'an existing session identity cannot be rebound to another operation');
+    ...second, taskId: 2
+  }).status, 'conflict', 'an existing identity cannot be rebound to another task');
   assert.equal(app._classifyCreditOperationAttempt(ledger, {
     ...creditOperation(), operationId: '623e4567-e89b-42d3-a456-426614174005',
     sessionId: '623e4567-e89b-42d3-a456-426614174005'
