@@ -321,7 +321,8 @@ async function primeLinkedWorkTimer(page, {
 }
 
 async function addSecondTask(page) {
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    await _withTaskStorageLock(() => {
     tasks.push({
       id: 7012,
       name: 'Next transition task',
@@ -339,6 +340,8 @@ async function addSecondTask(page) {
       checklist: null
     });
     if (!saveData()) throw new Error('Could not persist the next task fixture');
+    return true;
+    });
   });
 }
 
@@ -854,7 +857,7 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
     page = await runtime.context.newPage();
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       const now = Date.now();
       const history = Array.from({ length: 500 }, (_, index) => {
         const started = now - (501 - index) * 120000;
@@ -870,7 +873,8 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
           completed: true
         };
       });
-      if (!_saveSessions(history)) throw new Error('Could not seed 500 valid Pomodoro sessions');
+      const saved = await _withStopwatchTransactionLock(() => _saveSessions(history));
+      if (!saved) throw new Error('Could not seed 500 valid Pomodoro sessions');
     });
     await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'pomodoro', durationSec: 180 });
 
@@ -1239,19 +1243,23 @@ test('D-03.2 two real same-origin tabs wait for Web Locks and the second page sy
     assert.ok(waiter.uiSessionsCard.includes('Startup recovery task'),
       'the rendered recent-sessions card must show the recovered session');
 
-    const writer = await pageA.evaluate(() => {
-      appSettings.themeMode = 'dark';
-      appSettings.darkMode = true;
-      const saved = saveData();
+    const writer = await pageA.evaluate(async () => {
+      const saved = await _withTaskStorageLock(() => {
+        appSettings.themeMode = 'dark';
+        appSettings.darkMode = true;
+        return saveData();
+      });
       return { saved, raw: localStorage.getItem(STORAGE_KEY) };
     });
     assert.equal(writer.saved, true);
     await pageB.waitForFunction(() => _mainStorageExternalChangeObserved === true);
-    const stale = await pageB.evaluate(() => {
+    const stale = await pageB.evaluate(async () => {
       const before = localStorage.getItem(STORAGE_KEY);
-      appSettings.themeMode = 'light';
-      appSettings.darkMode = false;
-      const saved = saveData();
+      const saved = await _withTaskStorageLock(() => {
+        appSettings.themeMode = 'light';
+        appSettings.darkMode = false;
+        return saveData();
+      });
       return { saved, before, after: localStorage.getItem(STORAGE_KEY) };
     });
     assert.equal(stale.saved, false);
