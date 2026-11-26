@@ -12985,7 +12985,8 @@ function _commitFocusTaskSession(p) {
 
 function _commitFocusTaskSessionLocked(p) {
   if(!p||!p.snapshot||!_stopwatchTransactionLockDepth)return false;
-  if (_hasPersistedPendingFocusCommit()
+  if ((typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())
       || (_focusTimer && _focusTimer.pendingFocusCommit)) {
     storageRecoveryRequired = true;
     showAlertModal("معاملة اعتماد أخرى قيد الاسترداد",
@@ -13236,7 +13237,8 @@ function _validatePendingStopwatchTransaction(tx) {
 }
 
 function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
-  if (_hasPersistedPendingFocusCommit()
+  if ((typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())
       || (_focusTimer && _focusTimer.pendingFocusCommit)) {
     storageRecoveryRequired = true;
     return false;
