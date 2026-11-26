@@ -23,7 +23,7 @@ function extractFunction(name) {
   assert.ok(match, 'function ' + name + ' exists in index.html');
   if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return match[0];
   return [
-    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0; }',
+    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }',
     'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
     match[0]
   ].join('\n');
