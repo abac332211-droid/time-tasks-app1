@@ -2978,7 +2978,7 @@ test('a real second Chromium window waits for a pending V2 journal and recovers 
         }
         const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
         window.__pendingFocusJournal = timer.pendingFocusCommit;
-        if (!window.__pendingFocusCommitStarted || !window.__pendingFocusJournal)
+        if (window.__pendingFocusCommitStarted !== false || !window.__pendingFocusJournal)
           throw new Error('The pending V2 journal was not durably written.');
         return await new Promise(resolve => { window.__releasePendingFocusOwner = resolve; });
       }).catch(error => {

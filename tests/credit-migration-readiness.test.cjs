@@ -412,5 +412,6 @@ test('legacy credit migration read and write failures never report success', () 
   const writeResult = writeFailure.app._migrateLegacyTaskCreditMetadataLocked();
   assert.equal(writeResult.ok, false);
   assert.equal(writeFailure.values.get('main'), writeFailure.originalMainRaw);
-  assert.equal(writeFailure.app.storageRecoveryRequired, false);
+  assert.equal(writeFailure.app.storageRecoveryRequired, true,
+    'a failed migration write keeps the storage write gate closed until recovery');
 });
