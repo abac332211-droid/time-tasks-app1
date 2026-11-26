@@ -9157,13 +9157,14 @@ return da - db;
     const status = getStatus(t);
     const cls = isTaskDone(t) ? "done" : "";
     const safeName = escapeHTML(t.name);
-    const gap = computeGap(t.expected, t.actual);
+    const gap = computeGap(t.expected, Number.isSafeInteger(t.actualSeconds) ? t.actualSeconds / 60 : t.actual);
     let info = "🏷️ " + escapeHTML(t.type || "—") + " | ⏱️ متوقع: " + t.expected + " د";
     if (t.projectId && _projMap[t.projectId]) {
       info += " | 🎯 " + escapeHTML(_projMap[t.projectId].name);
     }
     if (t.actual !== null && t.actual !== undefined) {
-      info += " | ⏱️ فعلي: " + t.actual + " د";
+      info += " | ⏱️ فعلي: " + (Number.isSafeInteger(t.actualSeconds)
+        ? _formatFocusSessionDuration(t.actualSeconds) : t.actual + " د");
       info += ' | <span class="' + gapClass(gap) + '">📊 ' + gapText(gap) + "</span>";
     }
     info += "<br>📅 " + formatDate(t.plannedDate) + (t.plannedTime ? " — ⏰ " + t.plannedTime : "");
@@ -9299,7 +9300,7 @@ function renderStats() {
     let gapLine = "";
     if (withActual.length > 0) {
       const avgGap = withActual.reduce(function(s, t) {
-        return s + computeGap(t.expected, t.actual);
+        return s + computeGap(t.expected, Number.isSafeInteger(t.actualSeconds) ? t.actualSeconds / 60 : t.actual);
       }, 0) / withActual.length;
       gapLine = ' | <span class="' + gapClass(avgGap) + '">فجوة ' + gapText(avgGap) + "</span>";
     }
@@ -9366,7 +9367,7 @@ function exportCSV() {
     "التاريخ_المخطط", "الوقت_المخطط", "أُنجزت_في", "أُنشئت_في"
   ];
   const rows = tasks.map(function(t) {
-    const gap = computeGap(t.expected, t.actual);
+    const gap = computeGap(t.expected, Number.isSafeInteger(t.actualSeconds) ? t.actualSeconds / 60 : t.actual);
     return [
       t.id, t.name, t.type, t.status, t.expected,
       (t.actual !== null && t.actual !== undefined) ? t.actual : "",
@@ -12606,8 +12607,8 @@ function renderFocusSessionsCard() {
   var recent = _loadSessions().slice(-5).reverse();
 
   var html = '<div class="weekly-summary">';
-  html += '<div class="weekly-stat"><div class="weekly-stat-label">اليوم</div><div class="weekly-stat-value">' + todayStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(todayStats.totalSec) + '</div></div>';
-  html += '<div class="weekly-stat"><div class="weekly-stat-label">هذا الأسبوع</div><div class="weekly-stat-value">' + weeklyStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(weeklyStats.totalSec) + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">اليوم</div><div class="weekly-stat-value">' + todayStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatFocusSessionDuration(todayStats.totalSec) + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">هذا الأسبوع</div><div class="weekly-stat-value">' + weeklyStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatFocusSessionDuration(weeklyStats.totalSec) + '</div></div>';
   html += '</div>';
 
   if (recent.length === 0) {
@@ -14490,7 +14491,7 @@ function _commitFocusSessionV2(sessionFields) {
 // The PR #23 session contract supports trusted Pomodoro work sessions. Legacy
 // Stopwatch confirmation retains its minute-based writer unless a future
 // contract explicitly extends V2 to represent its user-adjusted "stopped" case.
-function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
+function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasuredCredit) {
   if (!snapshot || !task || snapshot.running !== false
       || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
       || snapshot.phase !== "work" || snapshot.clockAdjusted === true
@@ -14503,7 +14504,8 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
 
   var activeDurationMs = snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs;
   var durationSec = Math.floor(activeDurationMs / 1000);
-  var creditedSeconds = minutesToAdd * 60;
+  var creditedSeconds = snapshot.mode === "pomodoro" && useMeasuredCredit === true
+    ? durationSec : minutesToAdd * 60;
   var plannedDurationMs = snapshot.mode === "pomodoro"
     ? POMODORO_WORK_SEC * 1000 : null;
   if (!Number.isSafeInteger(activeDurationMs) || activeDurationMs < 60000
@@ -14593,7 +14595,8 @@ function _commitPendingFocusSessionV2(params) {
         "لم نتحقق من خطوط أساس المهمة والمؤقت والجلسات؛ لم ننفذ معاملة V2.");
       return false;
     }
-    var sessionFields = _buildPendingFocusSessionFields(snapshot, task, params.minutesToAdd);
+    var sessionFields = _buildPendingFocusSessionFields(
+      snapshot, task, params.minutesToAdd, params.useMeasuredCredit === true);
     if (!sessionFields) {
       showAlertModal("بيانات الجلسة غير صالحة",
         "تعذر بناء سجل V2 موثوق من لقطة المؤقت والقيمة المعتمدة؛ بقيت البيانات دون تعديل.");
@@ -15209,11 +15212,11 @@ function _continueFocusTimerFinish(snapshot) {
   };
   var save = document.createElement("button");
   save.className = "btn-primary";
-  save.textContent = "+ " + minutes + " د";
+  save.textContent = snapshot.mode === "pomodoro" ? "حفظ الوقت المقاس" : "+ " + minutes + " د";
   save.onclick = function() {
     closeModal();
     _pendingFinishDialogShown = false;
-    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot))
+    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot, true))
       .then(function(ok) {
         if (!ok && _focusTimer.pendingNotificationFinish) {
           _pendingFinishDialogShown = false;
@@ -15304,11 +15307,12 @@ function finishTimer(_nativeClockSynchronized) {
   return _continueFocusTimerFinish(snapshot);
 }
 
-function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot) {
+function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot,useMeasuredCredit) {
   var snapshot=frozenSnapshot||_captureFocusTimerSnapshot();
   if(!snapshot||snapshot.baseElapsed!==elapsedSec||snapshot.phase!==capturedPhase)return Promise.resolve(false);
   var request = {
     snapshot:snapshot, taskId:snapshot.taskId, minutesToAdd:minutesToAdd,
+    useMeasuredCredit:useMeasuredCredit === true,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
   var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
