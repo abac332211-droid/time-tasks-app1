@@ -2696,6 +2696,32 @@ function _creditOperationLedgerPreservesHistory(previousRecords, nextRecords) {
   return true;
 }
 
+// Restoring a snapshot must never erase or rewrite an operation identity
+// that already exists in the current main record. Validate both sides before
+// comparing; malformed or unreadable snapshots fail closed.
+function _creditOperationSnapshotPreservesHistory(currentMainRaw, restoredMainRaw) {
+  function readLedger(raw) {
+    if (raw === null) return { valid: true, records: [] };
+    if (typeof raw !== "string") return { valid: false, records: [] };
+    try {
+      var main = JSON.parse(raw);
+      if (!main || typeof main !== "object" || Array.isArray(main)
+          || !validateV2(main)) return { valid: false, records: [] };
+      var records = Object.prototype.hasOwnProperty.call(main, "creditOperations")
+        ? main.creditOperations : [];
+      if (!Array.isArray(records)) return { valid: false, records: [] };
+      return { valid: true, records: records };
+    } catch (e) {
+      return { valid: false, records: [] };
+    }
+  }
+
+  var current = readLedger(currentMainRaw);
+  var restored = readLedger(restoredMainRaw);
+  return current.valid && restored.valid
+    && _creditOperationLedgerPreservesHistory(current.records, restored.records);
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -3917,6 +3943,12 @@ function _recoverInterruptedRollingRestore() {
     var sourceRaw = localStorage.getItem(sourceKey);
     var record = _parseRollingRecoveryBackup(sourceRaw);
     if (!record || record.sequence !== marker.sequence) return false;
+    var currentMainRaw = localStorage.getItem(STORAGE_KEY);
+    if (!_creditOperationSnapshotPreservesHistory(currentMainRaw, record.data.main)) {
+      storageRecoveryRequired = true;
+      console.error("Rolling recovery refused to remove or rewrite accepted credit operation identities.");
+      return false;
+    }
     if (!_restoreStorageSnapshot(record.data)) return false;
 
     localStorage.removeItem(ROLLING_RESTORE_IN_PROGRESS_KEY);
@@ -3951,6 +3983,22 @@ function _restoreLatestRollingRecoveryBackup() {
   }
   var latest = _getLatestRollingRecoveryBackup();
   if (!latest || latest === false) return false;
+  var currentMainRaw;
+  try {
+    currentMainRaw = localStorage.getItem(STORAGE_KEY);
+  } catch (readError) {
+    storageRecoveryRequired = true;
+    console.error("Manual rolling restore could not read the current main record.", readError);
+    return false;
+  }
+  if (!_creditOperationSnapshotPreservesHistory(currentMainRaw, latest.record.data.main)) {
+    console.warn("Manual rolling restore refused because the snapshot would roll back accepted credit history.");
+    if (typeof showAlertModal === "function") {
+      showAlertModal("استعادة غير آمنة",
+        "النسخة الداخلية أقدم من سجل عمليات اعتماد الرصيد الحالي أو تغيّر محتوى عملية محفوظة. رفضنا الاستعادة حتى لا نفقد هوية اعتماد سابقة.");
+    }
+    return false;
+  }
   var markerRaw = JSON.stringify({
     version: 1,
     slot: latest.slot,
@@ -7666,16 +7714,18 @@ function _restoreStorageSnapshot(rb) {
   }
 
   var entries = [
-    [STORAGE_KEY, rb.main],
     [FOCUS_SESSIONS_KEY, rb.focusSessions],
     [FOCUS_TIMER_KEY, rb.focusTimer],
     [MENTAL_INBOX_KEY, rb.mentalInbox],
     [THOUGHTS_KEY, rb.thoughts],
     [PROJECTS_KEY, rb.projects],
     [FOCUS_SETTINGS_KEY, rb.focusSettings],
-    [NOTIFICATIONS_KEY, rb.notifications]
+    [NOTIFICATIONS_KEY, rb.notifications],
+    // Commit the main record last: it carries the durable credit identity ledger.
+    [STORAGE_KEY, rb.main]
   ];
   var before = [];
+  var previousMainRaw = null;
   function writeAndVerify(key, value) {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -7689,7 +7739,9 @@ function _restoreStorageSnapshot(rb) {
   // failure from leaving an avoidable partially-restored set of collections.
   try {
     for (var r = 0; r < entries.length; r++) {
-      before.push([entries[r][0], localStorage.getItem(entries[r][0])]);
+      var previousValue = localStorage.getItem(entries[r][0]);
+      before.push([entries[r][0], previousValue]);
+      if (entries[r][0] === STORAGE_KEY) previousMainRaw = previousValue;
     }
   } catch (readError) {
     markRecoveryRequired();
@@ -7718,7 +7770,7 @@ function _restoreStorageSnapshot(rb) {
     }
     _invalidateProjectsCache();
     if (compensationVerified && typeof _setMainStorageBaseline === "function") {
-      _setMainStorageBaseline(before[0][1]);
+      _setMainStorageBaseline(previousMainRaw);
     }
     markRecoveryRequired();
     return false;
@@ -8275,6 +8327,12 @@ function undoLastImport() {
             return;
           }
         }
+        var currentMainForUndo = localStorage.getItem(STORAGE_KEY);
+        if (!_creditOperationSnapshotPreservesHistory(currentMainForUndo, parsed.main)) {
+          showAlertModal("تعذر التراجع بأمان",
+            "نسخة التراجع ستحذف أو تغيّر هويات عمليات اعتماد سبق حفظها على هذا الجهاز. لم نبدأ التراجع ولم نعدّل أي بيانات.");
+          return;
+        }
 
         // Mark undo as an in-progress restore and verify the marker before writes.
         localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
@@ -8288,6 +8346,12 @@ function undoLastImport() {
       } else {
         if (!validateV2(parsed)) {
           showAlertModal("خطأ", "النسخة السابقة تالفة.");
+          return;
+        }
+        var currentMainForUndo = localStorage.getItem(STORAGE_KEY);
+        if (!_creditOperationSnapshotPreservesHistory(currentMainForUndo, raw)) {
+          showAlertModal("تعذر التراجع بأمان",
+            "نسخة التراجع ستحذف أو تغيّر هويات عمليات اعتماد سبق حفظها على هذا الجهاز. لم نبدأ التراجع ولم نعدّل أي بيانات.");
           return;
         }
         localStorage.setItem(STORAGE_KEY, raw);
