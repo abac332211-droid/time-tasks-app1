@@ -14,6 +14,7 @@ on:
       - main
       - codex/v2.9.1-stability
       - codex/pomodoro-integrity-engine
+      - codex/pomodoro-integrity-engine
 
 concurrency:
   group: verify-pwa-${{ github.ref }}
