@@ -214,11 +214,13 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       { timeout: 5_000 }
     );
 
-    const staleMainAttempt = await pageB.evaluate(() => {
-      appSettings.themeMode = 'light';
-      appSettings.darkMode = false;
+    const staleMainAttempt = await pageB.evaluate(async () => {
       const before = localStorage.getItem('timeTasksApp_v1');
-      const saved = saveData();
+      const saved = await _withTaskStorageLock(() => {
+        appSettings.themeMode = 'light';
+        appSettings.darkMode = false;
+        return saveData();
+      });
       const after = localStorage.getItem('timeTasksApp_v1');
       return { saved, before, after };
     });
@@ -301,9 +303,12 @@ test('two real same-origin pages exchange storage events and block stale main/ti
         recurrence: null,
         checklist: null
       };
-      tasks.push(task);
-      appSettings.lastTaskId = task.id;
-      if (!saveData()) throw new Error('Could not seed the task record');
+      const saved = await _withTaskStorageLock(() => {
+        tasks.push(task);
+        appSettings.lastTaskId = task.id;
+        return saveData();
+      });
+      if (!saved) throw new Error('Could not seed the task record');
 
       _focusTimer.mode = 'stopwatch';
       _focusTimer.phase = 'work';
