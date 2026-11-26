@@ -739,6 +739,7 @@ test('V2 credit writer refuses a new operation when the append-only ledger is fu
 function sessionFinishRoutingContext(snapshot) {
   const calls = [];
   const sandbox = {
+    POMODORO_WORK_SEC: 25 * 60,
     _captureFocusTimerSnapshot: () => snapshot,
     _commitPendingFocusSessionV2: request => {
       calls.push({ writer: 'v2', request });
