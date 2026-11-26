@@ -4183,6 +4183,10 @@ function saveData() {
 }
 
 function toggleDarkMode() {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { toggleDarkMode(); });
+    return;
+  }
   var previousMode = appSettings.themeMode;
   var previousDark = appSettings.darkMode;
   appSettings.themeMode = appSettings.darkMode ? "light" : "dark";
@@ -4710,6 +4714,9 @@ function getOrCreateTodayLog() {
 }
 
 function persistDailyLog(log) {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    return _runWithTaskStorageWriteLock(function() { return persistDailyLog(log); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ جارٍ حفظ جلسة التركيز — انتظر لحظة قبل حفظ سجل اليوم");return false;
   }
@@ -5164,6 +5171,10 @@ function deleteMentalItem(id) {
 }
 
 function convertMentalItemToTask(id) {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { convertMentalItemToTask(id); });
+    return;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -5812,6 +5823,10 @@ function openShutdownModal() {
 }
 
 function performShutdown() {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { performShutdown(); });
+    return;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -5889,6 +5904,10 @@ function performShutdown() {
 /* ============ Tasks CRUD ============ */
 
 function saveTask() {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { saveTask(); });
+    return;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6094,6 +6113,10 @@ function cancelEdit() {
 }
 
 function reviveTask(id) {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { reviveTask(id); });
+    return;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6118,6 +6141,10 @@ function reviveTask(id) {
 }
 
 function toggleTask(id) {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { toggleTask(id); });
+    return;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6218,6 +6245,10 @@ function deleteTask(id) {
 }
 
 function quickAdd() {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    _runWithTaskStorageWriteLock(function() { quickAdd(); });
+    return;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
