@@ -15,7 +15,7 @@ function extractFunction(name) {
   const end = html.indexOf('\n}', start);
   assert.notEqual(end, -1, 'Could not find end of app function: ' + name);
   return [
-    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0; }',
+    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }',
     'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
     html.slice(start, end + 2)
   ].join('\n');
