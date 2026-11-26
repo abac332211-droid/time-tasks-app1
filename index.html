@@ -3653,6 +3653,10 @@ function _completeRollingRecoveryCheckpoint(reason, title, message) {
 }
 
 function _restoreStorageValueIfUnchanged(key, expectedCurrentRaw, previousRaw) {
+  if (!_isTaskStorageLockHeld()) {
+    console.error("Conditional storage rollback refused without the shared Stopwatch Web Lock:", key);
+    return false;
+  }
   try {
     if (localStorage.getItem(key) !== expectedCurrentRaw) return false;
     if (previousRaw === null) localStorage.removeItem(key);
@@ -3769,6 +3773,10 @@ function _readPersistedRollingBackupGeneration() {
 }
 
 function _setPersistedRollingBackupGeneration(expectedCurrent, nextValue) {
+  if (!_isTaskStorageLockHeld()) {
+    console.error("Rolling backup generation write refused without the shared Stopwatch Web Lock.");
+    return false;
+  }
   if (!Number.isSafeInteger(expectedCurrent) || expectedCurrent < 0
       || !Number.isSafeInteger(nextValue) || nextValue !== expectedCurrent + 1) return false;
   try {
@@ -12469,6 +12477,29 @@ function _assertCreditMigrationReady() {
     if (_focusTimer && _focusTimer.pendingStopwatchTransaction !== null
         && _focusTimer.pendingStopwatchTransaction !== undefined)
       return { ok:false, reason:"pending_memory_transaction" };
+
+    // The credit migration changes task records, so the main task collection
+    // must be as fresh and verified as the timer collection before the gate opens.
+    if (_mainStorageBaselineReady !== true)
+      return { ok:false, reason:"main_baseline_unavailable" };
+    if (_mainStorageExternalChangeObserved === true)
+      return { ok:false, reason:"main_baseline_conflict" };
+    var mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (typeof mainRaw !== "string" || mainRaw !== _mainStorageBaselineRaw)
+      return { ok:false, reason:"main_baseline_conflict" };
+
+    var mainRecord;
+    try { mainRecord = JSON.parse(mainRaw); }
+    catch (mainParseError) {
+      return { ok:false, reason:"invalid_main_record" };
+    }
+    if (!mainRecord || typeof mainRecord !== "object" || Array.isArray(mainRecord)
+        || mainRecord.schemaVersion !== CURRENT_SCHEMA_VERSION
+        || typeof validateV2 !== "function" || !validateV2(mainRecord)
+        || !Array.isArray(mainRecord.tasks))
+      return { ok:false, reason:"invalid_main_record" };
+    if (!Array.isArray(tasks) || JSON.stringify(tasks) !== JSON.stringify(mainRecord.tasks))
+      return { ok:false, reason:"task_memory_not_persisted" };
 
     if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)
         || _secondaryStorageConflicts[FOCUS_TIMER_KEY]
