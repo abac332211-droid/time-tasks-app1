@@ -17,7 +17,15 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  const source = match[0];
+  const helpers = [];
+  if (/\\b_isTaskStorageLockHeld\\s*\\(/.test(source)) {
+    helpers.push('function _isTaskStorageLockHeld() { return true; }');
+  }
+  if (/\\b_withTaskStorageLock\\s*\\(/.test(source)) {
+    helpers.push('function _withTaskStorageLock(callback) { return callback(); }');
+  }
+  return helpers.length ? helpers.concat(source).join('\\n') : source;
 }
 
 function createStopwatchSaveHarness(options = {}) {
