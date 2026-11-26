@@ -2187,3 +2187,99 @@ test('import keeps deleted-task IDs reserved when its durable credit history is 
     'the next task ID must not reuse a deleted task ID owned by credit history');
   assert.deepEqual(harness.alerts, []);
 });
+
+
+function buildBackupForCreditLedgerTest(mainRecord) {
+  const sourceStart = html.indexOf('function buildBackupObject(');
+  const sourceEnd = html.indexOf('\\n}', sourceStart);
+  assert.notEqual(sourceStart, -1);
+  assert.notEqual(sourceEnd, -1);
+  const context = {
+    STORAGE_KEY: STORAGE_KEYS.MAIN,
+    FOCUS_SESSIONS_KEY: STORAGE_KEYS.FOCUS_SESSIONS,
+    FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
+    MENTAL_INBOX_KEY: STORAGE_KEYS.MENTAL_INBOX,
+    THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
+    PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
+    FOCUS_SETTINGS_KEY: STORAGE_KEYS.FOCUS_SETTINGS,
+    NOTIFICATIONS_KEY: STORAGE_KEYS.NOTIFICATIONS,
+    APP_VERSION: '2.9.0',
+    CURRENT_SCHEMA_VERSION: 2,
+    BACKUP_FORMAT_VERSION: 2,
+    localStorage: {
+      getItem(key) {
+        return key === STORAGE_KEYS.MAIN ? JSON.stringify(mainRecord) : null;
+      }
+    },
+    buildEmptyV2: () => ({ settings: {}, tasks: [], dailyLogs: [], creditOperations: [] }),
+    validateBackup: () => ({ valid: true }),
+    localDateTimeString: () => '2026-11-26T10:00:00',
+    _buildFocusTimerBackupSnapshot: buildSnapshot,
+    _focusTimer: timer({
+      mode: 'pomodoro',
+      phase: 'work',
+      running: false,
+      baseElapsed: 300,
+      startedAt: null,
+      taskId: null,
+      sessionStartAt: 1_000
+    }),
+    _focusElapsedRemainderMs: 0,
+    _getFocusTimerElapsedParts: () => ({ seconds: 300, remainderMs: 0 }),
+    _phaseTargetSec: () => 1_500,
+    _getFocusSettingsSnapshot: () => ({ workMin: 25, shortMin: 5, longMin: 15 }),
+    _getNotificationsPref: () => ({ enabled: false })
+  };
+  const buildBackup = vm.runInNewContext(
+    `(${html.slice(sourceStart, sourceEnd + 2)})`,
+    context
+  );
+  return buildBackup();
+}
+
+test('backup export rejects a present malformed credit ledger instead of silently dropping its identities', () => {
+  for (const malformedLedger of [null, {}, 'corrupt', 7]) {
+    const mainRecord = {
+      schemaVersion: 2,
+      settings: {},
+      tasks: [],
+      dailyLogs: [],
+      creditOperations: malformedLedger
+    };
+    assert.throws(
+      () => buildBackupForCreditLedgerTest(mainRecord),
+      /سجل عمليات اعتماد الرصيد تالف أو ليس مصفوفة/
+    );
+  }
+});
+
+test('backup export retains a valid durable credit ledger and only defaults when the field is absent', () => {
+  const operation = {
+    recordVersion: 1,
+    operationId: '123e4567-e89b-42d3-a456-426614174000',
+    kind: 'manual_adjustment',
+    taskId: 7,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 12,
+    source: 'manual_adjustment',
+    sessionId: null,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  const withLedger = buildBackupForCreditLedgerTest({
+    schemaVersion: 2,
+    settings: {},
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: [operation]
+  });
+  const legacyWithoutLedger = buildBackupForCreditLedgerTest({
+    schemaVersion: 2,
+    settings: {},
+    tasks: [],
+    dailyLogs: []
+  });
+
+  assert.deepEqual(withLedger.data.creditOperations, [operation]);
+  assert.deepEqual(legacyWithoutLedger.data.creditOperations, []);
+});
