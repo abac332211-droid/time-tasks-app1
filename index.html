@@ -1667,8 +1667,8 @@ function _secondaryStorageWriteAllowed(key) {
 }
 
 function _writeSecondaryStorageVerified(key, serializedValue) {
-  if (key === FOCUS_TIMER_KEY && !_isTaskStorageLockHeld()) {
-    console.error("Focus timer storage write refused without the shared Stopwatch Web Lock.");
+  if (!_isTaskStorageLockHeld()) {
+    console.error("Secondary storage write refused without the shared Stopwatch Web Lock:", key);
     return false;
   }
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
@@ -4997,6 +4997,7 @@ function _loadMentalInbox() {
 }
 
 function _saveMentalInbox(arr) {
+  if (!_isTaskStorageLockHeld()) return false;
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(MENTAL_INBOX_KEY, JSON.stringify(arr))) return false;
@@ -5020,6 +5021,7 @@ function _nextMentalId() {
 }
 
 function addMentalItem(text, next) {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return addMentalItem(text, next); });
   text = String(text || "").trim();
   next = String(next || "").trim();
   if (!text) { showToast("⚠️ اكتب الفكرة أولًا"); return false; }
@@ -5042,6 +5044,7 @@ function addMentalItem(text, next) {
 }
 
 function archiveMentalItem(id) {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return archiveMentalItem(id); });
   var arr = _loadMentalInbox();
   var m = arr.find(function(x) { return x.id === id; });
   if (!m || m.resolvedAt) return;
@@ -5055,6 +5058,7 @@ function archiveMentalItem(id) {
 }
 
 function restoreMentalItem(id) {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return restoreMentalItem(id); });
   var arr = _loadMentalInbox();
   var m = arr.find(function(x) { return x.id === id; });
   if (!m || !m.resolvedAt) return;
@@ -5162,6 +5166,7 @@ function editMentalItem(id) {
   saveBtn.className = "btn-primary";
   saveBtn.textContent = "حفظ";
   saveBtn.onclick = function() {
+    return _withTaskStorageLock(function() {
     var newText = document.getElementById("mentalEditText").value.trim();
     var newNext = document.getElementById("mentalEditNext").value.trim();
     if (!newText) { showToast("⚠️ اكتب الفكرة أولًا"); return; }
@@ -5178,6 +5183,8 @@ function editMentalItem(id) {
     }
     renderMentalInbox();
     showToast("✏️ عُدّلت الفكرة");
+    return true;
+    });
   };
   footerEl.appendChild(cancelBtn);
   footerEl.appendChild(saveBtn);
@@ -5200,6 +5207,7 @@ function deleteMentalItem(id) {
     "🗑️ حذف الفكرة",
     "سيتم حذف الفكرة نهائيًّا. لا يمكن التراجع. متابعة؟",
     function() {
+      return _withTaskStorageLock(function() {
       var arr = _loadMentalInbox();
       var before = arr.length;
       arr = arr.filter(function(x) { return x.id !== id; });
@@ -5210,6 +5218,8 @@ function deleteMentalItem(id) {
       }
       renderMentalInbox();
       showToast("🗑️ حُذفت الفكرة");
+      return true;
+      });
     }
   );
 }
@@ -9255,6 +9265,7 @@ function _loadFocusSettings() {
 }
 
 function _saveFocusSettings(w, s, l) {
+  if (!_isTaskStorageLockHeld()) return false;
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(FOCUS_SETTINGS_KEY, JSON.stringify({ workMin: w, shortMin: s, longMin: l }))) return false;
@@ -10737,12 +10748,17 @@ function _getNotificationsPref() {
 }
 
 function _setNotificationsPref(enabled) {
+  if (!_isTaskStorageLockHeld()) return false;
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(NOTIFICATIONS_KEY, JSON.stringify({ enabled: !!enabled }))) return false;
     if (typeof _storeRollingRecoveryBackup === "function") _storeRollingRecoveryBackup("notifications-save", 0);
     return true;
   } catch (e) { return false; }
+}
+
+function _setNotificationsPrefWithLock(enabled) {
+  return _withTaskStorageLock(function() { return _setNotificationsPref(enabled); });
 }
 
 function _isCapacitor() {
@@ -11001,7 +11017,7 @@ async function _setCapacitorNotificationsEnabled(enabled) {
   try {
     if (!enabled) {
       var wasEnabled = _getNotificationsPref().enabled;
-      if (!_setNotificationsPref(false)) return false;
+      if (!await _setNotificationsPrefWithLock(false)) return false;
       try {
         await LN.cancelAll();
         _taskReminderSyncStatus = true;
@@ -11009,7 +11025,7 @@ async function _setCapacitorNotificationsEnabled(enabled) {
         return true;
       } catch (cancelError) {
         // Do not report "disabled" while native alarms may still be queued.
-        _setNotificationsPref(wasEnabled);
+        await _setNotificationsPrefWithLock(wasEnabled);
         throw cancelError;
       }
     }
@@ -11018,12 +11034,12 @@ async function _setCapacitorNotificationsEnabled(enabled) {
       permission = await LN.requestPermissions();
     }
     if (!permission || permission.display !== "granted") {
-      _setNotificationsPref(false);
+      await _setNotificationsPrefWithLock(false);
       _taskReminderSyncStatus = false;
       _updateNotifToggleUI();
       return false;
     }
-    if (!_setNotificationsPref(true)) return false;
+    if (!await _setNotificationsPrefWithLock(true)) return false;
     // A permission grant alone is not success: surface a failed reminder sync to the user.
     return await _queueAllTaskReminderSync() === true;
   } catch (e) {
@@ -11241,10 +11257,12 @@ function toggleNotifications() {
   }
   if (perm === 'granted') {
     var v = !pref.enabled;
-    if (!_setNotificationsPref(v)) { showToast('⚠️ تعذر الحفظ'); return; }
-    _updateNotifToggleUI();
-    showToast(v ? '🔔 الإشعارات مفعّلة' : '🔕 الإشعارات معطّلة');
-    return;
+    return _setNotificationsPrefWithLock(v).then(function(saved) {
+      if (!saved) { showToast('⚠️ تعذر الحفظ'); return false; }
+      _updateNotifToggleUI();
+      showToast(v ? '🔔 الإشعارات مفعّلة' : '🔕 الإشعارات معطّلة');
+      return true;
+    });
   }
   try {
     var req = Notification.requestPermission(function(res) {
@@ -11259,17 +11277,20 @@ function toggleNotifications() {
 }
 
 function _applyNotifPermissionResult(result) {
-  if (result === 'granted') {
-    _setNotificationsPref(true);
-    _updateNotifToggleUI();
-    showToast('🔔 الإشعارات مفعّلة');
-  } else if (result === 'denied') {
-    _setNotificationsPref(false);
-    _updateNotifToggleUI();
-    showAlertModal('لم يُمنح الإذن', 'يمكنك تفعيل الإشعارات لاحقًا من إعدادات الموقع في المتصفح.');
-  } else {
-    showToast('⚠️ لم يُمنح الإذن');
+  if (result === 'granted' || result === 'denied') {
+    return _setNotificationsPrefWithLock(result === 'granted').then(function(saved) {
+      if (!saved) {
+        showToast('⚠️ تعذر حفظ تفضيل الإشعارات');
+        return false;
+      }
+      _updateNotifToggleUI();
+      if (result === 'granted') showToast('🔔 الإشعارات مفعّلة');
+      else showAlertModal('لم يُمنح الإذن', 'يمكنك تفعيل الإذن لاحقًا من إعدادات الموقع في المتصفح.');
+      return true;
+    });
   }
+  showToast('⚠️ لم يُمنح الإذن');
+  return false;
 }
 
 var _pendingPhaseNotification = null;
@@ -11574,6 +11595,7 @@ function _renderTimerSettings() {
 }
 
 function applyTimerDurations() {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return applyTimerDurations(); });
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -11597,6 +11619,7 @@ function applyTimerDurations() {
 }
 
 function applyTimerPreset(work, short, long) {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return applyTimerPreset(work, short, long); });
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -11617,6 +11640,7 @@ function applyTimerPreset(work, short, long) {
 }
 
 function resetTimerDurationsToDefault() {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return resetTimerDurationsToDefault(); });
   if (typeof _isTimerControlBlocked === "function" && _isTimerControlBlocked()) {
     showToast("⏳ المؤقت محمي حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -13754,6 +13778,7 @@ function _loadThoughts() {
 }
 
 function _saveThoughts(arr) {
+  if (!_isTaskStorageLockHeld()) return false;
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(THOUGHTS_KEY, JSON.stringify(arr))) return false;
@@ -13769,6 +13794,7 @@ function _nextThoughtId() {
 }
 
 function addThought() {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return addThought(); });
   var input = document.getElementById("thoughtInput");
   if (!input) return;
   var text = input.value.trim();
@@ -13849,6 +13875,7 @@ function editThought(id) {
   var t = arr.find(function(x) { return x.id === id; });
   if (!t) return;
   showRtlTextareaModal("✏️ تعديل الخاطرة", "عدّل النص:", t.text, function(val) {
+    return _withTaskStorageLock(function() {
     var newText = String(val || "").trim();
     if (!newText) { showToast("⚠️ لا يمكن أن يكون فارغًا"); return; }
     var arr2 = _loadThoughts();
@@ -13859,11 +13886,14 @@ function editThought(id) {
     if (!_saveThoughts(arr2)) { showToast("⚠️ تعذر الحفظ"); return; }
     renderThoughts();
     showToast("✏️ عُدّلت");
+    return true;
+    });
   });
 }
 
 function deleteThought(id) {
   showConfirmModal("🗑️ حذف الخاطرة", "سيتم الحذف نهائيًّا. متابعة؟", function() {
+    return _withTaskStorageLock(function() {
     var arr = _loadThoughts();
     var before = arr.length;
     arr = arr.filter(function(x) { return x.id !== id; });
@@ -13871,6 +13901,8 @@ function deleteThought(id) {
     if (!_saveThoughts(arr)) { showToast("⚠️ تعذر الحذف"); return; }
     renderThoughts();
     showToast("🗑️ حُذفت");
+    return true;
+    });
   });
 }
 
@@ -13960,6 +13992,7 @@ function _loadProjects() {
 }
 
 function _saveProjects(arr) {
+  if (!_isTaskStorageLockHeld()) return false;
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!_writeSecondaryStorageVerified(PROJECTS_KEY, JSON.stringify(arr))) return false;
@@ -13979,6 +14012,7 @@ function _nextProjectId() {
 }
 
 function saveProject() {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return saveProject(); });
   var nameEl = document.getElementById("projectName");
   var descEl = document.getElementById("projectDesc");
   var targetEl = document.getElementById("projectTarget");
@@ -14162,6 +14196,7 @@ function deleteProject(id) {
   });
 }
 function setProjectStatus(id, status) {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return setProjectStatus(id, status); });
   if (VALID_PROJECT_STATUS.indexOf(status) === -1) return;
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
@@ -14176,6 +14211,7 @@ function setProjectStatus(id, status) {
 }
 
 function toggleProjectStatus(id) {
+  if (!_isTaskStorageLockHeld()) return _withTaskStorageLock(function() { return toggleProjectStatus(id); });
   var arr = _loadProjects();
   var p = arr.find(function(x) { return x.id === id; });
   if (!p) return;
