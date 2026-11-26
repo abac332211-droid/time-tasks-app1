@@ -13575,7 +13575,7 @@ function _setupRecurringTaskRefresh() {
         || (typeof _appInitCompleted !== "undefined" && !_appInitCompleted)
         || document.visibilityState !== "visible") return;
     try {
-      Promise.resolve(_generateAndPersistRecurringTasks()).then(function(generatedCount) {
+      return Promise.resolve(_generateAndPersistRecurringTasks()).then(function(generatedCount) {
         if (generatedCount > 0) {
           renderAll();
           showToast('🔁 أُضيفت ' + generatedCount + ' مهام لليوم الجديد');
