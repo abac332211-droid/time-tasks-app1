@@ -4606,13 +4606,111 @@ function saveData() {
       lastTaskId: (Number.isInteger(appSettings.lastTaskId) && appSettings.lastTaskId > 0) ? appSettings.lastTaskId : 0,
       lastRecurringDates: appSettings.lastRecurringDates || {}
     });
+    // Task editors, completion toggles, shutdown actions and task revival
+    // still edit the legacy minute field. For an already-migrated task, turn
+    // each actual-balance change into a PR #23 manual_adjustment in this same
+    // primary-record write. Ordinary saveData may not rewrite credit metadata.
+    var preparedTasks = JSON.parse(JSON.stringify(tasks));
+    var previousTasks = Array.isArray(existing.tasks) ? existing.tasks : [];
+    var previousCreditOperations = Array.isArray(existing.creditOperations)
+      ? existing.creditOperations.slice() : [];
+    var nextCreditOperations = previousCreditOperations.slice();
+    if (!_validateCreditOperationLedger(previousCreditOperations, previousTasks))
+      return false;
+    var previousTaskById = new Map();
+    for (var previousTaskIndex = 0; previousTaskIndex < previousTasks.length; previousTaskIndex++) {
+      var previousTask = previousTasks[previousTaskIndex];
+      if (!previousTask || !Number.isSafeInteger(previousTask.id)
+          || previousTaskById.has(previousTask.id)) return false;
+      previousTaskById.set(previousTask.id, previousTask);
+    }
+    var creditMetadataKeys = ["actualSeconds", "creditRevision",
+      "creditSchemaVersion", "lastCreditOperationId"];
+    for (var nextTaskIndex = 0; nextTaskIndex < preparedTasks.length; nextTaskIndex++) {
+      var nextTask = preparedTasks[nextTaskIndex];
+      if (!nextTask || !Number.isSafeInteger(nextTask.id) || nextTask.id <= 0) return false;
+      var previousTask = previousTaskById.get(nextTask.id) || null;
+      var previousHasCredit = !!previousTask && creditMetadataKeys.some(function(key) {
+        return Object.prototype.hasOwnProperty.call(previousTask, key);
+      });
+      var nextHasCredit = creditMetadataKeys.some(function(key) {
+        return Object.prototype.hasOwnProperty.call(nextTask, key);
+      });
+      if (!previousTask) {
+        if (nextHasCredit && (!_validateTaskCreditFields(nextTask)
+            || nextTask.creditRevision !== 0 || nextTask.lastCreditOperationId !== null))
+          return false;
+        continue;
+      }
+      if (previousHasCredit !== nextHasCredit) return false;
+      if (!previousHasCredit) continue;
+      if (!_validateTaskCreditFields(previousTask) || !_validateTaskCreditFields(nextTask))
+        return false;
+      if (nextTask.creditRevision !== previousTask.creditRevision
+          || nextTask.creditSchemaVersion !== previousTask.creditSchemaVersion
+          || nextTask.lastCreditOperationId !== previousTask.lastCreditOperationId)
+        return false;
+
+      var actualMinutesChanged = nextTask.actual !== previousTask.actual;
+      var actualSecondsChanged = nextTask.actualSeconds !== previousTask.actualSeconds;
+      if (!actualMinutesChanged && !actualSecondsChanged) continue;
+
+      var targetSeconds;
+      if (actualMinutesChanged) {
+        if (nextTask.actual === null) targetSeconds = null;
+        else if (Number.isSafeInteger(nextTask.actual) && nextTask.actual >= 0) {
+          targetSeconds = nextTask.actual * 60;
+          if (!Number.isSafeInteger(targetSeconds)) return false;
+        } else return false;
+        if (actualSecondsChanged && nextTask.actualSeconds !== targetSeconds) return false;
+      } else {
+        targetSeconds = nextTask.actualSeconds;
+        if (targetSeconds === null) {
+          if (nextTask.actual !== null) return false;
+        } else if (!Number.isSafeInteger(targetSeconds) || targetSeconds < 0
+            || nextTask.actual !== Math.floor(targetSeconds / 60)) return false;
+      }
+
+      if (targetSeconds === previousTask.actualSeconds) {
+        nextTask.actualSeconds = targetSeconds;
+        nextTask.actual = targetSeconds === null ? null : Math.floor(targetSeconds / 60);
+        continue;
+      }
+      if (previousTask.creditRevision >= Number.MAX_SAFE_INTEGER
+          || nextCreditOperations.length >= 10000
+          || typeof _newPendingFocusCommitUuid !== "function") return false;
+      var adjustmentId = _newPendingFocusCommitUuid();
+      if (!adjustmentId) return false;
+      var adjustment = {
+        recordVersion: 1,
+        operationId: adjustmentId,
+        kind: "manual_adjustment",
+        taskId: nextTask.id,
+        revision: previousTask.creditRevision + 1,
+        previousSeconds: previousTask.actualSeconds,
+        targetSeconds: targetSeconds,
+        source: "manual_adjustment",
+        sessionId: null,
+        createdAt: new Date().toISOString()
+      };
+      if (!_validateCreditOperationRecord(adjustment)) return false;
+      nextCreditOperations.push(adjustment);
+      nextTask.actualSeconds = targetSeconds;
+      nextTask.actual = targetSeconds === null ? null : Math.floor(targetSeconds / 60);
+      nextTask.creditRevision = previousTask.creditRevision + 1;
+      nextTask.creditSchemaVersion = previousTask.creditSchemaVersion;
+      nextTask.lastCreditOperationId = adjustmentId;
+    }
+    if (!_creditOperationLedgerPreservesHistory(previousCreditOperations, nextCreditOperations)
+        || !_validateCreditOperationLedger(nextCreditOperations, preparedTasks)) return false;
+
     const v2 = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       createdByVersion: createdVer,
       settings: persistedSettings,
-      tasks: tasks,
+      tasks: preparedTasks,
       dailyLogs: existing.dailyLogs || [],
-      creditOperations: Array.isArray(existing.creditOperations) ? existing.creditOperations : []
+      creditOperations: nextCreditOperations
     };
 
     if (!validateV2(v2)) {
@@ -4665,6 +4763,12 @@ function saveData() {
       return false;
     }
 
+    // Synchronize the verified credit metadata back into current task objects
+    // only after read-back succeeds, preserving references held by UI rollback code.
+    for (var verifiedTaskIndex = 0; verifiedTaskIndex < tasks.length; verifiedTaskIndex++) {
+      if (tasks[verifiedTaskIndex] && preparedTasks[verifiedTaskIndex])
+        Object.assign(tasks[verifiedTaskIndex], preparedTasks[verifiedTaskIndex]);
+    }
     _setMainStorageBaseline(verifiedMainRaw);
     _queueAllTaskReminderSync();
     if (typeof _storeRollingRecoveryBackup === "function"
@@ -13040,6 +13144,12 @@ function _commitFocusTaskSessionLocked(p) {
       showAlertModal("جلسة Stopwatch قديمة تحتاج إلى مراجعة","توجد جلسة سابقة بلا معرّف معاملة موثوق؛ لم نضف الدقائق ولم نصفر المؤقت.");return false;}
     var task=tasks.find(function(t){return t&&t.id===taskId;});
     if(!task){showAlertModal("المهمة غير موجودة","لم تعد المهمة المرتبطة موجودة في سجل المهام.");return false;}
+    if (["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); })) {
+      showAlertModal("كاتب جلسة قديم غير متوافق",
+        "هذه المهمة تستخدم سجل رصيد V2؛ أوقفنا كاتب Stopwatch القديم قبل إنشاء المعاملة حتى لا يغيّر الرصيد دون سجل عملية.");
+      return false;
+    }
     var previous=task.actual===undefined||task.actual===null?null:task.actual;
     if(previous!==null&&(!Number.isFinite(previous)||previous<0)){showAlertModal("قيمة مهمة غير صالحة","المدة الفعلية السابقة غير صالحة.");return false;}
     var previousId=task.lastStopwatchTransactionId==null?null:task.lastStopwatchTransactionId;
@@ -13384,6 +13494,9 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
     var legacy=_loadSessions().filter(function(s){return s&&!s.transactionId&&s.startedAt===started
       &&s.taskId===tx.taskId&&s.mode===tx.mode&&s.phase===tx.phase;});
     if(legacy.length)throw new Error("Legacy session matches without transaction identity.");
+    if (["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); }))
+      throw new Error("Legacy Stopwatch transaction cannot overwrite a task protected by the V2 credit ledger.");
     var actual=task.actual==null?null:task.actual;
     var markerPresent=Object.prototype.hasOwnProperty.call(task,"lastStopwatchTransactionId")
       &&task.lastStopwatchTransactionId!==null&&task.lastStopwatchTransactionId!==undefined;
