@@ -320,7 +320,7 @@ function migrationRuntime(initialTasks, faults = {}) {
     extractFunction('_assertCreditMigrationReady'),
     extractFunction('_writeMainStorageRecordVerified'),
     extractFunction('_migrateLegacyTaskCreditMetadataLocked')
-  ].join('\\n');
+  ].join('\n');
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox);
   return {
