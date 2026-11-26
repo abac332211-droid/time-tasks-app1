@@ -109,6 +109,6 @@ test('stored V2 validation and backup validation both enforce the same task-cred
   assert.equal(app.validateBackup(backup).valid, true);
   assert.equal(app.validateBackup({
     ...backup,
-    data: { tasks: [creditTask({ actualSeconds: 1500, actual: 25 })], dailyLogs: [] }
+    data: { tasks: [creditTask({ actualSeconds: 1560, actual: 25 })], dailyLogs: [] }
   }).valid, false);
 });
