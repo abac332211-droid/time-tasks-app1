@@ -12445,8 +12445,11 @@ function _assertCreditMigrationReady() {
 
   if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
       || _startupStopwatchRecoveryFailed
+      || _startupResetRecoveryInFlight || _resetRecoveryInFlight || _resetInFlight
+      || _focusCommitInFlight
+      || (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked())
       || (_pendingCorruptStorageSnapshots && _pendingCorruptStorageSnapshots.length))
-    return { ok:false, reason:"recovery_required" };
+    return { ok:false, reason:"recovery_or_commit_in_flight" };
 
   var markerKeys = [
     RESET_IN_PROGRESS_KEY,
