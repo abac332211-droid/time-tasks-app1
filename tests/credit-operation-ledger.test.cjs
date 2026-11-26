@@ -498,3 +498,76 @@ test('persistDailyLog preserves the durable credit operation ledger', () => {
   assert.equal(persisted.dailyLogs.length, 1);
   assert.equal(persisted.dailyLogs[0].date, '2026-11-26');
 });
+
+
+test('manual adjustment ledger rejects no-op revisions but preserves null-to-zero as a real change', () => {
+  const app = context();
+
+  assert.equal(app._validateCreditOperationRecord(manualOperation({
+    previousSeconds: null,
+    targetSeconds: null
+  })), false, 'null to null does not change the balance');
+  assert.equal(app._validateCreditOperationRecord(manualOperation({
+    previousSeconds: 0,
+    targetSeconds: 0
+  })), false, 'zero to zero does not change the balance');
+  assert.equal(app._validateCreditOperationRecord(manualOperation({
+    previousSeconds: null,
+    targetSeconds: 0
+  })), true, 'null to zero is an explicit state change');
+  assert.equal(app._validateCreditOperationRecord(manualOperation({
+    previousSeconds: 10,
+    targetSeconds: 0
+  })), true, 'resetting a numeric balance to zero is a state change');
+});
+
+test('new operation classification requires the next task revision and exact previous balance', () => {
+  const app = context();
+  const first = sessionOperation({
+    previousSeconds: null,
+    targetSeconds: 40,
+    measuredSeconds: 40,
+    creditedSeconds: 40
+  });
+  const validNext = sessionOperation({
+    operationId: ids.second,
+    sessionId: ids.second,
+    revision: 2,
+    previousSeconds: 40,
+    targetSeconds: 65,
+    measuredSeconds: 25,
+    creditedSeconds: 25,
+    createdAt: '2026-11-26T10:30:00.000Z'
+  });
+  const skippedRevision = {
+    ...validNext,
+    operationId: ids.third,
+    sessionId: ids.third,
+    revision: 3
+  };
+  const stalePreviousBalance = {
+    ...validNext,
+    operationId: ids.fourth,
+    sessionId: ids.fourth,
+    previousSeconds: 41,
+    targetSeconds: 66
+  };
+
+  assert.equal(app._classifyCreditOperationAttempt([first], validNext).status, 'new');
+  assert.equal(app._classifyCreditOperationAttempt([first], skippedRevision).status, 'conflict',
+    'an absent UUID is not enough to authorize a skipped revision');
+  assert.equal(app._classifyCreditOperationAttempt([first], stalePreviousBalance).status, 'conflict',
+    'a new operation must continue from the latest durable target');
+});
+
+test('first ledger operation may start from an existing migrated numeric balance', () => {
+  const app = context();
+  const first = sessionOperation({
+    previousSeconds: 90,
+    targetSeconds: 105,
+    measuredSeconds: 15,
+    creditedSeconds: 15
+  });
+
+  assert.equal(app._classifyCreditOperationAttempt([], first).status, 'new');
+});
