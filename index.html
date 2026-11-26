@@ -12409,6 +12409,19 @@ function _formatDuration(sec) {
   return h + 'س ' + rem + 'د';
 }
 
+function _formatFocusSessionDuration(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  var minutes = Math.floor(sec / 60);
+  var remainingSeconds = sec % 60;
+  var hours = Math.floor(minutes / 60);
+  var remainingMinutes = minutes % 60;
+  var parts = [];
+  if (hours > 0) parts.push(hours + 'س');
+  if (remainingMinutes > 0) parts.push(remainingMinutes + ' د');
+  if (remainingSeconds > 0 || parts.length === 0) parts.push(remainingSeconds + ' ث');
+  return parts.join(' ');
+}
+
 function _renderTimerSettings() {
   var w = document.getElementById('timerWorkMin');
   var s = document.getElementById('timerShortMin');
@@ -12605,7 +12618,7 @@ function renderFocusSessionsCard() {
       var icon = s.mode === 'stopwatch' ? '⏱️' : (s.phase === 'work' ? '🍅' : '☕');
       var name = s.taskName ? escapeHTML(s.taskName.slice(0, 32)) : 'بدون مهمة';
       if (s.taskName && s.taskName.length > 32) name += '…';
-      html += '<div class="weekly-metric"><span class="weekly-metric-label">' + icon + ' ' + name + '</span><span class="weekly-metric-value">' + _formatDuration(s.durationSec) + '</span></div>';
+      html += '<div class="weekly-metric"><span class="weekly-metric-label">' + icon + ' ' + name + '</span><span class="weekly-metric-value">' + _formatFocusSessionDuration(s.durationSec) + '</span></div>';
     });
     html += '</div>';
   }
@@ -14612,7 +14625,17 @@ function _commitPendingFocusSessionV2(params) {
       return false;
     }
     if (params.successToast) showToast(params.successToast);
-    renderFocusSessionsCard();
+    // The V2 writer updates the persisted task balance and the in-memory task
+    // array. Refresh every task-derived view now; otherwise cards and gap
+    // analytics remain stale until the next full app load.
+    try {
+      if (typeof renderTasks === "function") renderTasks();
+      if (typeof renderStats === "function") renderStats();
+      if (typeof renderTypeGapAnalysis === "function") renderTypeGapAnalysis();
+      if (typeof renderFocusSessionsCard === "function") renderFocusSessionsCard();
+    } catch (renderError) {
+      console.warn("Focus session committed, but one or more task views could not refresh:", renderError);
+    }
     return true;
   }).catch(function(error) {
     if (_focusTimer && _focusTimer.pendingFocusCommit) storageRecoveryRequired = true;
