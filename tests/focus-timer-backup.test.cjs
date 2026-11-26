@@ -204,6 +204,24 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.notEqual(sourceStart, -1);
   assert.notEqual(sourceEnd, -1);
 
+  const creditOperation = {
+    recordVersion: 1,
+    operationId: '123e4567-e89b-42d3-a456-426614174000',
+    kind: 'session',
+    taskId: 7,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 120,
+    measuredSeconds: 120,
+    creditedSeconds: 120,
+    source: 'measured',
+    sessionId: '123e4567-e89b-42d3-a456-426614174000',
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  const mainRecord = {
+    settings: {}, tasks: [{ id: 10 }], dailyLogs: [],
+    creditOperations: [creditOperation]
+  };
   const context = {
     STORAGE_KEY: 'main',
     FOCUS_SESSIONS_KEY: 'sessions',
@@ -216,7 +234,7 @@ test('backup builder includes the paused focus timer and uses backup format v2',
     localStorage: {
       getItem(key) {
         return key === 'main'
-          ? JSON.stringify({ settings: {}, tasks: [{ id: 10 }], dailyLogs: [] })
+          ? JSON.stringify(mainRecord)
           : null;
       }
     },
@@ -257,6 +275,9 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   const backup = buildBackup();
 
   assert.equal(backup.backupFormatVersion, 2);
+  assert.deepEqual(backup.data.creditOperations, [creditOperation],
+    'backup export must retain the durable operation identity ledger');
+
   assert.equal(backup.data.focusTimer.running, false);
   assert.equal(backup.data.focusTimer.baseElapsed, 300);
   assert.equal(backup.data.focusTimer.elapsedRemainderMs, 420);
@@ -264,6 +285,15 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.doesNotMatch(exportedJson, /nativeSessionToken/);
   assert.doesNotMatch(exportedJson, /handledNotificationActionIds/);
   assert.doesNotMatch(exportedJson, /pendingNotificationFinish/);
+
+  context.localStorage.getItem = (key) => key === 'main'
+    ? JSON.stringify({ ...mainRecord, creditOperations: { corrupted: true } })
+    : null;
+  assert.throws(
+    () => buildBackup(),
+    /سجل عمليات اعتماد الرصيد تالف أو ليس مصفوفة/,
+    'backup export must refuse a malformed ledger instead of silently dropping it'
+  );
 });
 
 test('backup builder validates raw session records instead of silently filtering corrupted sessions', () => {
