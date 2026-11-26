@@ -14310,8 +14310,8 @@ function _commitFocusSessionV2(sessionFields) {
 // contract explicitly extends V2 to represent its user-adjusted "stopped" case.
 function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
   if (!snapshot || !task || snapshot.running !== false
-      || snapshot.mode !== "pomodoro" || snapshot.phase !== "work"
-      || snapshot.clockAdjusted === true
+      || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+      || snapshot.phase !== "work" || snapshot.clockAdjusted === true
       || !Number.isSafeInteger(minutesToAdd) || minutesToAdd < 0 || minutesToAdd > 1000000
       || !Number.isSafeInteger(snapshot.baseElapsed) || snapshot.baseElapsed < 0
       || !Number.isInteger(snapshot.elapsedRemainderMs)
@@ -14322,10 +14322,16 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
   var activeDurationMs = snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs;
   var durationSec = Math.floor(activeDurationMs / 1000);
   var creditedSeconds = minutesToAdd * 60;
-  var plannedDurationMs = POMODORO_WORK_SEC * 1000;
+  var plannedDurationMs = snapshot.mode === "pomodoro"
+    ? POMODORO_WORK_SEC * 1000 : null;
   if (!Number.isSafeInteger(activeDurationMs) || activeDurationMs < 60000
       || !Number.isSafeInteger(durationSec) || !Number.isSafeInteger(creditedSeconds)
-      || !Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0) return null;
+      || (plannedDurationMs !== null
+        && (!Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0))) return null;
+
+  // PR #23 only admits measured credit for Stopwatch's "stopped" outcome.
+  // A minute-based, user-adjusted Stopwatch value remains on the legacy writer.
+  if (snapshot.mode === "stopwatch" && creditedSeconds !== durationSec) return null;
 
   var started = new Date(snapshot.sessionStartAt);
   var endedMs = Number.isFinite(snapshot.pendingPhaseEndedAt)
@@ -14334,9 +14340,10 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
   if (!Number.isFinite(started.getTime()) || !Number.isFinite(ended.getTime())
       || ended.getTime() < started.getTime()) return null;
 
-  var outcome = activeDurationMs >= plannedDurationMs ? "completed" : "ended_early";
+  var outcome = snapshot.mode === "stopwatch" ? "stopped"
+    : (activeDurationMs >= plannedDurationMs ? "completed" : "ended_early");
   return {
-    mode: "pomodoro",
+    mode: snapshot.mode,
     phase: "work",
     taskId: task.id,
     taskName: typeof task.name === "string" ? task.name : "",
@@ -14385,7 +14392,8 @@ function _commitPendingFocusSessionV2(params) {
     var snapshot = params.snapshot;
     if (!_focusTimerSnapshotMatchesState(snapshot) || snapshot.running !== false
         || snapshot.taskId === null || snapshot.taskId === undefined
-        || snapshot.phase !== "work" || snapshot.mode !== "pomodoro"
+        || snapshot.phase !== "work"
+        || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
         || snapshot.clockAdjusted === true) {
       showAlertModal("تعارض لقطة الجلسة",
         "تغيرت حالة المؤقت أو لم تعد جلسة العمل صالحة لعقد V2؛ لم نكتب اعتمادًا.");
@@ -15111,7 +15119,15 @@ function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnap
     snapshot:snapshot, taskId:snapshot.taskId, minutesToAdd:minutesToAdd,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
-  if (snapshot.mode === "pomodoro" && snapshot.phase === "work"
+  var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
+      && Number.isInteger(snapshot.elapsedRemainderMs)
+    ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
+  var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
+    ? Math.floor(measuredActiveDurationMs / 1000) : null;
+  var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
+    && Number.isSafeInteger(minutesToAdd) && minutesToAdd * 60 === measuredActiveSeconds;
+  if ((snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement)
+      && snapshot.phase === "work"
       && snapshot.taskId !== null && snapshot.taskId !== undefined
       && task && snapshot.clockAdjusted !== true) {
     return _commitPendingFocusSessionV2(request);
