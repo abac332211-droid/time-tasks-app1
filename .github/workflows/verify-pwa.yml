@@ -9,11 +9,13 @@ on:
       - codex/v2.9.1-stability
       - codex/v2.9.1-stopwatch-integrity-fix
       - codex/pomodoro-integrity-writer-locking
+      - codex/pomodoro-focus-timer-locking
   pull_request:
     branches:
       - main
       - codex/v2.9.1-stability
       - codex/pomodoro-integrity-engine
+      - codex/pomodoro-integrity-writer-locking
 
 concurrency:
   group: verify-pwa-${{ github.ref }}
