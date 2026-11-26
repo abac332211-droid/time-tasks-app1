@@ -3836,6 +3836,11 @@ function _storeRollingRecoveryBackupLocked(reason, minIntervalMs, expectedGenera
     console.error("Rolling recovery snapshot publication requires the Stopwatch Web Lock.");
     return false;
   }
+  if (typeof _hasPersistedPendingFocusCommit === "function" && _hasPersistedPendingFocusCommit()) {
+    _rollingRecoveryBackupLastFailure = "pending_focus_commit";
+    _rollingRecoveryBackupStale = true;
+    return true;
+  }
   if (expectedGeneration === undefined) expectedGeneration = _readPersistedRollingBackupGeneration();
   if (expectedGeneration === null
       || _readPersistedRollingBackupGeneration() !== expectedGeneration) return false;
@@ -4117,10 +4122,12 @@ function _recoverInterruptedRollingRestore() {
     console.error("Rolling restore recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     storageRecoveryRequired = true;
-    console.error("Rolling restore recovery refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Rolling restore recovery refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -4275,6 +4282,12 @@ function _recoverInterruptedResetWithLock(options, afterRecovery) {
 }
 
 function _resetSecondaryStorageTrackingAfterReset() {
+  if (typeof _hasPersistedPendingFocusCommit === "function"
+      && _hasPersistedPendingFocusCommit()) {
+    storageRecoveryRequired = true;
+    console.error("Reset cleanup refuses to clear a pending focus commit journal.");
+    return false;
+  }
   if (typeof _secondaryStorageKeys !== "undefined" && Array.isArray(_secondaryStorageKeys)) {
     for (var i = 0; i < _secondaryStorageKeys.length; i++) {
       var key = _secondaryStorageKeys[i];
@@ -4393,10 +4406,12 @@ function _recoverInterruptedReset(options) {
     console.error("Interrupted reset recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     storageRecoveryRequired = true;
-    console.error("Interrupted reset recovery refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Interrupted reset recovery refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -7304,6 +7319,8 @@ function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, 
 function _validateFocusTimerBackupSnapshot(timer, taskIds) {
   if (!timer || typeof timer !== "object" || Array.isArray(timer))
     return { valid: false, reason: "حالة مؤقت التركيز غير صالحة." };
+  if (Object.prototype.hasOwnProperty.call(timer, "pendingFocusCommit"))
+    return { valid: false, reason: "لا يجوز تضمين سجل اعتماد جلسة داخلي في نسخة المستخدم الاحتياطية." };
   if (timer.mode !== "pomodoro" && timer.mode !== "stopwatch")
     return { valid: false, reason: "وضع مؤقت التركيز غير صالح." };
   if (!["work", "short-break", "long-break"].includes(timer.phase))
@@ -7347,8 +7364,9 @@ function buildBackupObject() {
       || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)
       || Object.keys(typeof _secondaryStorageConflicts !== "undefined" ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
     throw new Error("تعذر تصدير النسخة: هذه النافذة قديمة أو توجد تغييرات في نافذة أخرى. أعد تحميل التطبيق أولًا.");
-  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction)
-    throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
+  if (typeof _focusTimer !== "undefined"
+      && (_focusTimer.pendingStopwatchTransaction || _focusTimer.pendingFocusCommit))
+    throw new Error("تعذر تصدير النسخة: توجد معاملة مؤقت غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
 
   var keys = [
     ["main", STORAGE_KEY],
@@ -7383,8 +7401,8 @@ function buildBackupObject() {
     if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord))
       throw new Error("تعذر تصدير النسخة: سجل المؤقت المخزن غير صالح.");
   }
-  if (timerRecord.pendingStopwatchTransaction)
-    throw new Error("تعذر تصدير النسخة: توجد معاملة Stopwatch معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
+  if (timerRecord.pendingStopwatchTransaction || timerRecord.pendingFocusCommit)
+    throw new Error("تعذر تصدير النسخة: توجد معاملة مؤقت معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
 
   var data = rawSnapshot.main ? JSON.parse(rawSnapshot.main) : buildEmptyV2();
   if (!data || typeof data !== "object" || Array.isArray(data)
@@ -7883,10 +7901,12 @@ function _restoreStorageSnapshot(rb) {
     console.error("Storage snapshot restore requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     markRecoveryRequired();
-    console.error("Storage snapshot restore refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Storage snapshot restore refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -7900,6 +7920,19 @@ function _restoreStorageSnapshot(rb) {
     var name = snapshotKeys[s];
     if (!Object.prototype.hasOwnProperty.call(rb, name)
         || (rb[name] !== null && typeof rb[name] !== "string")) {
+      markRecoveryRequired();
+      return false;
+    }
+  }
+  if (rb.focusTimer !== null) {
+    try {
+      var snapshotTimer = JSON.parse(rb.focusTimer);
+      if (!snapshotTimer || typeof snapshotTimer !== "object" || Array.isArray(snapshotTimer)
+          || snapshotTimer.pendingFocusCommit) {
+        markRecoveryRequired();
+        return false;
+      }
+    } catch (snapshotTimerError) {
       markRecoveryRequired();
       return false;
     }
@@ -7991,10 +8024,12 @@ function _recoverInterruptedImport() {
     console.error("Import recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     storageRecoveryRequired = true;
-    console.error("Import recovery refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Import recovery refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -8035,6 +8070,12 @@ function _recoverInterruptedImport() {
 
 
 function showImportPreview(obj) {
+  if (typeof _hasPersistedPendingFocusCommit === "function"
+      && _hasPersistedPendingFocusCommit()) {
+    showAlertModal("الاستيراد محظور مؤقتًا",
+      "توجد جلسة تركيز معلقة قيد التثبيت أو الاسترداد. أكمل الاسترداد قبل استبدال أي بيانات.");
+    return;
+  }
   const d = obj.data;
   const tasksCount = d.tasks.length;
   const logsCount = d.dailyLogs.length;
@@ -8115,10 +8156,13 @@ function showImportPreview(obj) {
             IMPORT_IN_PROGRESS_KEY, MIGRATION_IN_PROGRESS_KEY
           ];
           var pendingStopwatchTransaction = false;
+          var pendingFocusCommit = false;
           var importRecoveryMarkerPresent = false;
           try {
             pendingStopwatchTransaction = typeof _hasPersistedPendingStopwatchTransaction === "function"
               && _hasPersistedPendingStopwatchTransaction();
+            pendingFocusCommit = typeof _hasPersistedPendingFocusCommit === "function"
+              && _hasPersistedPendingFocusCommit();
             importRecoveryMarkerPresent = importBlockingKeys.some(function(key) {
               return localStorage.getItem(key) !== null;
             });
@@ -8128,9 +8172,9 @@ function showImportPreview(obj) {
               "تعذرت قراءة سجل Stopwatch أو علامات الاسترداد. لم يبدأ الاستيراد ولم تُستبدل أي بيانات.");
             return false;
           }
-          if (pendingStopwatchTransaction || importRecoveryMarkerPresent) {
+          if (pendingStopwatchTransaction || pendingFocusCommit || importRecoveryMarkerPresent) {
             showAlertModal("الاستيراد محظور مؤقتًا",
-              "يوجد سجل Stopwatch أو استرداد آخر قيد التنفيذ؛ لم يبدأ الاستيراد.");
+              "يوجد سجل معاملة مؤقت أو استرداد آخر قيد التنفيذ؛ لم يبدأ الاستيراد.");
             return false;
           }
           currentRaw = localStorage.getItem(STORAGE_KEY);
@@ -8490,6 +8534,8 @@ function undoLastImport() {
     }
     if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
           && _hasPersistedPendingStopwatchTransaction())
+        || (typeof _hasPersistedPendingFocusCommit === "function"
+          && _hasPersistedPendingFocusCommit())
         || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
         || localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY) !== null
         || localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== null
