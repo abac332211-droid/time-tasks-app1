@@ -47,6 +47,7 @@ function createLogHarness({
   const toasts = [];
   const sandbox = {
     FOCUS_MAX_SESSIONS: maxSessions,
+    _stopwatchTransactionLockDepth: 1,
     _focusTimer: {
       mode: 'stopwatch',
       phase: 'work',
@@ -126,6 +127,7 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
     FOCUS_MAX_SESSIONS: 500,
     FOCUS_SESSIONS_KEY: 'focus-sessions',
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     _sessionsCache: [],
     _storageWriteAllowed: () => true,
     _writeSecondaryStorageVerified: () => { writes++; return true; },

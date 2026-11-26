@@ -1566,6 +1566,39 @@ function _isTimerControlBlocked() {
   );
 }
 
+var _taskStorageWriteInFlight = false;
+
+function _isTaskStorageLockHeld() {
+  return typeof _stopwatchTransactionLockDepth === "number"
+    && _stopwatchTransactionLockDepth > 0;
+}
+
+// Acquire the existing cross-window lock before changing the in-memory task set.
+// The callback is synchronous in this first writer migration so ownership spans
+// mutation, localStorage writes, and read-back verification without an await gap.
+function _withTaskStorageLock(callback) {
+  if (typeof callback !== "function") return Promise.resolve(false);
+  if (_isTaskStorageLockHeld()) {
+    try { return callback(); }
+    catch (error) { return Promise.reject(error); }
+  }
+  if (_taskStorageWriteInFlight) {
+    showToast("⏳ توجد عملية حفظ للمهام قيد التنفيذ؛ أعد المحاولة بعد اكتمالها");
+    return Promise.resolve(false);
+  }
+  _taskStorageWriteInFlight = true;
+  return _withStopwatchTransactionLock(function() {
+    return callback();
+  }).catch(function(error) {
+    console.error("Task storage write could not acquire the shared Web Lock:", error);
+    showAlertModal("تعذر تأمين حفظ المهام",
+      "لم نُجرِ التعديل لأن قفل النوافذ الحصري غير متاح أو تعذر الحصول عليه. لم نستخدم مسار حفظ غير محمي.");
+    return false;
+  }).finally(function() {
+    _taskStorageWriteInFlight = false;
+  });
+}
+
 function _isTaskWriteBlocked() {
   var lockHeld = typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
@@ -1578,6 +1611,7 @@ function _isTaskWriteBlocked() {
     || (typeof _resetRecoveryInFlight !== "undefined" && _resetRecoveryInFlight)
     || (typeof _resetInFlight !== "undefined" && _resetInFlight)
     || (typeof _mainStorageExternalChangeObserved !== "undefined" && _mainStorageExternalChangeObserved)
+    || (_taskStorageWriteInFlight === true && !_isTaskStorageLockHeld())
   );
 }
 
@@ -2171,6 +2205,7 @@ function cancelRecurringOccurrence(taskId) {
     "🚫 إلغاء هذه المهمة فقط",
     "سيُلغى هذا الموعد وحده، مع الاحتفاظ بسلسلة التكرار حتى تستمر مواعيدها المستقبلية. لن تُحذف المهمة أو سجل وقتها الفعلي. لإيقاف السلسلة كلها استخدم الخيار الآخر. هل تريد المتابعة؟",
     function() {
+      return _withTaskStorageLock(function() {
       var task = tasks.find(function(item) { return item && item.id === taskId; });
       if (!task || task.status === "cancelled") return;
       var previous = { status: task.status, completedAt: task.completedAt };
@@ -2185,6 +2220,8 @@ function cancelRecurringOccurrence(taskId) {
       if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
       renderAll();
       showToast("🚫 أُلغيت هذه المهمة فقط؛ ستستمر السلسلة في مواعيدها القادمة");
+      return true;
+      });
     }
   );
   return true;
@@ -2215,6 +2252,7 @@ function stopRecurringSeries(taskId) {
     "⛔ إيقاف سلسلة التكرار",
     "سيوقف هذا الإجراء إنشاء المهام المستقبلية لهذه السلسلة بالكامل، بما فيها النسخ المرتبطة. لن تُحذف المهام السابقة أو سجلاتها. لإلغاء هذا الموعد وحده استخدم زر «إلغاء هذه المهمة فقط». هل تريد إيقاف السلسلة؟",
     function() {
+      return _withTaskStorageLock(function() {
       var currentSelected = tasks.find(function(task) { return task && task.id === taskId; });
       var currentRoot = currentSelected ? resolveRoot(currentSelected) : null;
       if (!currentRoot || !currentRoot.recurrence) {
@@ -2232,6 +2270,8 @@ function stopRecurringSeries(taskId) {
       if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
       renderAll();
       showToast("⛔ أُوقفت سلسلة التكرار بالكامل؛ لم تُحذف المهام السابقة");
+      return true;
+      });
     }
   );
   return true;
@@ -2349,6 +2389,9 @@ function _generateRecurringTasksForToday() {
 
 // Persist generated occurrences as one operation; roll back in-memory mutations on failure.
 function _generateAndPersistRecurringTasks() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return _generateAndPersistRecurringTasks(); });
+  }
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
   }
@@ -3130,13 +3173,16 @@ function _renderChecklistModal() {
   closeBtn.className = 'btn-primary';
   closeBtn.textContent = 'حفظ وإغلاق';
   closeBtn.onclick = function() {
-    if (saveData()) {
-      closeModal();
-      renderAll();
-      showToast('☑️ حُفظت القائمة');
-    } else {
+    return _withTaskStorageLock(function() {
+      if (saveData()) {
+        closeModal();
+        renderAll();
+        showToast('☑️ حُفظت القائمة');
+        return true;
+      }
       showToast('⚠️ تعذر الحفظ');
-    }
+      return false;
+    });
   };
   footerEl.appendChild(closeBtn);
   overlay.classList.remove('hidden');
@@ -3152,6 +3198,9 @@ function _renderChecklistModal() {
 }
 
 function _checklistToggle(idx) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return _checklistToggle(idx); });
+  }
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
   }
@@ -3163,6 +3212,9 @@ function _checklistToggle(idx) {
 }
 
 function _checklistDelete(idx) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return _checklistDelete(idx); });
+  }
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
   }
@@ -3174,6 +3226,9 @@ function _checklistDelete(idx) {
 }
 
 function _checklistAdd() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return _checklistAdd(); });
+  }
   if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
     showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لا يمكن تعديل المهام الآن");return;
   }
@@ -3952,6 +4007,12 @@ function _recoverInterruptedReset(options) {
 }
 
 function saveData() {
+  if (!_isTaskStorageLockHeld()) {
+    console.error("saveData: refusing write outside the shared Stopwatch Web Lock");
+    showAlertModal("حفظ غير محمي",
+      "رفض التطبيق الكتابة لأن عملية حفظ المهام لا تملك قفل النوافذ الحصري. أعد المحاولة؛ لم تُكتب البيانات.");
+    return false;
+  }
   var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
     && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
@@ -4129,6 +4190,9 @@ function saveData() {
 }
 
 function toggleDarkMode() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return toggleDarkMode(); });
+  }
   var previousMode = appSettings.themeMode;
   var previousDark = appSettings.darkMode;
   appSettings.themeMode = appSettings.darkMode ? "light" : "dark";
@@ -4656,6 +4720,11 @@ function getOrCreateTodayLog() {
 }
 
 function persistDailyLog(log) {
+  if (!_isTaskStorageLockHeld()) {
+    console.error("persistDailyLog: refusing write outside the shared Stopwatch Web Lock");
+    showToast("⚠️ حفظ سجل اليوم يحتاج إلى قفل النوافذ؛ لم تُكتب البيانات");
+    return false;
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ جارٍ حفظ جلسة التركيز — انتظر لحظة قبل حفظ سجل اليوم");return false;
   }
@@ -4688,6 +4757,9 @@ function persistDailyLog(log) {
 }
 
 function setDailyRating(field, value) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return setDailyRating(field, value); });
+  }
   const log = getOrCreateTodayLog();
   log[field] = (log[field] === value) ? null : value;
   log.updatedAt = Date.now();
@@ -4697,6 +4769,9 @@ function setDailyRating(field, value) {
 }
 
 function setDailyEnergy(value) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return setDailyEnergy(value); });
+  }
   const log = getOrCreateTodayLog();
   log.energy = (log.energy === value) ? null : value;
   log.updatedAt = Date.now();
@@ -4706,6 +4781,9 @@ function setDailyEnergy(value) {
 }
 
 function setDailyDistractions(value) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return setDailyDistractions(value); });
+  }
   const log = getOrCreateTodayLog();
   if (value === "" || value === null) log.distractions = null;
   else {
@@ -4719,6 +4797,9 @@ function setDailyDistractions(value) {
 }
 
 function setDailyMental(field, value) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return setDailyMental(field, value); });
+  }
   const log = getOrCreateTodayLog();
   log[field] = String(value || "");
   log.updatedAt = Date.now();
@@ -5110,6 +5191,9 @@ function deleteMentalItem(id) {
 }
 
 function convertMentalItemToTask(id) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return convertMentalItemToTask(id); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -5507,6 +5591,7 @@ function showBreakdownTool() {
   addBtn.className = 'btn-primary';
   addBtn.textContent = 'أضف كمهام';
   addBtn.onclick = function() {
+    return _withTaskStorageLock(function() {
     if(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked()){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
@@ -5541,6 +5626,8 @@ function showBreakdownTool() {
       tasks = tasks.filter(function(x) { return _added.indexOf(x) === -1; });
       showToast('⚠️ تعذر الحفظ — لم تُضف');
     }
+    return true;
+    });
   };
 
   footerEl.appendChild(cancelBtn);
@@ -5758,6 +5845,9 @@ function openShutdownModal() {
 }
 
 function performShutdown() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return performShutdown(); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -5835,6 +5925,9 @@ function performShutdown() {
 /* ============ Tasks CRUD ============ */
 
 function saveTask() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return saveTask(); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6040,6 +6133,9 @@ function cancelEdit() {
 }
 
 function reviveTask(id) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return reviveTask(id); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6064,6 +6160,9 @@ function reviveTask(id) {
 }
 
 function toggleTask(id) {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return toggleTask(id); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6083,7 +6182,8 @@ function toggleTask(id) {
       (t.expected !== null && t.expected !== undefined) ? t.expected : "",
       "الزمن بالدقائق",
       function(raw) {
-        if (raw === null) return;
+        return _withTaskStorageLock(function() {
+        if (raw === null) return false;
         const valStr = String(raw).trim();
         let _newActual;
         if (valStr === "") {
@@ -6112,6 +6212,8 @@ function toggleTask(id) {
         } else {
           Object.assign(t, _old);
         }
+        return true;
+        });
       }
     );
   } else {
@@ -6137,6 +6239,7 @@ function deleteTask(id) {
   }
 
   showConfirmModal("حذف المهمة", "هل أنت متأكد من حذف هذه المهمة نهائيًا؟", function() {
+    return _withTaskStorageLock(function() {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
@@ -6160,10 +6263,15 @@ function deleteTask(id) {
       _saveFocusTimer();
       _renderFocusTimer();
     }
+
+    });
   });
 }
 
 function quickAdd() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return quickAdd(); });
+  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -10273,6 +10381,17 @@ function _handleFocusTimerClockDiscontinuity() {
 /* Catch-up: حساب الوقت الحقيقي بدقة تامة دون تجميد عشوائي */
 function _catchUp(backgroundReturn) {
   if (!_focusTimer.running || _focusTimer.mode !== "pomodoro") return;
+  if (!_isTaskStorageLockHeld()) {
+    if (_focusTimer.awaitingConfirmation) {
+      if (backgroundReturn) _showAwaySessionConfirmation();
+      return;
+    }
+    var observedElapsed = _getElapsedSec();
+    var observedTarget = _phaseTargetSec();
+    if (Number.isFinite(observedElapsed) && observedElapsed < observedTarget
+        && observedElapsed <= 4 * 3600) return;
+    return _withTaskStorageLock(function() { return _catchUp(backgroundReturn); });
+  }
   if (_focusTimer.awaitingConfirmation) {
     if (backgroundReturn) _showAwaySessionConfirmation();
     return;
@@ -10482,9 +10601,10 @@ function _showAwaySessionConfirmation() {
     "اكتمل طور " + (labels[phase] || "المؤقت") + " (" + Math.round(target / 60) +
     " دقيقة) أثناء وجود التطبيق في الخلفية أو بعد إغلاقه. هل تريد اعتماد جلسة واحدة وتسجيلها؟",
     function() {
+      return _withTaskStorageLock(function() {
       _awaySessionPromptOpen = false;
       if (!_focusTimer.awaitingConfirmation || _focusTimer.phase !== phase
-          || _focusTimer.sessionStartAt !== startedAt) return;
+          || _focusTimer.sessionStartAt !== startedAt) return false;
       var previous = captureDecisionState();
       if (!_logSession(phase, target, true, endedAt)) {
         _renderFocusTimer();
@@ -10505,10 +10625,13 @@ function _showAwaySessionConfirmation() {
       _renderFocusTimer();
       try { renderFocusSessionsCard(); } catch (e) {}
       showToast("✅ تم اعتماد جلسة واحدة وتسجيلها");
+      return true;
+      });
     },
     function() {
+      return _withTaskStorageLock(function() {
       _awaySessionPromptOpen = false;
-      if (!_focusTimer.awaitingConfirmation) return;
+      if (!_focusTimer.awaitingConfirmation) return false;
       var previous = captureDecisionState();
       var oldSessionToken = _focusTimer.nativeSessionToken;
       resetPendingPhaseForNextStage(true);
@@ -10522,6 +10645,8 @@ function _showAwaySessionConfirmation() {
       stopServiceAfterSave(oldSessionToken);
       _renderFocusTimer();
       showToast("⚪ أُلغيت الجلسة دون احتسابها");
+      return true;
+      });
     }
   );
 }
@@ -11152,6 +11277,10 @@ function _loadSessions() {
   }
 }
 function _saveSessions(arr) {
+  if (!_isTaskStorageLockHeld()) {
+    console.error("Focus sessions: refusing write outside the shared Stopwatch Web Lock");
+    return false;
+  }
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!Array.isArray(arr) || arr.length > FOCUS_MAX_SESSIONS) return false;
@@ -13375,11 +13504,13 @@ function _setupVisibilityListener() {
           renderFocusSessionsCard();
           if (!storageRecoveryRequired) {
             try {
-              var _genCount = _generateAndPersistRecurringTasks();
-              if (_genCount > 0) {
-                renderAll();
-                showToast("🔁 أُضيفت " + _genCount + " مهام لليوم الجديد");
-              }
+              return Promise.resolve(_generateAndPersistRecurringTasks()).then(function(_genCount) {
+                if (_genCount > 0) {
+                  renderAll();
+                  showToast("🔁 أُضيفت " + _genCount + " مهام لليوم الجديد");
+                }
+                return true;
+              });
             } catch (e) { console.error("Recurring generation on visibility:", e); }
           }
           return true;
@@ -13410,11 +13541,14 @@ function _setupRecurringTaskRefresh() {
         || (typeof _appInitCompleted !== "undefined" && !_appInitCompleted)
         || document.visibilityState !== "visible") return;
     try {
-      var generatedCount = _generateAndPersistRecurringTasks();
-      if (generatedCount > 0) {
-        renderAll();
-        showToast('🔁 أُضيفت ' + generatedCount + ' مهام لليوم الجديد');
-      }
+      Promise.resolve(_generateAndPersistRecurringTasks()).then(function(generatedCount) {
+        if (generatedCount > 0) {
+          renderAll();
+          showToast('🔁 أُضيفت ' + generatedCount + ' مهام لليوم الجديد');
+        }
+      }).catch(function(error) {
+        console.error("Periodic recurring-task refresh failed:", error);
+      });
     } catch (e) {
       console.error("Periodic recurring-task refresh failed:", e);
     }
@@ -13788,6 +13922,7 @@ function deleteProject(id) {
   var message = "سيتم حذف المشروع " +
     (linkedTasks.length ? "وفصل " + linkedTasks.length + " مهمة عنه. " : "") + "متابعة؟";
   showConfirmModal("🗑️ حذف المشروع", message, function() {
+    return _withTaskStorageLock(function() {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
@@ -13880,6 +14015,8 @@ function deleteProject(id) {
     } finally {
       releaseHold();
     }
+
+    });
   });
 }
 function setProjectStatus(id, status) {
@@ -13981,6 +14118,7 @@ function addTaskToProject(projectId) {
     showToast('⚠️ المشروع "' + p.name + '" غير نشط (' + (p.status === 'completed' ? 'مكتمل' : 'موقوف') + ')');
   }
   showPromptModal("➕ مهمة في «" + p.name + "»", "اكتب اسم المهمة:", "", "اسم المهمة", function(val) {
+    return _withTaskStorageLock(function() {
     var name = String(val || "").trim();
     if (!name) { showToast("⚠️ اكتب اسم المهمة"); return; }
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
@@ -13992,6 +14130,8 @@ function addTaskToProject(projectId) {
     renderProjects();
     renderTasks();
     showToast("➕ أُضيفت للمشروع");
+
+    });
   });
 }
 

@@ -189,6 +189,7 @@ test('focus commit guard blocks saveData and side-storage writes before reading 
   let reads = 0, writes = 0;
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
     _stopwatchTransactionLockDepth: 1,
@@ -220,6 +221,7 @@ test('saveData refuses to overwrite a malformed main record', () => {
   const alerts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     CURRENT_SCHEMA_VERSION: 2,
     _mainStorageBaselineReady: false,
@@ -248,6 +250,7 @@ test('saveData refuses writes while an import recovery marker remains', () => {
   const alerts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
     _stopwatchTransactionLockDepth: 1,
@@ -272,6 +275,7 @@ test('saveData refuses a stale tab when the main record changed after its baseli
   const alerts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     _mainStorageBaselineReady: true,
     _mainStorageBaselineRaw: '{"schemaVersion":2,"tasks":[{"id":1}],"dailyLogs":[]}',
@@ -304,6 +308,7 @@ function createSaveDataHarness({ transformWrite, rollingFailure } = {}) {
   const baselineUpdates = [], reminderSyncs = [], alerts = [], toasts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     CURRENT_SCHEMA_VERSION: 2,
     APP_VERSION: '2.9.0',
@@ -416,6 +421,7 @@ test('mental-item conversion locks storage if its committed main record cannot b
     STORAGE_KEY: 'main',
     MENTAL_INBOX_KEY: 'inbox',
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     appSettings: { lastTaskId: 0 },
     tasks,
     Date,
