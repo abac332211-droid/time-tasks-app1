@@ -96,6 +96,8 @@ function createResetTimerHarness(elapsed) {
   const sandbox = {
     _focusTimer: { mode: 'stopwatch', running: false, baseElapsed: elapsed },
     _focusTimerExternalConflict: false,
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock: callback => callback(),
     _isFocusCommitBlocked: () => false,
     _getElapsedSec: () => elapsed,
     STOPWATCH_SAVE_THRESHOLD_SEC: 60,
