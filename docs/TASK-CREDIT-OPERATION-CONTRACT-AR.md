@@ -40,7 +40,7 @@
 - `sessionId`: UUID ثابت لهوية مرحلة التركيز في عملية الجلسة؛ لا يحل محل `operationId`.
 - `previousActualSeconds` و`targetActualSeconds`: عدد صحيح آمن غير سالب أو `null`.
 - `previousCreditRevision` و`targetCreditRevision`: عددان صحيحان آمنان، والهدف يساوي السابق + 1 بالضبط.
-- `previousLastCreditOperationId`: UUID العملية السابقة أو `null`، ويجب ألا يساوي هوية العملية الجديدة.
+- `previousLastCreditOperationId`: UUID العملية السابقة أو `null`، ويجب ألا يساوي هوية العملية الجديدة. إذا كانت المراجعة السابقة صفراً فيلزم أن يكون معرّف العملية السابق `null`؛ وإذا كانت أكبر من صفر فيلزم وجود UUID سابق.
 - `createdAt`: طابع إنشاء بالميلي ثانية، ضمن نطاق تاريخ JavaScript الصحيح.
 
 ## دلالات الرصيد
