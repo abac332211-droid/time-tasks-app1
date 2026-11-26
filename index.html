@@ -13638,7 +13638,6 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
 // Never sample elapsed time after the page becomes hidden, because that sample may
 // include device sleep or a suspended JavaScript interval.
 function _pausePwaFocusTimerAtLastCheckpoint(source) {
-  if (typeof _isCapacitor === "function" && _isCapacitor()) return Promise.resolve(false);
   if (!_focusTimer.running) return Promise.resolve(true);
   if (_focusTimer.nativeClockActive || _focusTimer.nativeRestorePending) return Promise.resolve(false);
 
