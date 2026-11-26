@@ -87,6 +87,55 @@ test('null seconds preserve null and do not silently become zero', () => {
   })), false);
 });
 
+test('credit revision and last operation ID must represent the same operation history state', () => {
+  const app = context();
+
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    actual: null,
+    actualSeconds: null,
+    creditRevision: 0,
+    lastCreditOperationId: null
+  })), true, 'revision zero is valid only before the first accepted operation');
+
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    creditRevision: 0,
+    lastCreditOperationId: uuid
+  })), false, 'revision zero cannot claim a previously applied operation');
+
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    creditRevision: 1,
+    lastCreditOperationId: null
+  })), false, 'a positive revision must retain the ID of the latest operation');
+
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    creditRevision: 2,
+    lastCreditOperationId: uuid
+  })), true, 'later revisions remain valid with a valid latest operation ID');
+});
+
+test('stored data and backup validation both reject revision-operation mismatches', () => {
+  const app = context();
+  const backup = {
+    backupFormatVersion: 1,
+    schemaVersion: 2,
+    data: { tasks: [], dailyLogs: [] }
+  };
+  const invalidTasks = [
+    creditTask({ creditRevision: 0, lastCreditOperationId: uuid }),
+    creditTask({ creditRevision: 1, lastCreditOperationId: null })
+  ];
+
+  for (const task of invalidTasks) {
+    assert.equal(app.validateV2({
+      schemaVersion: 2, tasks: [task], dailyLogs: []
+    }), false, 'stored V2 task data must reject a mismatched pair');
+    assert.equal(app.validateBackup({
+      ...backup,
+      data: { tasks: [task], dailyLogs: [] }
+    }).valid, false, 'backup task data must reject the same mismatch');
+  }
+});
+
 test('partial or unsafe credit metadata is rejected instead of repaired or dropped', () => {
   const app = context();
   assert.equal(app._validateTaskCreditFields(creditTask({ creditRevision: undefined })), false);
