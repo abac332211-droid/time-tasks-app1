@@ -127,3 +127,41 @@ test('changed timer baseline blocks migration without attempting repair', () => 
   assert.equal(app._secondaryStorageBaselines.timer,
     JSON.stringify({ mode: 'stopwatch', pendingStopwatchTransaction: null }));
 });
+
+test('credit migration gate requires a persisted main-storage baseline', () => {
+  const app = runtime({ _mainStorageBaselineReady: false });
+  assert.equal(app._assertCreditMigrationReady().reason, 'main_baseline_unavailable');
+});
+
+test('credit migration gate rejects a main-storage write made by another page even without a storage event', () => {
+  const app = runtime();
+  const changed = JSON.stringify({
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { operationalDayStart: 4, firstUseDate: '2026-01-01', darkMode: false, themeMode: 'system', lastRecurringDates: {} },
+    tasks: [],
+    dailyLogs: [{ date: '2026-01-02', entries: [] }]
+  });
+  app.storage.setItem('main', changed);
+  assert.equal(app._assertCreditMigrationReady().reason, 'main_baseline_conflict');
+  assert.notEqual(app._mainStorageBaselineRaw, changed, 'the gate must not silently adopt a new baseline');
+});
+
+test('credit migration gate rejects an observed main-storage conflict', () => {
+  const app = runtime({ _mainStorageExternalChangeObserved: true });
+  assert.equal(app._assertCreditMigrationReady().reason, 'main_baseline_conflict');
+});
+
+test('credit migration gate rejects corrupt or unsupported main task data without repair', () => {
+  const app = runtime();
+  app.storage.setItem('main', '{broken');
+  app._mainStorageBaselineRaw = '{broken';
+  assert.equal(app._assertCreditMigrationReady().reason, 'invalid_main_record');
+  assert.equal(app.storage.getItem('main'), '{broken');
+});
+
+test('credit migration gate rejects task objects changed in memory but not persisted', () => {
+  const app = runtime();
+  app.tasks.push({ id: 9, name: 'unpersisted task' });
+  assert.equal(app._assertCreditMigrationReady().reason, 'task_memory_not_persisted');
+});
