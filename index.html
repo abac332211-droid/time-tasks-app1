@@ -6604,7 +6604,9 @@ function _validateFocusSessionRecordV2(session) {
   return true;
 }
 
-function _validateFocusSessionRecord(session) {\n  if (session && session.recordVersion === 2) return _validateFocusSessionRecordV2(session);\n  if (session && session.recordVersion !== undefined) return false;
+function _validateFocusSessionRecord(session) {
+  if (session && session.recordVersion === 2) return _validateFocusSessionRecordV2(session);
+  if (session && session.recordVersion !== undefined) return false;
   if (!session || typeof session !== "object" || Array.isArray(session)) return false;
   if (session.id !== undefined && (!Number.isSafeInteger(session.id) || session.id <= 0)) return false;
   if (session.transactionId !== undefined && (typeof session.transactionId !== "string"
