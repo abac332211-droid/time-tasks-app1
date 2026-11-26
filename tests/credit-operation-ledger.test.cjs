@@ -66,7 +66,8 @@ function context() {
     extractFunction('_validateTaskCreditFields'),
     extractFunction('_validateCreditOperationRecord'),
     extractFunction('_validateCreditOperationLedger'),
-    extractFunction('_classifyCreditOperationAttempt')
+    extractFunction('_classifyCreditOperationAttempt'),
+    extractFunction('_creditOperationLedgerPreservesHistory')
   ].join('\n'), sandbox);
   return sandbox;
 }
@@ -243,4 +244,41 @@ test('ledger requires an exact latest operation for every revisioned task', () =
     id: 1, actual: null, actualSeconds: null, creditRevision: 0,
     creditSchemaVersion: 1, lastCreditOperationId: null
   }]), true);
+});
+
+
+test('imports may extend but may never remove or rewrite previously accepted operation IDs', () => {
+  const app = context();
+  const first = sessionOperation({
+    previousSeconds: null,
+    targetSeconds: 40,
+    measuredSeconds: 40,
+    creditedSeconds: 40
+  });
+  const second = sessionOperation({
+    operationId: ids.second,
+    sessionId: ids.second,
+    revision: 2,
+    previousSeconds: 40,
+    targetSeconds: 100,
+    measuredSeconds: 60,
+    creditedSeconds: 60,
+    createdAt: '2026-11-26T10:30:00.000Z'
+  });
+  const third = manualOperation({
+    operationId: ids.third,
+    revision: 3,
+    previousSeconds: 100,
+    targetSeconds: 110,
+    createdAt: '2026-11-26T10:35:00.000Z'
+  });
+
+  assert.equal(app._creditOperationLedgerPreservesHistory([first], [first, second]), true);
+  assert.equal(app._creditOperationLedgerPreservesHistory([first, second], [first, second, third]), true);
+  assert.equal(app._creditOperationLedgerPreservesHistory([first, second], [second]), false,
+    'omitting an earlier identity must be rejected');
+  assert.equal(app._creditOperationLedgerPreservesHistory([first], [{
+    ...first, creditedSeconds: 41, targetSeconds: 41
+  }]), false, 'rewriting a previously accepted operation must be rejected');
+  assert.equal(app._creditOperationLedgerPreservesHistory([], [first]), true);
 });
