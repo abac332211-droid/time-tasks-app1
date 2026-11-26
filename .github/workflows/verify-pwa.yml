@@ -11,7 +11,9 @@ on:
       - codex/pomodoro-integrity-writer-locking
       - codex/pomodoro-focus-timer-locking
       - codex/pomodoro-auxiliary-writer-locking
+      - codex/pomodoro-credit-migration-gate
       - codex/pomodoro-pwa-conservative-lifecycle
+      - codex/pomodoro-credit-migration-gate
   pull_request:
     branches:
       - main
