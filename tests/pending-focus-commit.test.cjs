@@ -7,13 +7,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const scripts = Array.from(html.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi))
+const scripts = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
   .map(match => match[1]).filter(source => source.trim());
 const appScript = scripts.find(source => source.includes('APP_VERSION'));
 assert.ok(appScript, 'application script exists');
 
 function extractFunction(name) {
-  const pattern = new RegExp('function\\\\s+' + name + '\\\\s*\\\\([^)]*\\\\)\\\\s*\\\\{[\\\\s\\\\S]*?\\\\n\\\\}');
+  const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists');
   return match[0];
@@ -130,7 +130,7 @@ function validatorContext() {
     extractFunction('_validatePendingFocusTimerProjection'),
     extractFunction('_validatePendingFocusCreditSnapshot'),
     extractFunction('_validatePendingFocusCommit')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
   return sandbox;
 }
 
@@ -228,9 +228,8 @@ test('credit snapshots preserve a numeric zero separately from null', () => {
 test('timer projections reject duplicated native notification IDs and malformed confirmation state', () => {
   const app = validatorContext();
   assert.equal(app._validatePendingFocusTimerProjection(timerProjection()), true);
-  const duplicateActions = operationId;
   assert.equal(app._validatePendingFocusTimerProjection(timerProjection({
-    handledNotificationActionIds: [duplicateActions, duplicateActions]
+    handledNotificationActionIds: [operationId, operationId]
   })), false);
   assert.equal(app._validatePendingFocusTimerProjection(timerProjection({
     awaitingConfirmation: true,
