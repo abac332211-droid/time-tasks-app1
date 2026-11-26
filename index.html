@@ -1667,8 +1667,7 @@ function _secondaryStorageWriteAllowed(key) {
 }
 
 function _writeSecondaryStorageVerified(key, serializedValue) {
-  if (key === FOCUS_TIMER_KEY && typeof _isTaskStorageLockHeld === "function"
-      && !_isTaskStorageLockHeld()) {
+  if (key === FOCUS_TIMER_KEY && !_isTaskStorageLockHeld()) {
     console.error("Focus timer storage write refused without the shared Stopwatch Web Lock.");
     return false;
   }
@@ -10218,7 +10217,7 @@ function _finalizeFocusTimerColdStartRestore() {
 }
 
 function _saveFocusTimer() {
-  if (typeof _isTaskStorageLockHeld === "function" && !_isTaskStorageLockHeld()) {
+  if (!_isTaskStorageLockHeld()) {
     console.error("Focus timer save refused without the shared Stopwatch Web Lock.");
     return false;
   }
@@ -13460,8 +13459,15 @@ function linkTimerToTask(taskId) {
     return;
   }
   _focusTimer.taskId = newId;
-  _saveFocusTimer();
+  if (!_saveFocusTimer()) {
+    _focusTimer.taskId = oldId;
+    _renderFocusTimer();
+    showAlertModal("تعذر تغيير ربط المهمة",
+      "لم يُحفظ ربط المؤقت؛ أُعيد الربط السابق ولم نغيّر حالة التخزين.");
+    return false;
+  }
   _renderFocusTimer();
+  return true;
 }
 
 function _showSessionTransitionDialog(newTaskId,onSwitch) {
