@@ -2297,6 +2297,9 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
       assert.equal(started.toggleResult, true, 'the PWA Pomodoro segment must start under the shared lock');
       assert.equal(started.timer.running, true);
       assert.equal(started.timer.nativeClockActive, false);
+      assert.ok(Number.isInteger(started.timer.elapsedRemainderMs)
+        && started.timer.elapsedRemainderMs >= 0 && started.timer.elapsedRemainderMs < 1000,
+      'a running timer checkpoint must persist an integer millisecond remainder accepted by cold-start validation');
       return started;
     }
 
