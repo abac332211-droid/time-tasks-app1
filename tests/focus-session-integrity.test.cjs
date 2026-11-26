@@ -134,7 +134,7 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
     _storeRollingRecoveryBackup: () => true
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
+    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
     sandbox
   );
 
