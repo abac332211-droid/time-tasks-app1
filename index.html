@@ -2576,7 +2576,11 @@ function _validateCreditOperationRecord(record) {
     return true;
   }
   if (record.kind === "manual_adjustment") {
-    return record.sessionId === null && record.source === "manual_adjustment";
+    // A manual revision must represent an actual state change. In particular,
+    // null -> 0 is valid, but null -> null and 5 -> 5 are no-op records.
+    return record.sessionId === null
+      && record.source === "manual_adjustment"
+      && record.previousSeconds !== record.targetSeconds;
   }
   return false;
 }
@@ -2635,15 +2639,28 @@ function _classifyCreditOperationAttempt(records, candidate) {
   if (!_validateCreditOperationLedger(records)) return { status: "invalid_ledger" };
   if (!_validateCreditOperationRecord(candidate)) return { status: "invalid_operation" };
   var existing = null;
+  var latestForTask = null;
   for (var i = 0; i < records.length; i++) {
     var row = records[i];
+    if (row.taskId === candidate.taskId
+        && (!latestForTask || row.revision > latestForTask.revision)) {
+      latestForTask = row;
+    }
     if (row.operationId === candidate.operationId
         || (candidate.sessionId !== null && row.sessionId === candidate.sessionId)) {
       if (existing) return { status: "conflict" };
       existing = row;
     }
   }
-  if (!existing) return { status: "new" };
+  if (!existing) {
+    // "new" must mean appendable to the currently verified history, not merely
+    // that the UUID is absent. Preserve a numeric/null baseline on revision 1.
+    var expectedRevision = latestForTask ? latestForTask.revision + 1 : 1;
+    if (candidate.revision !== expectedRevision) return { status: "conflict" };
+    if (latestForTask && candidate.previousSeconds !== latestForTask.targetSeconds)
+      return { status: "conflict" };
+    return { status: "new" };
+  }
   var keys = Object.keys(candidate);
   if (keys.length !== Object.keys(existing).length) return { status: "conflict", record: existing };
   for (var j = 0; j < keys.length; j++) {
@@ -7130,6 +7147,11 @@ function buildBackupObject() {
   if (!data || typeof data !== "object" || Array.isArray(data)
       || !Array.isArray(data.tasks) || !Array.isArray(data.dailyLogs))
     throw new Error("تعذر تصدير النسخة: بنية بيانات المهام والسجلات غير مكتملة.");
+  // A missing ledger is valid only for pre-ledger data. A present malformed
+  // value must fail closed; silently replacing it with [] would erase identities.
+  if (Object.prototype.hasOwnProperty.call(data, "creditOperations")
+      && !Array.isArray(data.creditOperations))
+    throw new Error("تعذر تصدير النسخة: سجل عمليات اعتماد الرصيد تالف أو ليس مصفوفة.");
   function readArray(property, label) {
     var stored = rawSnapshot[property];
     if (stored === null) return [];
@@ -7150,7 +7172,8 @@ function buildBackupObject() {
     exportedAt: localDateTimeString(), appVersion: APP_VERSION, schemaVersion: CURRENT_SCHEMA_VERSION,
     data: {
       settings: data.settings || {}, tasks: data.tasks, dailyLogs: data.dailyLogs,
-      creditOperations: Array.isArray(data.creditOperations) ? data.creditOperations : [],
+      creditOperations: Object.prototype.hasOwnProperty.call(data, "creditOperations")
+        ? data.creditOperations : [],
       focusSessions: readArray("focusSessions", "جلسات التركيز"),
       focusTimer: _buildFocusTimerBackupSnapshot(timerRecord, Date.now(), elapsed.seconds, _phaseTargetSec(),
         new Set(data.tasks.map(function(task) { return task && task.id; })), elapsed.remainderMs, _focusElapsedRemainderMs),
