@@ -2217,3 +2217,183 @@ test('Reset refuses to mutate storage when Web Locks is unavailable', {
     assert.equal(state.recoveryRequired, true);
   });
 });
+
+
+test('PWA visibility, pagehide, pageshow and failed pagehide persistence never resume or credit an untrusted interval', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 60000
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    await context.addInitScript((initial) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, seed);
+
+    const page = await context.newPage();
+    await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'PWA lifecycle page');
+
+    async function startPwaWorkSegment() {
+      const started = await page.evaluate(async () => {
+        const result = await _withStopwatchTransactionLock(() => {
+          _focusTimer.mode = 'pomodoro';
+          _focusTimer.phase = 'work';
+          _focusTimer.running = false;
+          _focusTimer.baseElapsed = 83;
+          _focusElapsedRemainderMs = 415;
+          _focusTimer.startedAt = null;
+          _focusTimer.cyclePosition = 0;
+          _focusTimer.taskId = null;
+          _focusTimer.sessionStartAt = Date.now() - 83_415;
+          _focusTimer.awaitingConfirmation = false;
+          _focusTimer.pendingPhaseEndedAt = null;
+          _focusTimer.clockAdjusted = false;
+          _focusTimer.nativeClockActive = false;
+          _focusTimer.nativeRestorePending = false;
+          _focusTimer.pendingStopwatchTransaction = null;
+          _clearFocusTimerClock();
+          return toggleTimer(true, true);
+        });
+        const toggleResult = await result;
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return {
+          toggleResult,
+          timer,
+          sessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length
+        };
+      });
+      assert.equal(started.toggleResult, true, 'the PWA Pomodoro segment must start under the shared lock');
+      assert.equal(started.timer.running, true);
+      assert.equal(started.timer.nativeClockActive, false);
+      return started;
+    }
+
+    const firstStart = await startPwaWorkSegment();
+    await page.evaluate(() => {
+      window.__testVisibilityState = 'hidden';
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get() { return window.__testVisibilityState; }
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForFunction(() => {
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return timer.running === false && timer.clockAdjusted === true && timer.startedAt === null;
+    }, null, { timeout: 10000 });
+
+    const hiddenCheckpoint = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+    }));
+    assert.equal(hiddenCheckpoint.timer.baseElapsed, firstStart.timer.baseElapsed,
+      'hiding must close at the last saved whole-second checkpoint');
+    assert.equal(hiddenCheckpoint.timer.elapsedRemainderMs, firstStart.timer.elapsedRemainderMs,
+      'hiding must preserve only the last saved sub-second remainder');
+    assert.equal(hiddenCheckpoint.timer.phase, firstStart.timer.phase);
+    assert.equal(hiddenCheckpoint.sessions.length, firstStart.sessionCount,
+      'hiding must not create or credit a session');
+
+    await page.evaluate(() => {
+      window.__testVisibilityState = 'visible';
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    await page.waitForTimeout(300);
+    const afterFirstRestore = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+    }));
+    assert.equal(afterFirstRestore.timer.running, false,
+      'pageshow and visible must not silently resume a paused PWA segment');
+    assert.equal(afterFirstRestore.timer.baseElapsed, firstStart.timer.baseElapsed);
+    assert.equal(afterFirstRestore.sessions.length, firstStart.sessionCount);
+
+    const secondStart = await startPwaWorkSegment();
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    await page.waitForFunction(() => {
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return timer.running === false && timer.clockAdjusted === true;
+    }, null, { timeout: 10000 });
+    const afterPageHide = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
+    );
+    assert.equal(afterPageHide.baseElapsed, secondStart.timer.baseElapsed,
+      'pagehide must persist the same last trusted checkpoint');
+    assert.equal(afterPageHide.elapsedRemainderMs, secondStart.timer.elapsedRemainderMs);
+
+    await page.evaluate(() => {
+      window.__testVisibilityState = 'visible';
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await page.waitForTimeout(250);
+    const afterBfcacheReturn = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
+    );
+    assert.equal(afterBfcacheReturn.running, false,
+      'a bfcache pageshow must not resume the prior segment');
+    assert.equal(afterBfcacheReturn.baseElapsed, secondStart.timer.baseElapsed);
+
+    const thirdStart = await startPwaWorkSegment();
+    const injectedFailure = await page.evaluate(() => {
+      const before = localStorage.getItem('timeTasksApp_focusTimer');
+      const originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_focusTimer')
+          throw new Error('injected focus timer checkpoint failure');
+        return originalSetItem.call(this, key, value);
+      };
+      window.dispatchEvent(new Event('pagehide'));
+      return before;
+    });
+    await page.waitForFunction(() => storageRecoveryRequired === true, null, { timeout: 10000 });
+    const failedPageHide = await page.evaluate(() => ({
+      raw: localStorage.getItem('timeTasksApp_focusTimer'),
+      inMemoryRunning: _focusTimer.running,
+      recoveryRequired: storageRecoveryRequired,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+    }));
+    assert.equal(failedPageHide.raw, injectedFailure,
+      'failed pagehide persistence must not replace the durable running record');
+    assert.equal(JSON.parse(failedPageHide.raw).running, true);
+    assert.equal(failedPageHide.inMemoryRunning, false,
+      'the current page must stop counting even when its checkpoint write fails');
+    assert.equal(failedPageHide.recoveryRequired, true);
+    assert.equal(failedPageHide.sessions.length, thirdStart.sessionCount);
+
+    // A real reload creates a fresh page runtime while retaining LocalStorage.
+    // Cold-start normalization must conservatively stop the unclosed old record.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'PWA cold-start after failed pagehide');
+    const afterColdStart = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+    }));
+    assert.equal(afterColdStart.timer.running, false,
+      'cold-start normalization must not continue a segment whose pagehide write failed');
+    assert.equal(afterColdStart.timer.baseElapsed, thirdStart.timer.baseElapsed,
+      'cold start must retain the durable checkpoint and discard the unverified hidden interval');
+    assert.equal(afterColdStart.timer.elapsedRemainderMs, thirdStart.timer.elapsedRemainderMs);
+    assert.equal(afterColdStart.sessions.length, thirdStart.sessionCount,
+      'neither failed pagehide nor cold-start recovery may create an uncommitted session');
+
+    await context.close();
+  } finally {
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
