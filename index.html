@@ -1661,9 +1661,12 @@ function _withPendingFocusCommitWrite(operationId, callback, allowCreate) {
       if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return false;
     }
   } catch (e) { return false; }
-  var persisted = timerRecord && timerRecord.pendingFocusCommit
-    ? timerRecord.pendingFocusCommit : null;
-  if (persisted) {
+  var hasPersistedJournal = !!timerRecord
+    && Object.prototype.hasOwnProperty.call(timerRecord, "pendingFocusCommit")
+    && timerRecord.pendingFocusCommit !== null
+    && timerRecord.pendingFocusCommit !== undefined;
+  var persisted = hasPersistedJournal ? timerRecord.pendingFocusCommit : null;
+  if (hasPersistedJournal) {
     if (!_validatePendingFocusCommit(persisted) || persisted.operationId !== operationId) return false;
   } else {
     if (allowCreate !== true || !_focusTimer || !_focusTimer.pendingFocusCommit
