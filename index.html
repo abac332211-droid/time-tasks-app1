@@ -11676,6 +11676,12 @@ function renderFocusSessionsCard() {
   html += '<div class="weekly-stat"><div class="weekly-stat-label">اليوم</div><div class="weekly-stat-value">' + todayStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(todayStats.totalSec) + '</div></div>';
   html += '<div class="weekly-stat"><div class="weekly-stat-label">هذا الأسبوع</div><div class="weekly-stat-value">' + weeklyStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(weeklyStats.totalSec) + '</div></div>';
   html += '</div>';
+  if (todayStats.breakCount > 0 || weeklyStats.breakCount > 0) {
+    html += '<div class="small" style="margin-top:8px;text-align:center;">الاستراحات — اليوم: '
+      + todayStats.breakCount + ' · ' + _formatDuration(todayStats.breakSec)
+      + ' | الأسبوع: ' + weeklyStats.breakCount + ' · ' + _formatDuration(weeklyStats.breakSec)
+      + '</div>';
+  }
 
   if (recent.length === 0) {
     html += '<div class="empty">لا جلسات بعد — ابدأ واحدة من مؤقت التركيز.</div>';
