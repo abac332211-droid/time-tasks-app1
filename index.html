@@ -3058,17 +3058,11 @@ function loadData(options) {
         return Math.max(max, (typeof t.id === 'number' && Number.isFinite(t.id)) ? t.id : 0);
       }, 0);
       if (!Number.isInteger(appSettings.lastTaskId) || appSettings.lastTaskId < _maxExistingId) {
+        // The next identifier is derived from the highest persisted task ID on
+        // every load. Keep the correction in memory here; the next normal
+        // saveData() persists it under the ordinary write gate. Startup/recovery
+        // must not perform an opportunistic main-record write from loadData().
         appSettings.lastTaskId = _maxExistingId;
-        try {
-          var _rawSync = localStorage.getItem(STORAGE_KEY);
-          if (_rawSync) {
-            var _dSync = JSON.parse(_rawSync);
-            if (_dSync && _dSync.settings) {
-              _dSync.settings.lastTaskId = _maxExistingId;
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(_dSync));
-            }
-          }
-        } catch (e2) {}
       }
     }
   } catch (e) {}
