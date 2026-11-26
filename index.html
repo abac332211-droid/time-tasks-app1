@@ -2171,7 +2171,6 @@ function cancelRecurringOccurrence(taskId) {
     "🚫 إلغاء هذه المهمة فقط",
     "سيُلغى هذا الموعد وحده، مع الاحتفاظ بسلسلة التكرار حتى تستمر مواعيدها المستقبلية. لن تُحذف المهمة أو سجل وقتها الفعلي. لإيقاف السلسلة كلها استخدم الخيار الآخر. هل تريد المتابعة؟",
     function() {
-      _runWithTaskStorageWriteLock(function() {
       var task = tasks.find(function(item) { return item && item.id === taskId; });
       if (!task || task.status === "cancelled") return;
       var previous = { status: task.status, completedAt: task.completedAt };
@@ -2186,7 +2185,6 @@ function cancelRecurringOccurrence(taskId) {
       if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
       renderAll();
       showToast("🚫 أُلغيت هذه المهمة فقط؛ ستستمر السلسلة في مواعيدها القادمة");
-      });
     }
   );
   return true;
@@ -2217,7 +2215,6 @@ function stopRecurringSeries(taskId) {
     "⛔ إيقاف سلسلة التكرار",
     "سيوقف هذا الإجراء إنشاء المهام المستقبلية لهذه السلسلة بالكامل، بما فيها النسخ المرتبطة. لن تُحذف المهام السابقة أو سجلاتها. لإلغاء هذا الموعد وحده استخدم زر «إلغاء هذه المهمة فقط». هل تريد إيقاف السلسلة؟",
     function() {
-      _runWithTaskStorageWriteLock(function() {
       var currentSelected = tasks.find(function(task) { return task && task.id === taskId; });
       var currentRoot = currentSelected ? resolveRoot(currentSelected) : null;
       if (!currentRoot || !currentRoot.recurrence) {
@@ -2235,7 +2232,6 @@ function stopRecurringSeries(taskId) {
       if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
       renderAll();
       showToast("⛔ أُوقفت سلسلة التكرار بالكامل؛ لم تُحذف المهام السابقة");
-      });
     }
   );
   return true;
@@ -3983,33 +3979,7 @@ function _recoverInterruptedReset(options) {
   }
 }
 
-function _runWithTaskStorageWriteLock(callback) {
-  if (typeof callback !== "function") return false;
-  function reportFailure(error) {
-    console.error("Task storage write could not acquire the shared transaction lock:", error);
-    showAlertModal("تعذر تأمين حفظ البيانات",
-      "لم تُحفظ العملية لأن القفل الحصري لبيانات المهام غير متاح. لم نكتب فوق بيانات أحدث؛ أعد المحاولة بعد تحديث الصفحة.");
-    return false;
-  }
-  if (typeof _stopwatchTransactionLockDepth === "number"
-      && _stopwatchTransactionLockDepth > 0) {
-    try {
-      var nestedResult = callback();
-      return nestedResult && typeof nestedResult.then === "function"
-        ? nestedResult.catch(reportFailure) : nestedResult;
-    } catch (error) {
-      return reportFailure(error);
-    }
-  }
-  return _withStopwatchTransactionLock(callback).catch(reportFailure);
-}
-
 function saveData() {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    console.error("saveData: refusing write without the shared exclusive Web Lock");
-    showToast("⚠️ أوقفنا الحفظ لأن القفل الحصري لبيانات المهام غير مملوك.");
-    return false;
-  }
   var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
     && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
@@ -4187,10 +4157,6 @@ function saveData() {
 }
 
 function toggleDarkMode() {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { toggleDarkMode(); });
-    return;
-  }
   var previousMode = appSettings.themeMode;
   var previousDark = appSettings.darkMode;
   appSettings.themeMode = appSettings.darkMode ? "light" : "dark";
@@ -4718,9 +4684,6 @@ function getOrCreateTodayLog() {
 }
 
 function persistDailyLog(log) {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    return _runWithTaskStorageWriteLock(function() { return persistDailyLog(log); });
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ جارٍ حفظ جلسة التركيز — انتظر لحظة قبل حفظ سجل اليوم");return false;
   }
@@ -5175,10 +5138,6 @@ function deleteMentalItem(id) {
 }
 
 function convertMentalItemToTask(id) {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { convertMentalItemToTask(id); });
-    return;
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -5827,10 +5786,6 @@ function openShutdownModal() {
 }
 
 function performShutdown() {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { performShutdown(); });
-    return;
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -5908,10 +5863,6 @@ function performShutdown() {
 /* ============ Tasks CRUD ============ */
 
 function saveTask() {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { saveTask(); });
-    return;
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6117,10 +6068,6 @@ function cancelEdit() {
 }
 
 function reviveTask(id) {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { reviveTask(id); });
-    return;
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6145,10 +6092,6 @@ function reviveTask(id) {
 }
 
 function toggleTask(id) {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { toggleTask(id); });
-    return;
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -6222,7 +6165,6 @@ function deleteTask(id) {
   }
 
   showConfirmModal("حذف المهمة", "هل أنت متأكد من حذف هذه المهمة نهائيًا؟", function() {
-      _runWithTaskStorageWriteLock(function() {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
@@ -6250,10 +6192,6 @@ function deleteTask(id) {
 }
 
 function quickAdd() {
-  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
-    _runWithTaskStorageWriteLock(function() { quickAdd(); });
-    return;
-  }
   if (typeof _isTaskWriteBlocked === "function" && _isTaskWriteBlocked()) {
     showToast("⏳ التطبيق في وضع القراءة فقط حتى يكتمل استرداد بيانات Stopwatch.");
     return;
@@ -13993,7 +13931,6 @@ function deleteProject(id) {
   var message = "سيتم حذف المشروع " +
     (linkedTasks.length ? "وفصل " + linkedTasks.length + " مهمة عنه. " : "") + "متابعة؟";
   showConfirmModal("🗑️ حذف المشروع", message, function() {
-      _runWithTaskStorageWriteLock(function() {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
