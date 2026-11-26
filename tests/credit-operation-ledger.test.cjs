@@ -302,3 +302,48 @@ test('ledger enforces its documented hard limit without trimming historical iden
   assert.equal(app._validateCreditOperationLedger(makeRows(10000)), true);
   assert.equal(app._validateCreditOperationLedger(makeRows(10001)), false);
 });
+
+
+test('durable operation identity survives eviction from the 500-row session display history', () => {
+  const app = context();
+  const ledger = [];
+
+  for (let index = 0; index < 501; index++) {
+    const operationId = 'a0000000-0000-4000-8000-' + index.toString(16).padStart(12, '0');
+    ledger.push(sessionOperation({
+      operationId,
+      sessionId: operationId,
+      revision: index + 1,
+      previousSeconds: index === 0 ? null : index,
+      targetSeconds: index + 1,
+      measuredSeconds: 1,
+      creditedSeconds: 1,
+      createdAt: new Date(Date.UTC(2026, 10, 26, 10, 0, index)).toISOString()
+    }));
+  }
+
+  const task = {
+    id: 1,
+    actualSeconds: 501,
+    actual: 8,
+    creditRevision: 501,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: ledger[500].operationId
+  };
+  const displaySessions = ledger.slice(-500).map(operation => ({
+    sessionId: operation.sessionId
+  }));
+
+  assert.equal(displaySessions.length, 500);
+  assert.equal(displaySessions.some(session => session.sessionId === ledger[0].sessionId), false,
+    'the oldest session is no longer in the bounded display history');
+  assert.equal(app._validateCreditOperationLedger(ledger, [task]), true,
+    'the independent durable ledger retains all 501 operation identities');
+  assert.equal(app._classifyCreditOperationAttempt(ledger, ledger[0]).status, 'duplicate',
+    'retrying the evicted session is still recognized as already applied');
+  assert.equal(app._classifyCreditOperationAttempt(ledger, {
+    ...ledger[0], measuredSeconds: 2, creditedSeconds: 2, targetSeconds: 2
+  }).status, 'conflict', 'the evicted identity cannot be reused with a different payload');
+  assert.equal(app._creditOperationLedgerPreservesHistory(ledger, ledger.slice(0, 500)), false,
+    'a backup that predates the latest accepted operation cannot roll the ledger back');
+});
