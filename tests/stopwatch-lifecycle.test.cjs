@@ -19,13 +19,13 @@ function extractFunction(name) {
   assert.ok(match, 'function ' + name + ' exists in index.html');
   const source = match[0];
   const helpers = [];
-  if (/\\b_isTaskStorageLockHeld\\s*\\(/.test(source)) {
+  if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
     helpers.push('function _isTaskStorageLockHeld() { return true; }');
   }
-  if (/\\b_withTaskStorageLock\\s*\\(/.test(source)) {
+  if (/\b_withTaskStorageLock\s*\(/.test(source)) {
     helpers.push('function _withTaskStorageLock(callback) { return callback(); }');
   }
-  return helpers.length ? helpers.concat(source).join('\\n') : source;
+  return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
 function createStopwatchSaveHarness(options = {}) {
