@@ -6627,8 +6627,10 @@ function _validateFocusSessionRecordV2(session) {
       && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
   if (session.clockTrust === "untrusted"
       && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
-        || session.creditSource !== "none")) return false;
+        || session.creditSource !== "none" || session.outcome !== "interrupted")) return false;
   if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
+  if ((session.phase !== "work" || session.taskId === null || session.taskId === undefined)
+      && session.creditSource !== "none") return false;
   return true;
 }
 
