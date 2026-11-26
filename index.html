@@ -7013,8 +7013,8 @@ function exportBackup() {
 function _restoreFocusTimerSnapshot(data, storage, storageKey) {
   // A V1 backup has no timer field; preserve the timer already stored on this device.
   if (!data || data.focusTimer === undefined || data.focusTimer === null) return;
-  if (storageKey === FOCUS_TIMER_KEY && typeof _isTaskStorageLockHeld === "function"
-      && !_isTaskStorageLockHeld()) {
+  if (typeof FOCUS_TIMER_KEY !== "undefined" && storageKey === FOCUS_TIMER_KEY
+      && typeof _isTaskStorageLockHeld === "function" && !_isTaskStorageLockHeld()) {
     throw new Error("Focus timer restore requires the shared Stopwatch Web Lock.");
   }
   storage.setItem(storageKey, JSON.stringify(data.focusTimer));
