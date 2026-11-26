@@ -26,7 +26,7 @@ function extractFunction(name) {
     'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0; }',
     'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
     match[0]
-  ].join('\\n');
+  ].join('\n');
 }
 
 test('inline application and service worker JavaScript parse', () => {
