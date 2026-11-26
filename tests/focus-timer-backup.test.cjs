@@ -1624,6 +1624,8 @@ test('extra settings survive import, app settings load, and the next ordinary sa
     storageRecoveryRequired: false,
     _mainStorageBaselineReady: false,
     _mainStorageExternalChangeObserved: false,
+    _stopwatchTransactionLockDepth: 1,
+    _isTaskStorageLockHeld: () => true,
     _mainStorageBaselineRaw: null,
     _setMainStorageBaseline(raw) {
       context._mainStorageBaselineRaw = raw;
