@@ -2643,6 +2643,28 @@ function _classifyCreditOperationAttempt(records, candidate) {
   return { status: "duplicate", record: existing };
 }
 
+function _creditOperationLedgerPreservesHistory(previousRecords, nextRecords) {
+  if (!_validateCreditOperationLedger(previousRecords)
+      || !_validateCreditOperationLedger(nextRecords)) return false;
+  var nextById = new Map();
+  for (var i = 0; i < nextRecords.length; i++) {
+    nextById.set(nextRecords[i].operationId, nextRecords[i]);
+  }
+  for (var p = 0; p < previousRecords.length; p++) {
+    var previous = previousRecords[p];
+    var next = nextById.get(previous.operationId);
+    if (!next) return false;
+    var keys = Object.keys(previous);
+    if (keys.length !== Object.keys(next).length) return false;
+    for (var k = 0; k < keys.length; k++) {
+      var key = keys[k];
+      if (!Object.prototype.hasOwnProperty.call(next, key)
+          || next[key] !== previous[key]) return false;
+    }
+  }
+  return true;
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -7843,10 +7865,11 @@ function showImportPreview(obj) {
               return false;
             }
           }
-          if (_existingCreditOperations.length > 0
-              && (d.creditOperations === undefined || d.creditOperations === null)) {
-            showAlertModal("الاستيراد يحتاج إلى سجل الاعتمادات",
-              "هذه النسخة أقدم من سجل هويات عمليات الرصيد الموجود على هذا الجهاز. رفضنا الاستيراد حتى لا نفقد دليل العمليات السابقة أو نفتح باب إعادة اعتماد جلسة قديمة.");
+          if (!_creditOperationLedgerPreservesHistory(
+              _existingCreditOperations,
+              Array.isArray(d.creditOperations) ? d.creditOperations : [])) {
+            showAlertModal("الاستيراد يتراجع عن سجل الاعتمادات",
+              "تحتوي النسخة على تاريخ أقدم أو معدل لهويات عمليات الرصيد على هذا الجهاز. رفضنا الاستيراد حتى لا تُمحى هويات عمليات سبق اعتمادها أو يُعاد تشغيل جلسة قديمة.");
             return false;
           }
         const settings = d.settings || {};
