@@ -2149,3 +2149,40 @@ test('import permits a valid append-only extension while retaining every accepte
   assert.equal(harness.reloads(), 1);
   assert.deepEqual(harness.alerts, []);
 });
+
+
+test('import keeps deleted-task IDs reserved when its durable credit history is retained', () => {
+  const fixture = creditLedgerImportFixture();
+  const historicalOperation = {
+    ...fixture.operation,
+    taskId: 900
+  };
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 4 },
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: [historicalOperation]
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 4 },
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: [historicalOperation]
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
+  assert.equal(restored.tasks.length, 0,
+    'the task may be deleted while its operation identity remains durable');
+  assert.equal(restored.creditOperations[0].taskId, 900);
+  assert.equal(restored.settings.lastTaskId, 900,
+    'the imported high-water mark must include IDs present only in the ledger');
+
+  const idSandbox = { appSettings: restored.settings, tasks: [] };
+  vm.runInNewContext(extractTopLevelSource('getNextTaskId'), idSandbox);
+  assert.equal(idSandbox.getNextTaskId(), 901,
+    'the next task ID must not reuse a deleted task ID owned by credit history');
+  assert.deepEqual(harness.alerts, []);
+});
