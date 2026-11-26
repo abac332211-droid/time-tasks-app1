@@ -12985,6 +12985,13 @@ function _commitFocusTaskSession(p) {
 
 function _commitFocusTaskSessionLocked(p) {
   if(!p||!p.snapshot||!_stopwatchTransactionLockDepth)return false;
+  if (_hasPersistedPendingFocusCommit()
+      || (_focusTimer && _focusTimer.pendingFocusCommit)) {
+    storageRecoveryRequired = true;
+    showAlertModal("معاملة اعتماد أخرى قيد الاسترداد",
+      "لم نبدأ حفظ جلسة Stopwatch القديمة لأن سجل اعتماد جلسة V2 ما زال معلقًا.");
+    return false;
+  }
   var s=p.snapshot,taskId=p.taskId===undefined?s.taskId:p.taskId;
   var minutes=p.minutesToAdd,completed=p.completed!==false;
   if(!_focusTimerSnapshotMatchesState(s)||s.running!==false||!Number.isInteger(s.baseElapsed)||s.baseElapsed<60
@@ -13159,10 +13166,17 @@ function _assertCreditMigrationReady() {
           && timerRecord.pendingStopwatchTransaction !== null
           && timerRecord.pendingStopwatchTransaction !== undefined)
         return { ok:false, reason:"pending_legacy_transaction" };
+      if (Object.prototype.hasOwnProperty.call(timerRecord, "pendingFocusCommit")
+          && timerRecord.pendingFocusCommit !== null
+          && timerRecord.pendingFocusCommit !== undefined)
+        return { ok:false, reason:"pending_focus_commit" };
     }
     if (_focusTimer && _focusTimer.pendingStopwatchTransaction !== null
         && _focusTimer.pendingStopwatchTransaction !== undefined)
       return { ok:false, reason:"pending_memory_transaction" };
+    if (_focusTimer && _focusTimer.pendingFocusCommit !== null
+        && _focusTimer.pendingFocusCommit !== undefined)
+      return { ok:false, reason:"pending_memory_focus_commit" };
 
     // The credit migration changes task records, so the main task collection
     // must be as fresh and verified as the timer collection before the gate opens.
@@ -13222,6 +13236,11 @@ function _validatePendingStopwatchTransaction(tx) {
 }
 
 function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
+  if (_hasPersistedPendingFocusCommit()
+      || (_focusTimer && _focusTimer.pendingFocusCommit)) {
+    storageRecoveryRequired = true;
+    return false;
+  }
   var tx=_focusTimer&&_focusTimer.pendingStopwatchTransaction;
   if(!tx)return true;
   if(!_stopwatchTransactionLockDepth){storageRecoveryRequired=true;showAlertModal("تعذر تأمين استرداد الجلسة","يجب تنفيذ الاسترداد داخل قفل النوافذ الحصري.");return false;}
@@ -14263,6 +14282,10 @@ function _recoverPendingStopwatchSaveFromStartup(expectedTx, bootPersistedGenera
   if (lockedProbe.error) {
     storageRecoveryRequired = true;
     return { ok: false, reason: "locked_probe_failed" };
+  }
+  if (lockedProbe.expectedFocusCommit) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "v2_focus_commit_requires_dedicated_recovery" };
   }
   var initialProbe = probeSnapshot || lockedProbe;
   if (JSON.stringify(lockedProbe.markerValues) !== JSON.stringify(initialProbe.markerValues)) {
@@ -15851,6 +15874,16 @@ function _completeNormalStartupInit(options) {
   if (!opts.focusStateAlreadyLoaded) {
     _loadFocusTimer();
     _loadFocusSettings();
+  }
+  if (!storageRecoveryRequired && _focusTimer.pendingFocusCommit) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    showAlertModal("استرداد اعتماد جلسة مطلوب",
+      "ظهر سجل اعتماد جلسة معلّق بعد الفحص الأولي. لم يبدأ التطبيق الكتابة؛ أعد محاولة استرداد التخزين.");
+    renderAll();
+    _renderFocusTimer();
+    return false;
   }
   if (!storageRecoveryRequired && _focusTimer.pendingStopwatchTransaction) {
     storageRecoveryRequired = true;
