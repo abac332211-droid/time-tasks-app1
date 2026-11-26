@@ -2434,6 +2434,17 @@ function getNextTaskId() {
   return next;
 }
 
+// Deleted tasks may still own immutable credit-operation history. Their IDs
+// remain reserved so a later import/startup cannot recycle an identity-bearing ID.
+function _getHighestCreditOperationTaskId(operations) {
+  if (!Array.isArray(operations)) return 0;
+  return operations.reduce(function(max, operation) {
+    return Math.max(max,
+      operation && Number.isSafeInteger(operation.taskId) && operation.taskId > 0
+        ? operation.taskId : 0);
+  }, 0);
+}
+
 function generateUniqueTaskId(existingIds) {
   let id = Date.now();
   while (existingIds.has(id)) id++;
@@ -3142,6 +3153,7 @@ function _setupSystemThemeListener() {
 function loadData(options) {
   var opts = options || {};
   var keepRecoveryLock = opts.keepRecoveryLock === true;
+  var _maxCreditOperationTaskId = 0;
   var loadOwnsStopwatchLock = typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (!loadOwnsStopwatchLock) {
@@ -3222,6 +3234,7 @@ function loadData(options) {
     if (data && Array.isArray(data.tasks)) _healTaskArray(data.tasks);
     if (data && validateV2(data)) {
       tasks = data.tasks;
+      _maxCreditOperationTaskId = _getHighestCreditOperationTaskId(data.creditOperations);
       _loadAppSettings(data.settings || {});
       createdByVersion = data.createdByVersion || APP_VERSION;
       _applyThemePreference();
@@ -3235,10 +3248,10 @@ function loadData(options) {
   }
 
   try {
-    if (tasks.length > 0) {
-      var _maxExistingId = tasks.reduce(function(max, t) {
+    if (tasks.length > 0 || _maxCreditOperationTaskId > 0) {
+      var _maxExistingId = Math.max(_maxCreditOperationTaskId, tasks.reduce(function(max, t) {
         return Math.max(max, (typeof t.id === 'number' && Number.isFinite(t.id)) ? t.id : 0);
-      }, 0);
+      }, 0));
       if (!Number.isInteger(appSettings.lastTaskId) || appSettings.lastTaskId < _maxExistingId) {
         // The next identifier is derived from the highest persisted task ID on
         // every load. Keep the correction in memory here; the next normal
@@ -7873,9 +7886,12 @@ function showImportPreview(obj) {
             return false;
           }
         const settings = d.settings || {};
-        const maxTaskId = d.tasks.reduce(function(max, task) {
-          return Math.max(max, Number.isFinite(task && task.id) ? task.id : 0);
-        }, 0);
+        const maxTaskId = Math.max(
+          d.tasks.reduce(function(max, task) {
+            return Math.max(max, Number.isFinite(task && task.id) ? task.id : 0);
+          }, 0),
+          _getHighestCreditOperationTaskId(d.creditOperations)
+        );
         const importedFirstUseDate = (typeof settings.firstUseDate === "string" && isValidCalendarDate(settings.firstUseDate))
           ? settings.firstUseDate : todayStr();
         const importedDayStart = Number.isInteger(settings.operationalDayStart)
