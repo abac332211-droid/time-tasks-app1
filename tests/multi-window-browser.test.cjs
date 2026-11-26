@@ -2905,6 +2905,45 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
     assert.equal(committed.timer.pendingFocusCommit, null);
     assert.equal(committed.timer.baseElapsed, 0);
 
+    // Editing an already-migrated task must append manual_adjustment operations
+    // through the ordinary saveData path, preserving null as distinct from zero.
+    const manualAdjustmentsSaved = await pageA.evaluate(async () =>
+      _withStopwatchTransactionLock(async () => {
+        tasks[0].actual = 20;
+        const toTwentyMinutes = saveData();
+        tasks[0].actual = null;
+        const toNull = saveData();
+        tasks[0].actual = 0;
+        const toZero = saveData();
+        return [toTwentyMinutes, toNull, toZero];
+      })
+    );
+    assert.deepEqual(manualAdjustmentsSaved, [true, true, true]);
+    const adjusted = await pageA.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      return { task: main.tasks[0], operations: main.creditOperations };
+    });
+    assert.equal(adjusted.task.actualSeconds, 0);
+    assert.equal(adjusted.task.actual, 0);
+    assert.equal(adjusted.task.creditRevision, 4);
+    assert.equal(adjusted.operations.length, 4);
+    assert.deepEqual(adjusted.operations.slice(1).map(operation => ({
+      kind: operation.kind,
+      source: operation.source,
+      previousSeconds: operation.previousSeconds,
+      targetSeconds: operation.targetSeconds,
+      revision: operation.revision,
+      sessionId: operation.sessionId
+    })), [
+      { kind: 'manual_adjustment', source: 'manual_adjustment',
+        previousSeconds: 1020, targetSeconds: 1200, revision: 2, sessionId: null },
+      { kind: 'manual_adjustment', source: 'manual_adjustment',
+        previousSeconds: 1200, targetSeconds: null, revision: 3, sessionId: null },
+      { kind: 'manual_adjustment', source: 'manual_adjustment',
+        previousSeconds: null, targetSeconds: 0, revision: 4, sessionId: null }
+    ]);
+    assert.equal(adjusted.task.lastCreditOperationId, adjusted.operations[3].operationId);
+
     // Reload a different same-origin window that held the pre-commit snapshot.
     await pageB.reload({ waitUntil: 'domcontentloaded' });
     await waitForSafeStartup(pageB, 'V2 committed task after second-window reload');
@@ -2922,13 +2961,13 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
       };
     });
     assert.deepEqual(afterReload, {
-      actualSeconds: 1020,
-      actual: 17,
-      revision: 1,
-      operationCount: 1,
+      actualSeconds: 0,
+      actual: 0,
+      revision: 4,
+      operationCount: 4,
       sessionCount: 1,
       pending: null
-    }, 'cold reload must not replay a completed operation or duplicate its V2 session');
+    }, 'cold reload must preserve session and manual-adjustment identities without duplicate effects');
   } finally {
     if (context) await context.close();
     if (browser) await browser.close();
