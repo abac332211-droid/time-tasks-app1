@@ -902,7 +902,7 @@ test('task credit retains seconds across multiple short Pomodoro sessions', () =
     pendingPhaseEndedAt: null, clockAdjusted: false, nativeSessionToken: null
   };
   const snapshotB = { ...snapshotA, baseElapsed: 82, sessionStartAt: startedAtMs + 600000 };
-  const sandbox = {};
+  const sandbox = { POMODORO_WORK_SEC: 25 * 60 };
   vm.runInNewContext(extractFunction('_buildPendingFocusSessionFields'), sandbox);
   const a = sandbox._buildPendingFocusSessionFields(snapshotA, { id: 7, name: 'Task' }, 1, true);
   const b = sandbox._buildPendingFocusSessionFields(snapshotB, { id: 7, name: 'Task' }, 1, true);
