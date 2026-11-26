@@ -1126,6 +1126,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'timeTasksApp_rollingRestoreInProgress',
     MIGRATION_IN_PROGRESS_KEY: 'timeTasksApp_migrationInProgress',
     _stopwatchTransactionLockDepth: 1,
+    _isTaskStorageLockHeld: () => sandbox._stopwatchTransactionLockDepth > 0,
     _withStopwatchTransactionLock(callback) {
       const previousDepth = sandbox._stopwatchTransactionLockDepth;
       sandbox._stopwatchTransactionLockDepth = previousDepth + 1;
