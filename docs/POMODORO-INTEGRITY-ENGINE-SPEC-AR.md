@@ -28,13 +28,13 @@
 
 | الموضع | الملاحظة عند خط الأساس |
 |---|---|
-| [`_validateFocusSessionRecord`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L6540) | يشترط توافق الفاصل المدني بين البداية والنهاية مع المدة المسجلة، ويرفض النهاية الأسبق من البداية. |
-| [`_logSession`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L11213) | قد يصحح وقت النهاية حسابياً عندما لا يوافق المدة. |
-| [`_catchUp`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L10274) | يسجل بعض انتقالات Pomodoro مباشرة دون المرور بمعاملة اعتماد رصيد المهمة. |
-| [`_todaySessionsStats` و`_weeklySessionsStats`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L11322) | يجمعان السجلات دون فصل مراحل العمل عن الاستراحات. |
-| [`_commitFocusTaskSessionLocked`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L12048) | معاملة Stopwatch الحالية تحدث `actual` بالدقائق، ولها قيود توافق خاصة بها. |
-| [`_withStopwatchTransactionLock`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L12280) | يوجد قفل Web Locks حصري يمكن إعادة استخدامه؛ لا يجوز إنشاء قفل مستقل لـ Pomodoro. |
-| [تعديل المهمة في `saveTask`](../blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L5930) | يكتب الوقت الفعلي إلى `actual` مباشرة. توجد مسارات أخرى لتغيير `actual` ويجب جردها كلها. |
+| [`_validateFocusSessionRecord`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L6540) | يشترط توافق الفاصل المدني بين البداية والنهاية مع المدة المسجلة، ويرفض النهاية الأسبق من البداية. |
+| [`_logSession`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L11213) | قد يصحح وقت النهاية حسابياً عندما لا يوافق المدة. |
+| [`_catchUp`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L10274) | يسجل بعض انتقالات Pomodoro مباشرة دون المرور بمعاملة اعتماد رصيد المهمة. |
+| [`_todaySessionsStats` و`_weeklySessionsStats`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L11322) | يجمعان السجلات دون فصل مراحل العمل عن الاستراحات. |
+| [`_commitFocusTaskSessionLocked`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L12048) | معاملة Stopwatch الحالية تحدث `actual` بالدقائق، ولها قيود توافق خاصة بها. |
+| [`_withStopwatchTransactionLock`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L12280) | يوجد قفل Web Locks حصري يمكن إعادة استخدامه؛ لا يجوز إنشاء قفل مستقل لـ Pomodoro. |
+| [تعديل المهمة في `saveTask`](https://github.com/abac332211-droid/time-tasks-app1/blob/da56e3b4bca3902aae11543178815ec7819e251f/index.html#L5930) | يكتب الوقت الفعلي إلى `actual` مباشرة. توجد مسارات أخرى لتغيير `actual` ويجب جردها كلها. |
 
 يجب إعادة التحقق من هذه المواضع عند بدء التنفيذ؛ فأي تغيير لاحق في المصدر يتقدم على هذا الوصف.
 
