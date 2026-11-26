@@ -580,8 +580,8 @@ function creditWriterContext(task, operations, journal) {
     storageRecoveryRequired: false,
     tasks: JSON.parse(JSON.stringify(main.tasks)),
     console: { error() {}, warn() {}, log() {} },
-    isValidCalendarDate: value => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
-    isValidLocalTime: value => value === '' || /^\\d{2}:\\d{2}$/.test(value),
+    isValidCalendarDate: value => /^\d{4}-\d{2}-\d{2}$/.test(value),
+    isValidLocalTime: value => value === '' || /^\d{2}:\d{2}$/.test(value),
     isValidLocalDateTime: value => typeof value === 'string' && Number.isFinite(Date.parse(value)),
     validateDailyLog: () => true,
     _isTaskStorageLockHeld: () => true,
@@ -616,7 +616,7 @@ function creditWriterContext(task, operations, journal) {
     extractFunction('_pendingFocusTaskMatchesCreditSnapshot'),
     extractFunction('_focusCommitDeepEqual'),
     extractFunction('_writePendingFocusCommitCredit')
-  ].join('\\n');
+  ].join('\n');
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox);
   return {
