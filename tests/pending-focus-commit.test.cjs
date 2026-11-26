@@ -458,3 +458,74 @@ test('the first pending focus journal write requires a validated in-memory inten
   const invalid = pendingFocusOwnerContext({ persisted: false, valid: false });
   assert.equal(invalid._withPendingFocusCommitWrite(operationId, () => true, true), false);
 });
+
+
+function startupProbeContext(timerRecord) {
+  const stored = new Map([
+    ['timer', JSON.stringify(timerRecord)],
+    ['main', JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] })]
+  ]);
+  const sandbox = {
+    RESET_IN_PROGRESS_KEY: 'reset',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling',
+    IMPORT_IN_PROGRESS_KEY: 'import',
+    MIGRATION_IN_PROGRESS_KEY: 'migration',
+    FOCUS_TIMER_KEY: 'timer',
+    STORAGE_KEY: 'main',
+    CURRENT_SCHEMA_VERSION: 2,
+    localStorage: {
+      getItem(key) {
+        return stored.has(key) ? stored.get(key) : null;
+      }
+    },
+    _readPersistedRollingBackupGeneration: () => 4,
+    _validatePendingStopwatchTransaction: () => true,
+    validateV2: () => true
+  };
+  vm.runInNewContext([
+    extractFunction('_parseStrictFocusSessionTimestamp'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_validateFocusSessionRecordV2'),
+    extractFunction('_validatePendingFocusTimerProjection'),
+    extractFunction('_validatePendingFocusCreditSnapshot'),
+    extractFunction('_validatePendingFocusCommit'),
+    extractFunction('_probeStartupStopwatchRecovery')
+  ].join('\n'), sandbox);
+  return sandbox;
+}
+
+test('startup probe recognizes a valid pending focus commit before normal storage loading', () => {
+  const journal = validPendingFocusCommit();
+  const app = startupProbeContext({
+    mode: 'stopwatch',
+    running: false,
+    pendingStopwatchTransaction: null,
+    pendingFocusCommit: journal
+  });
+  const result = app._probeStartupStopwatchRecovery();
+  assert.equal(result.error, null);
+  assert.equal(result.pending, true);
+  assert.deepEqual(result.expectedFocusCommit, journal);
+  assert.equal(result.expectedTx, null);
+  assert.equal(result.mainData.schemaVersion, 2);
+});
+
+test('startup probe fails closed on corrupt or overlapping focus journals', () => {
+  const corrupt = validPendingFocusCommit({ stage: 'unknown-stage' });
+  const corruptResult = startupProbeContext({
+    mode: 'stopwatch',
+    running: false,
+    pendingFocusCommit: corrupt
+  })._probeStartupStopwatchRecovery();
+  assert.equal(corruptResult.pending, true);
+  assert.ok(corruptResult.error);
+
+  const overlapResult = startupProbeContext({
+    mode: 'stopwatch',
+    running: false,
+    pendingStopwatchTransaction: { version: 1 },
+    pendingFocusCommit: validPendingFocusCommit()
+  })._probeStartupStopwatchRecovery();
+  assert.equal(overlapResult.pending, true);
+  assert.match(overlapResult.error, /متداخلتان/);
+});
