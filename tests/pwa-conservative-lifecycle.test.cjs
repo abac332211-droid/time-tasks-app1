@@ -20,7 +20,7 @@ function extractFunction(name) {
   return match[0];
 }
 
-function createHarness({ saveOk = true, native = false, lockAvailable = true } = {}) {
+function createHarness({ saveOk = true, nativeClock = false, lockAvailable = true } = {}) {
   let lockDepth = 0;
   const writes = [];
   const events = [];
@@ -37,7 +37,7 @@ function createHarness({ saveOk = true, native = false, lockAvailable = true } =
     awaitingConfirmation: false,
     pendingPhaseEndedAt: null,
     clockAdjusted: false,
-    nativeClockActive: false,
+    nativeClockActive: nativeClock,
     nativeRestorePending: false
   };
 
@@ -140,7 +140,7 @@ test('lock acquisition failure does not write outside the lock and keeps the in-
 });
 
 test('native Android timer is not paused by the PWA lifecycle policy', async () => {
-  const h = createHarness({ native: true });
+  const h = createHarness({ nativeClock: true });
   const result = await h.api.pause('visibilitychange-hidden');
 
   assert.equal(result, false);
