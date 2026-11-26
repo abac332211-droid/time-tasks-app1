@@ -2191,7 +2191,7 @@ test('import keeps deleted-task IDs reserved when its durable credit history is 
 
 function buildBackupForCreditLedgerTest(mainRecord) {
   const sourceStart = html.indexOf('function buildBackupObject(');
-  const sourceEnd = html.indexOf('\\n}', sourceStart);
+  const sourceEnd = html.indexOf('\n}', sourceStart);
   assert.notEqual(sourceStart, -1);
   assert.notEqual(sourceEnd, -1);
   const context = {
