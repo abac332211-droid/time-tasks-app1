@@ -135,3 +135,30 @@ test('focus timer import restore is guarded by shared lock ownership', () => {
   assert.match(extractFunction('_restoreFocusTimerSnapshot'), /_isTaskStorageLockHeld/);
   assert.match(extractFunction('_restoreStorageSnapshot'), /_stopwatchTransactionLockDepth/);
 });
+
+
+test('linkTimerToTask rolls back its in-memory task ID when persistence fails', () => {
+  const alerts = [];
+  let renders = 0;
+  const timer = { running: false, baseElapsed: 0, taskId: 4 };
+  const sandbox = {
+    _focusTimer: timer,
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock(callback) { return callback(); },
+    _isTimerControlBlocked: () => false,
+    _isFocusCommitBlocked: () => false,
+    _saveFocusTimer: () => false,
+    _renderFocusTimer() { renders++; },
+    _formatDuration: String,
+    showToast() {},
+    showAlertModal(...args) { alerts.push(args); }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction('linkTimerToTask'), sandbox);
+
+  assert.equal(sandbox.linkTimerToTask(7), false);
+  assert.equal(timer.taskId, 4, 'failed save must not leave a different task linked in memory');
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0][0], /تعذر تغيير ربط المهمة/);
+  assert.equal(renders, 1);
+});
