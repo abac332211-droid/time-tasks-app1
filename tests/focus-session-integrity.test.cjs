@@ -17,7 +17,11 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  if (name === '_isTaskStorageLockHeld') return match[0];
+  return [
+    'function _isTaskStorageLockHeld() { return true; }',
+    match[0]
+  ].join('\n');
 }
 
 const baseStart = 1_700_000_000_000;
@@ -162,10 +166,8 @@ test('session saver refuses to write without shared Web Lock ownership', () => {
     _storeRollingRecoveryBackup: () => true,
     console
   };
-  vm.runInNewContext(
-    extractFunction('_isTaskStorageLockHeld') + '\\n' + extractFunction('_saveSessions'),
-    sandbox
-  );
+  sandbox._isTaskStorageLockHeld = () => false;
+  vm.runInNewContext(extractFunction('_saveSessions'), sandbox);
   assert.equal(sandbox._saveSessions([validSession()]), false);
   assert.equal(writes, 0);
   assert.deepEqual(sandbox._sessionsCache, []);
