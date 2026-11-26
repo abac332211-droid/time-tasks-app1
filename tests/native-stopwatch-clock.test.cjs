@@ -228,7 +228,8 @@ test('a manual pause and its following resume use distinct foreground-service to
     showAlertModal() {}
   };
   vm.runInNewContext(
-    [extractFunction('_isNativeStopwatchUuid'), extractFunction('toggleTimer')].join('\n'),
+    [extractFunction('_isNativeStopwatchUuid'), extractFunction('_scheduleNativeStopwatchClockAttach'),
+      extractFunction('toggleTimer')].join('\n'),
     sandbox
   );
 
