@@ -5,7 +5,7 @@ on:
   push:
     branches: [main, codex/v2.9.0-stability, codex/v2.9.1-stability, codex/v2.9.1-stopwatch-integrity-fix, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1]
   pull_request:
-    branches: [codex/v2.9.1-stability, codex/pomodoro-storage-gates-pwa-integration]
+    branches: [codex/v2.9.1-stability, codex/pomodoro-storage-gates-pwa-integration, codex/pomodoro-credit-schema-v2]
 
 permissions:
   contents: read
