@@ -99,7 +99,7 @@ test('stored V2 validation and backup validation both enforce the same task-cred
   const valid = creditTask();
   assert.equal(app.validateV2({ schemaVersion: 2, tasks: [valid], dailyLogs: [] }), true);
   assert.equal(app.validateV2({
-    schemaVersion: 2, tasks: [creditTask({ actualSeconds: 1500, actual: 25 })], dailyLogs: []
+    schemaVersion: 2, tasks: [creditTask({ actualSeconds: 1560, actual: 25 })], dailyLogs: []
   }), false);
   const backup = {
     backupFormatVersion: 1,
