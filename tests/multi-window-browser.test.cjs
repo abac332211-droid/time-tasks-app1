@@ -2301,8 +2301,11 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     }));
     assert.equal(hiddenCheckpoint.timer.baseElapsed, firstStart.timer.baseElapsed,
       'hiding must close at the last saved whole-second checkpoint');
-    assert.equal(hiddenCheckpoint.timer.elapsedRemainderMs, firstStart.timer.elapsedRemainderMs,
-      'hiding must preserve only the last saved sub-second remainder');
+    assert.equal(hiddenCheckpoint.timer.elapsedRemainderMs, Math.floor(firstStart.timer.elapsedRemainderMs),
+      'hiding must retain the last saved remainder at the storage precision of whole milliseconds');
+    assert.ok(firstStart.timer.elapsedRemainderMs - hiddenCheckpoint.timer.elapsedRemainderMs >= 0
+      && firstStart.timer.elapsedRemainderMs - hiddenCheckpoint.timer.elapsedRemainderMs < 1,
+    'hiding may discard only a fractional millisecond, never an additional millisecond');
     assert.equal(hiddenCheckpoint.timer.phase, firstStart.timer.phase);
     assert.equal(hiddenCheckpoint.sessions.length, firstStart.sessionCount,
       'hiding must not create or credit a session');
@@ -2334,7 +2337,9 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     );
     assert.equal(afterPageHide.baseElapsed, secondStart.timer.baseElapsed,
       'pagehide must persist the same last trusted checkpoint');
-    assert.equal(afterPageHide.elapsedRemainderMs, secondStart.timer.elapsedRemainderMs);
+    assert.equal(afterPageHide.elapsedRemainderMs, Math.floor(secondStart.timer.elapsedRemainderMs));
+    assert.ok(secondStart.timer.elapsedRemainderMs - afterPageHide.elapsedRemainderMs >= 0
+      && secondStart.timer.elapsedRemainderMs - afterPageHide.elapsedRemainderMs < 1);
 
     await page.evaluate(() => {
       window.__testVisibilityState = 'visible';
@@ -2387,7 +2392,10 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
       'cold-start normalization must not continue a segment whose pagehide write failed');
     assert.equal(afterColdStart.timer.baseElapsed, thirdStart.timer.baseElapsed,
       'cold start must retain the durable checkpoint and discard the unverified hidden interval');
-    assert.equal(afterColdStart.timer.elapsedRemainderMs, thirdStart.timer.elapsedRemainderMs);
+    assert.equal(afterColdStart.timer.elapsedRemainderMs, Math.floor(thirdStart.timer.elapsedRemainderMs));
+    assert.ok(thirdStart.timer.elapsedRemainderMs - afterColdStart.timer.elapsedRemainderMs >= 0
+      && thirdStart.timer.elapsedRemainderMs - afterColdStart.timer.elapsedRemainderMs < 1,
+    'cold start may discard only the sub-millisecond fraction of the last checkpoint');
     assert.equal(afterColdStart.sessions.length, thirdStart.sessionCount,
       'neither failed pagehide nor cold-start recovery may create an uncommitted session');
 
