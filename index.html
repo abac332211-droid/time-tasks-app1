@@ -4658,8 +4658,16 @@ function saveData() {
       }
       if (previousHasCredit !== nextHasCredit) return false;
       if (!previousHasCredit) continue;
-      if (!_validateTaskCreditFields(previousTask) || !_validateTaskCreditFields(nextTask))
-        return false;
+      if (!_validateTaskCreditFields(previousTask)) return false;
+      // The editor changes the minute field before saveData derives the
+      // corresponding seconds value. Validate the durable fields separately
+      // from that intentionally transient display-field mismatch.
+      var nextTaskCreditValidation = Object.assign({}, nextTask);
+      nextTaskCreditValidation.actual = nextTask.actualSeconds === null
+        ? null
+        : (Number.isSafeInteger(nextTask.actualSeconds) && nextTask.actualSeconds >= 0
+            ? Math.floor(nextTask.actualSeconds / 60) : NaN);
+      if (!_validateTaskCreditFields(nextTaskCreditValidation)) return false;
       if (nextTask.creditRevision !== previousTask.creditRevision
           || nextTask.creditSchemaVersion !== previousTask.creditSchemaVersion
           || nextTask.lastCreditOperationId !== previousTask.lastCreditOperationId)

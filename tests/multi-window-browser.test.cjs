@@ -2929,36 +2929,18 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
 
     // Editing an already-migrated task must append manual_adjustment operations
     // through the ordinary saveData path, preserving null as distinct from zero.
-    const manualAdjustmentDiagnostics = await pageA.evaluate(async () =>
+    const manualAdjustmentsSaved = await pageA.evaluate(async () =>
       _withStopwatchTransactionLock(async () => {
-        const results = [];
-        for (const value of [20, null, 0]) {
-          tasks[0].actual = value;
-          const ok = saveData();
-          results.push({
-            ok,
-            task: JSON.parse(JSON.stringify(tasks[0])),
-            persistedTask: JSON.parse(localStorage.getItem(STORAGE_KEY)).tasks[0],
-            alertTitle: document.getElementById('modalTitle')?.textContent || '',
-            alertBody: document.getElementById('modalBody')?.textContent || ''
-          });
-        }
-        return {
-          results,
-          storageRecoveryRequired,
-          baselineMatches: localStorage.getItem(STORAGE_KEY) === _mainStorageBaselineRaw,
-          mainBaselineReady: _mainStorageBaselineReady,
-          mainExternalChange: _mainStorageExternalChangeObserved,
-          storageWriteAllowed: _storageWriteAllowed(),
-          taskWriteBlocked: _isTaskWriteBlocked(),
-          focusWriteBlocked: _isFocusCommitBlocked(),
-          pendingStopwatchWriteAllowed: _pendingStopwatchWriteAllowed(),
-          rollingBackupFailure: _rollingRecoveryBackupLastFailure
-        };
+        tasks[0].actual = 20;
+        const toTwentyMinutes = saveData();
+        tasks[0].actual = null;
+        const toNull = saveData();
+        tasks[0].actual = 0;
+        const toZero = saveData();
+        return [toTwentyMinutes, toNull, toZero];
       })
     );
-    assert.deepEqual(manualAdjustmentDiagnostics.results.map(row => row.ok), [true, true, true],
-      JSON.stringify(manualAdjustmentDiagnostics));
+    assert.deepEqual(manualAdjustmentsSaved, [true, true, true]);
     const adjusted = await pageA.evaluate(() => {
       const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
       return { task: main.tasks[0], operations: main.creditOperations };
