@@ -2005,3 +2005,147 @@ test('import refuses to proceed when rollback snapshot or marker readback cannot
     assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_TIMER), 'previous-timer');
   }
 });
+
+
+function creditLedgerImportFixture() {
+  const operationId = '123e4567-e89b-42d3-a456-426614174000';
+  const operation = {
+    recordVersion: 1,
+    operationId,
+    kind: 'session',
+    taskId: 1,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 120,
+    measuredSeconds: 120,
+    creditedSeconds: 120,
+    source: 'measured',
+    sessionId: operationId,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  const task = {
+    id: 1,
+    name: 'مهمة ذات رصيد',
+    status: 'pending',
+    type: 'معرفية',
+    expected: 30,
+    actual: 2,
+    plannedDate: '2026-11-26',
+    plannedTime: '',
+    completedAt: null,
+    createdAt: 1,
+    actualSeconds: 120,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operationId
+  };
+  return { operation, task };
+}
+
+test('import rejects a backup that removes an accepted credit identity before writing any collection', () => {
+  const fixture = creditLedgerImportFixture();
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [fixture.operation]
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 1 },
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: []
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify(existingMain));
+  assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_SESSIONS), 'previous-sessions');
+  assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_TIMER), 'previous-timer');
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+  assert.equal(harness.rollingCheckpoints.length, 0);
+  assert.equal(harness.reloads(), 0);
+  assert.equal(harness.alerts.length, 1);
+  assert.match(harness.alerts[0][0], /الاستيراد يتراجع عن سجل الاعتمادات/);
+});
+
+test('import rejects a valid-looking rewrite of an existing operation identity', () => {
+  const fixture = creditLedgerImportFixture();
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [fixture.operation]
+  };
+  const rewrittenOperation = {
+    ...fixture.operation,
+    createdAt: '2026-11-26T10:01:00.000Z'
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [rewrittenOperation]
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify(existingMain));
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+  assert.equal(harness.rollingCheckpoints.length, 0);
+  assert.equal(harness.reloads(), 0);
+  assert.equal(harness.alerts.length, 1);
+  assert.match(harness.alerts[0][0], /الاستيراد يتراجع عن سجل الاعتمادات/);
+});
+
+test('import permits a valid append-only extension while retaining every accepted credit identity', () => {
+  const fixture = creditLedgerImportFixture();
+  const secondId = '223e4567-e89b-42d3-a456-426614174001';
+  const secondOperation = {
+    recordVersion: 1,
+    operationId: secondId,
+    kind: 'session',
+    taskId: 1,
+    revision: 2,
+    previousSeconds: 120,
+    targetSeconds: 180,
+    measuredSeconds: 60,
+    creditedSeconds: 60,
+    source: 'measured',
+    sessionId: secondId,
+    createdAt: '2026-11-26T10:05:00.000Z'
+  };
+  const importedTask = {
+    ...fixture.task,
+    actual: 3,
+    actualSeconds: 180,
+    creditRevision: 2,
+    lastCreditOperationId: secondId
+  };
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [fixture.operation]
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 1 },
+    tasks: [importedTask],
+    dailyLogs: [],
+    creditOperations: [fixture.operation, secondOperation]
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
+  assert.equal(restored.tasks[0].actualSeconds, 180);
+  assert.equal(restored.tasks[0].creditRevision, 2);
+  assert.equal(restored.tasks[0].lastCreditOperationId, secondId);
+  assert.deepEqual(restored.creditOperations, [fixture.operation, secondOperation]);
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+  assert.equal(harness.reloads(), 1);
+  assert.deepEqual(harness.alerts, []);
+});
