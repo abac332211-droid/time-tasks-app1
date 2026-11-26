@@ -290,8 +290,15 @@ test('retrying an older operation after a newer one remains a duplicate, not a n
     ...second, taskId: 2
   }).status, 'conflict', 'an existing identity cannot be rebound to another task');
   assert.equal(app._classifyCreditOperationAttempt(ledger, {
-    ...creditOperation(), operationId: '623e4567-e89b-42d3-a456-426614174005',
-    sessionId: '623e4567-e89b-42d3-a456-426614174005'
+    ...creditOperation(),
+    operationId: '623e4567-e89b-42d3-a456-426614174005',
+    sessionId: '623e4567-e89b-42d3-a456-426614174005',
+    revision: 3,
+    previousSeconds: 1600,
+    targetSeconds: 1640,
+    measuredSeconds: 40,
+    creditedSeconds: 40,
+    createdAt: '2026-11-26T10:40:00.000Z'
   }).status, 'new');
 });
 
