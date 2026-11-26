@@ -3414,8 +3414,8 @@ function loadData(options) {
     return loadMarkers[key] === true;
   }).length;
   if (loadMarkerCount > 1
-      || (loadMarkerCount > 0 && loadProbe.expectedTx)
-      || loadProbe.expectedTx) {
+      || (loadMarkerCount > 0 && (loadProbe.expectedTx || loadProbe.expectedFocusCommit))
+      || loadProbe.expectedTx || loadProbe.expectedFocusCommit) {
     storageRecoveryRequired = true;
     console.error("loadData: refusing restore or migration while a Stopwatch journal or overlapping recovery marker exists.");
     return false;
@@ -13341,6 +13341,7 @@ function _probeStartupStopwatchRecovery() {
     var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
     var timerObj = null;
     var tx = null;
+    var focusCommit = null;
     var mainRaw = localStorage.getItem(STORAGE_KEY);
     var bootGeneration = _readPersistedRollingBackupGeneration();
     if (timerRaw !== null) {
@@ -13349,30 +13350,49 @@ function _probeStartupStopwatchRecovery() {
         return {
           pending: true, error: "سجل المؤقت المخزن غير صالح.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: null, expectedTx: null, bootPersistedGeneration: bootGeneration,
-          mainRaw: mainRaw, mainData: null
+          timerObj: null, expectedTx: null, expectedFocusCommit: null,
+          bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
       if (!timerObj || typeof timerObj !== "object" || Array.isArray(timerObj)) {
         return {
           pending: true, error: "سجل المؤقت المخزن ليس كائنًا صالحًا.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: null, expectedTx: null, bootPersistedGeneration: bootGeneration,
-          mainRaw: mainRaw, mainData: null
+          timerObj: null, expectedTx: null, expectedFocusCommit: null,
+          bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
-      if (Object.prototype.hasOwnProperty.call(timerObj, "pendingStopwatchTransaction")
-          && timerObj.pendingStopwatchTransaction !== null
+      if (timerObj.pendingStopwatchTransaction !== null
           && timerObj.pendingStopwatchTransaction !== undefined) {
         tx = timerObj.pendingStopwatchTransaction;
         if (!_validatePendingStopwatchTransaction(tx)) {
           return {
             pending: true, error: "سجل معاملة Stopwatch المعلّقة غير صالح.",
             blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-            timerObj: timerObj, expectedTx: null, bootPersistedGeneration: bootGeneration,
+            timerObj: timerObj, expectedTx: null, expectedFocusCommit: null,
+            bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+          };
+        }
+      }
+      if (timerObj.pendingFocusCommit !== null && timerObj.pendingFocusCommit !== undefined) {
+        focusCommit = timerObj.pendingFocusCommit;
+        if (!_validatePendingFocusCommit(focusCommit)) {
+          return {
+            pending: true, error: "سجل اعتماد جلسة التركيز المعلّق غير صالح.",
+            blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+            timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+            expectedFocusCommit: null, bootPersistedGeneration: bootGeneration,
             mainRaw: mainRaw, mainData: null
           };
         }
+      }
+      if (tx && focusCommit) {
+        return {
+          pending: true, error: "توجد معاملتا Stopwatch واعتماد جلسة V2 متداخلتان.",
+          blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+          timerObj: timerObj, expectedTx: null, expectedFocusCommit: null,
+          bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+        };
       }
     }
     if (bootGeneration === null) {
@@ -13380,40 +13400,45 @@ function _probeStartupStopwatchRecovery() {
         pending: true, error: "تعذرت قراءة جيل النسخ الدوّارة.",
         blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
         timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+        expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
         bootPersistedGeneration: null, mainRaw: mainRaw, mainData: null
       };
     }
     var mainData = null;
-    if (tx && !hasMarkers) {
+    if ((tx || focusCommit) && !hasMarkers) {
       if (mainRaw === null) {
         return {
-          pending: true, error: "السجل الرئيسي للمهام مفقود أثناء وجود معاملة معلّقة.",
+          pending: true, error: "السجل الرئيسي للمهام مفقود أثناء وجود معاملة تركيز معلّقة.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: timerObj, expectedTx: JSON.parse(JSON.stringify(tx)),
+          timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+          expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
           bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
       mainData = JSON.parse(mainRaw);
       if (!mainData || mainData.schemaVersion !== CURRENT_SCHEMA_VERSION || !validateV2(mainData)) {
         return {
-          pending: true, error: "السجل الرئيسي غير صالح أثناء وجود معاملة Stopwatch معلّقة.",
+          pending: true, error: "السجل الرئيسي غير صالح أثناء وجود معاملة تركيز معلّقة.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: timerObj, expectedTx: JSON.parse(JSON.stringify(tx)),
+          timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+          expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
           bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
     }
     return {
-      pending: hasMarkers || !!tx, error: null,
+      pending: hasMarkers || !!tx || !!focusCommit, error: null,
       blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
       timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+      expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
       bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: mainData
     };
   } catch (e) {
     return {
-      pending: true, error: "تعذر فحص حالة التخزين وسجل Stopwatch قبل التهيئة.",
+      pending: true, error: "تعذر فحص حالة التخزين وسجل المؤقت قبل التهيئة.",
       blockingMarkers: null, markerValues: null, timerRaw: null, timerObj: null,
-      expectedTx: null, bootPersistedGeneration: null, mainRaw: null, mainData: null
+      expectedTx: null, expectedFocusCommit: null,
+      bootPersistedGeneration: null, mainRaw: null, mainData: null
     };
   }
 }
@@ -13881,6 +13906,27 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
   }
   var markers = lockedProbe.blockingMarkers || {};
   var markerCount = Object.keys(markers).filter(function(key) { return markers[key]; }).length;
+  var initialFocusCommit = initialProbe.expectedFocusCommit || null;
+  var currentFocusCommit = lockedProbe.expectedFocusCommit || null;
+  if ((initialFocusCommit || currentFocusCommit) && markerCount > 0) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_and_recovery_marker_overlap" };
+  }
+  if (initialFocusCommit && currentFocusCommit
+      && JSON.stringify(initialFocusCommit) !== JSON.stringify(currentFocusCommit)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_identity_changed_while_waiting" };
+  }
+  if (currentFocusCommit) {
+    if (initialFocusCommit && lockedProbe.timerRaw !== initialProbe.timerRaw) {
+      storageRecoveryRequired = true;
+      return { ok: false, reason: "focus_commit_storage_snapshot_changed" };
+    }
+    return _recoverPendingFocusCommitFromStartup(currentFocusCommit, lockedProbe, initialProbe);
+  }
+  if (initialFocusCommit) {
+    return _recoverPendingFocusCommitFromStartup(initialFocusCommit, lockedProbe, initialProbe);
+  }
   var initialTx = initialProbe.expectedTx || null;
   var currentTx = lockedProbe.expectedTx || null;
   var siblingMayHaveCommitted = !!initialTx && !currentTx && markerCount === 0;
