@@ -12443,12 +12443,17 @@ function _assertCreditMigrationReady() {
       && _stopwatchTransactionLockDepth > 0))
     return { ok:false, reason:"lock_required" };
 
+  // Preserve the established recovery reason for unresolved durable recovery.
   if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
       || _startupStopwatchRecoveryFailed
-      || _startupResetRecoveryInFlight || _resetRecoveryInFlight || _resetInFlight
-      || _focusCommitInFlight
-      || (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked())
       || (_pendingCorruptStorageSnapshots && _pendingCorruptStorageSnapshots.length))
+    return { ok:false, reason:"recovery_required" };
+
+  // Transient reset/focus writers have a distinct reason so callers can tell
+  // an active commit from a durable recovery state that needs intervention.
+  if (_startupResetRecoveryInFlight || _resetRecoveryInFlight || _resetInFlight
+      || _focusCommitInFlight
+      || (typeof _isFocusCommitBlocked === "function" && _isFocusCommitBlocked()))
     return { ok:false, reason:"recovery_or_commit_in_flight" };
 
   var markerKeys = [
