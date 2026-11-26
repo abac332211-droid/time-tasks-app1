@@ -1823,7 +1823,10 @@ function _pendingStopwatchWriteAllowed() {
     if (!timerRecord.pendingStopwatchTransaction) return true;
 
     // The legacy journal remains isolated from the V2 focus-commit journal.
-    return _isTaskStorageLockHeld();
+    // Preserve the legacy ownership check: a page-memory token alone is not
+    // sufficient unless this callback actually holds the shared transaction lock.
+    return typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0;
   } catch (e) {
     return false;
   }
@@ -7364,9 +7367,10 @@ function buildBackupObject() {
       || (typeof _focusTimerExternalConflict !== "undefined" && _focusTimerExternalConflict)
       || Object.keys(typeof _secondaryStorageConflicts !== "undefined" ? _secondaryStorageConflicts : {}).some(function(key) { return !!_secondaryStorageConflicts[key]; }))
     throw new Error("تعذر تصدير النسخة: هذه النافذة قديمة أو توجد تغييرات في نافذة أخرى. أعد تحميل التطبيق أولًا.");
-  if (typeof _focusTimer !== "undefined"
-      && (_focusTimer.pendingStopwatchTransaction || _focusTimer.pendingFocusCommit))
-    throw new Error("تعذر تصدير النسخة: توجد معاملة مؤقت غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
+  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction)
+    throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
+  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingFocusCommit)
+    throw new Error("تعذر تصدير النسخة: توجد معاملة اعتماد جلسة معلقة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
 
   var keys = [
     ["main", STORAGE_KEY],
@@ -7401,8 +7405,10 @@ function buildBackupObject() {
     if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord))
       throw new Error("تعذر تصدير النسخة: سجل المؤقت المخزن غير صالح.");
   }
-  if (timerRecord.pendingStopwatchTransaction || timerRecord.pendingFocusCommit)
-    throw new Error("تعذر تصدير النسخة: توجد معاملة مؤقت معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
+  if (timerRecord.pendingStopwatchTransaction)
+    throw new Error("تعذر تصدير النسخة: توجد معاملة Stopwatch معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
+  if (timerRecord.pendingFocusCommit)
+    throw new Error("تعذر تصدير النسخة: توجد معاملة اعتماد جلسة معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
 
   var data = rawSnapshot.main ? JSON.parse(rawSnapshot.main) : buildEmptyV2();
   if (!data || typeof data !== "object" || Array.isArray(data)
@@ -7925,17 +7931,17 @@ function _restoreStorageSnapshot(rb) {
     }
   }
   if (rb.focusTimer !== null) {
+    // Internal recovery snapshots may contain opaque legacy values from older
+    // versions. Reject a known live journal, but preserve unreadable raw bytes
+    // verbatim so rollback can put the user's previous value back exactly.
     try {
       var snapshotTimer = JSON.parse(rb.focusTimer);
-      if (!snapshotTimer || typeof snapshotTimer !== "object" || Array.isArray(snapshotTimer)
-          || snapshotTimer.pendingFocusCommit) {
+      if (snapshotTimer && typeof snapshotTimer === "object" && !Array.isArray(snapshotTimer)
+          && snapshotTimer.pendingFocusCommit) {
         markRecoveryRequired();
         return false;
       }
-    } catch (snapshotTimerError) {
-      markRecoveryRequired();
-      return false;
-    }
+    } catch (snapshotTimerError) {}
   }
 
   var entries = [
