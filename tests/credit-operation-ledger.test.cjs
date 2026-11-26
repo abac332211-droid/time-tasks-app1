@@ -282,3 +282,23 @@ test('imports may extend but may never remove or rewrite previously accepted ope
   }]), false, 'rewriting a previously accepted operation must be rejected');
   assert.equal(app._creditOperationLedgerPreservesHistory([], [first]), true);
 });
+
+
+test('ledger enforces its documented hard limit without trimming historical identities', () => {
+  const app = context();
+  const makeRows = count => Array.from({ length: count }, (_, index) => ({
+    recordVersion: 1,
+    operationId: '00000000-0000-4000-8000-' + index.toString(16).padStart(12, '0'),
+    kind: 'manual_adjustment',
+    taskId: index + 1,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 0,
+    source: 'manual_adjustment',
+    sessionId: null,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  }));
+
+  assert.equal(app._validateCreditOperationLedger(makeRows(10000)), true);
+  assert.equal(app._validateCreditOperationLedger(makeRows(10001)), false);
+});
