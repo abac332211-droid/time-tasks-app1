@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const inlineScripts = Array.from(html.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi))
+const inlineScripts = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
   .map((match) => match[1])
   .filter((source) => source.trim());
 const appScript = inlineScripts.find((source) => source.includes('APP_VERSION'));
@@ -69,7 +69,7 @@ function createHarness(options = {}) {
     extractFunction('_withStopwatchTransactionLock'),
     extractFunction('_withTaskStorageLock'),
     extractFunction('_isTaskWriteBlocked')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
 
   return { sandbox, alerts, toasts, requests };
 }
