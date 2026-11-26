@@ -1674,12 +1674,18 @@ function _withPendingFocusCommitWrite(operationId, callback, allowCreate) {
         || _focusTimer.pendingFocusCommit.operationId !== operationId) return false;
   }
   var previousOwner = _pendingFocusCommitOwnerId;
+  var previousFocusCommitWriteDepth = typeof _focusCommitWriteDepth === "number"
+    ? _focusCommitWriteDepth : 0;
   _pendingFocusCommitOwnerId = operationId;
   _pendingFocusCommitWriteDepth++;
+  // The operation-owned scope is also the narrow, lock-bound permission for
+  // the in-flight focus commit to pass _storageWriteAllowed().
+  _focusCommitWriteDepth = previousFocusCommitWriteDepth + 1;
   try { return callback(); }
   finally {
     _pendingFocusCommitWriteDepth = Math.max(0, _pendingFocusCommitWriteDepth - 1);
     _pendingFocusCommitOwnerId = _pendingFocusCommitWriteDepth > 0 ? previousOwner : null;
+    _focusCommitWriteDepth = previousFocusCommitWriteDepth;
   }
 }
 
@@ -13222,6 +13228,101 @@ function _assertCreditMigrationReady() {
   }
 }
 
+// One-time compatibility bridge from legacy minute balances to the PR #23
+// seconds schema. It is deliberately metadata-only: no historical operation is
+// fabricated and null is never normalized to numeric zero.
+function _migrateLegacyTaskCreditMetadataLocked() {
+  var readiness = _assertCreditMigrationReady();
+  if (!readiness || readiness.ok !== true) return readiness || { ok:false, reason:"migration_gate_failed" };
+  try {
+    var previousRaw = localStorage.getItem(STORAGE_KEY);
+    if (typeof previousRaw !== "string" || previousRaw !== _mainStorageBaselineRaw
+        || _mainStorageExternalChangeObserved || !_mainStorageBaselineReady)
+      return { ok:false, reason:"main_baseline_conflict" };
+    var mainData = JSON.parse(previousRaw);
+    if (!validateV2(mainData) || !Array.isArray(mainData.tasks)
+        || !Array.isArray(tasks) || JSON.stringify(tasks) !== JSON.stringify(mainData.tasks))
+      return { ok:false, reason:"main_record_invalid_or_stale" };
+
+    var previousLedger = Array.isArray(mainData.creditOperations)
+      ? mainData.creditOperations.slice() : [];
+    var migratedTasks = 0;
+    var needsLedgerArray = !Object.prototype.hasOwnProperty.call(mainData, "creditOperations");
+
+    for (var i = 0; i < mainData.tasks.length; i++) {
+      var task = mainData.tasks[i];
+      var fields = ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"];
+      var hasAnyCreditField = fields.some(function(key) {
+        return Object.prototype.hasOwnProperty.call(task, key);
+      });
+      if (hasAnyCreditField) {
+        // A partially migrated or inconsistent task is evidence of an
+        // unsupported write. Never fill missing fields by guessing.
+        if (!_validateTaskCreditFields(task))
+          return { ok:false, reason:"partial_or_invalid_credit_metadata", taskId:task.id };
+        continue;
+      }
+
+      var legacyActual = task.actual;
+      var actualSeconds;
+      if (legacyActual === null) {
+        actualSeconds = null;
+      } else {
+        // The legacy UI stores whole minutes. Fractional or unsafe values have
+        // no unambiguous mapping under the current floor(actualSeconds / 60) rule.
+        if (!Number.isSafeInteger(legacyActual) || legacyActual < 0)
+          return { ok:false, reason:"legacy_actual_not_a_safe_integer", taskId:task.id };
+        actualSeconds = legacyActual * 60;
+        if (!Number.isSafeInteger(actualSeconds))
+          return { ok:false, reason:"legacy_actual_seconds_overflow", taskId:task.id };
+      }
+      task.actualSeconds = actualSeconds;
+      task.creditRevision = 0;
+      task.creditSchemaVersion = 1;
+      task.lastCreditOperationId = null;
+      migratedTasks++;
+    }
+
+    if (needsLedgerArray) mainData.creditOperations = [];
+    var nextLedger = Array.isArray(mainData.creditOperations) ? mainData.creditOperations : null;
+    if (!nextLedger || !_creditOperationLedgerPreservesHistory(previousLedger, nextLedger))
+      return { ok:false, reason:"credit_ledger_history_not_preserved" };
+    if (!validateV2(mainData))
+      return { ok:false, reason:"migrated_main_record_invalid" };
+
+    if (migratedTasks === 0 && !needsLedgerArray)
+      return { ok:true, reason:null, migratedTasks:0, alreadyMigrated:true };
+
+    var nextRaw = JSON.stringify(mainData);
+    if (localStorage.getItem(STORAGE_KEY) !== previousRaw
+        || _mainStorageBaselineRaw !== previousRaw || _mainStorageExternalChangeObserved)
+      return { ok:false, reason:"main_storage_changed_during_migration" };
+    if (!_writeMainStorageRecordVerified(nextRaw)) {
+      storageRecoveryRequired = true;
+      return { ok:false, reason:"migration_write_or_readback_failed" };
+    }
+    var verifiedRaw = localStorage.getItem(STORAGE_KEY);
+    var verified = verifiedRaw === nextRaw ? JSON.parse(verifiedRaw) : null;
+    if (!verified || !validateV2(verified)
+        || JSON.stringify(verified.tasks) !== JSON.stringify(mainData.tasks)) {
+      storageRecoveryRequired = true;
+      _mainStorageBaselineReady = false;
+      return { ok:false, reason:"migration_post_write_verification_failed" };
+    }
+    tasks = verified.tasks;
+    return {
+      ok:true,
+      reason:null,
+      migratedTasks:migratedTasks,
+      alreadyMigrated:migratedTasks === 0
+    };
+  } catch (error) {
+    storageRecoveryRequired = true;
+    console.error("Legacy task credit migration failed:", error);
+    return { ok:false, reason:"migration_storage_read_failed" };
+  }
+}
+
 function _validatePendingStopwatchTransaction(tx) {
   if(!tx||typeof tx!=="object"||Array.isArray(tx))return false;
   if(tx.version!==1||typeof tx.id!=="string"||tx.id.length<8||tx.id.length>160)return false;
@@ -14124,6 +14225,12 @@ function _commitFocusSessionV2Locked(sessionFields) {
 
   var sessions = _readPendingFocusSessions();
   if (!sessions.ok) return false;
+  var existingIdentity = sessions.rows.some(function(row) {
+    return row && row.startedAt === sessionFields.startedAt
+      && row.taskId === timerBefore.taskId
+      && row.mode === timerBefore.mode && row.phase === timerBefore.phase;
+  });
+  if (existingIdentity) return false;
   var nextNumericId = sessions.rows.reduce(function(max, row) {
     return Math.max(max, Number.isSafeInteger(row && row.id) ? row.id : 0);
   }, 0) + 1;
@@ -14195,6 +14302,154 @@ function _commitFocusSessionV2(sessionFields) {
   return _withStopwatchTransactionLock(function() {
     return _commitFocusSessionV2Locked(sessionFields);
   });
+}
+
+// The PR #23 session contract supports trusted Pomodoro work sessions. Legacy
+// Stopwatch confirmation retains its minute-based writer unless a future
+// contract explicitly extends V2 to represent its user-adjusted "stopped" case.
+function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
+  if (!snapshot || !task || snapshot.running !== false
+      || snapshot.mode !== "pomodoro" || snapshot.phase !== "work"
+      || snapshot.clockAdjusted === true
+      || !Number.isSafeInteger(minutesToAdd) || minutesToAdd < 0 || minutesToAdd > 1000000
+      || !Number.isSafeInteger(snapshot.baseElapsed) || snapshot.baseElapsed < 0
+      || !Number.isInteger(snapshot.elapsedRemainderMs)
+      || snapshot.elapsedRemainderMs < 0 || snapshot.elapsedRemainderMs >= 1000
+      || !Number.isFinite(snapshot.sessionStartAt) || snapshot.sessionStartAt < 0
+      || task.id !== snapshot.taskId) return null;
+
+  var activeDurationMs = snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs;
+  var durationSec = Math.floor(activeDurationMs / 1000);
+  var creditedSeconds = minutesToAdd * 60;
+  var plannedDurationMs = POMODORO_WORK_SEC * 1000;
+  if (!Number.isSafeInteger(activeDurationMs) || activeDurationMs < 60000
+      || !Number.isSafeInteger(durationSec) || !Number.isSafeInteger(creditedSeconds)
+      || !Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0) return null;
+
+  var started = new Date(snapshot.sessionStartAt);
+  var endedMs = Number.isFinite(snapshot.pendingPhaseEndedAt)
+    ? snapshot.pendingPhaseEndedAt : Date.now();
+  var ended = new Date(endedMs);
+  if (!Number.isFinite(started.getTime()) || !Number.isFinite(ended.getTime())
+      || ended.getTime() < started.getTime()) return null;
+
+  var outcome = activeDurationMs >= plannedDurationMs ? "completed" : "ended_early";
+  return {
+    mode: "pomodoro",
+    phase: "work",
+    taskId: task.id,
+    taskName: typeof task.name === "string" ? task.name : "",
+    startedAt: started.toISOString(),
+    endedAt: ended.toISOString(),
+    activeDurationMs: activeDurationMs,
+    durationSec: durationSec,
+    plannedDurationMs: plannedDurationMs,
+    creditedSeconds: creditedSeconds,
+    creditSource: creditedSeconds === durationSec ? "measured" : "user_adjusted",
+    outcome: outcome,
+    clockSource: snapshot.nativeSessionToken ? "android_elapsed_realtime" : "performance_now",
+    clockTrust: "trusted",
+    clockAdjusted: false,
+    completed: outcome === "completed"
+  };
+}
+
+// The real finish path enters here only for linked, trusted Pomodoro work
+// sessions. Migration, baseline verification, and commit all occur under the
+// same Web Lock. The old Stopwatch writer remains available for legacy records.
+function _commitPendingFocusSessionV2(params) {
+  if (!params || !params.snapshot) return Promise.resolve(false);
+  if (_focusCommitPendingPromise) return _focusCommitPendingPromise;
+  if (_focusCommitInFlight) {
+    showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");
+    return Promise.resolve(false);
+  }
+  if (_startupResetRecoveryInFlight || _resetRecoveryInFlight || _resetInFlight
+      || storageRecoveryRequired || _focusTimerExternalConflict) {
+    showAlertModal("الحفظ محمي",
+      "توجد حالة استرداد أو تعارض مؤقت غير محسوم؛ لم نبدأ معاملة جلسة V2.");
+    return Promise.resolve(false);
+  }
+
+  var releaseHold = _acquireRollingRecoveryCheckpointHold(true);
+  var pending = _withStopwatchTransactionLock(function() {
+    if (_focusCommitInFlight || storageRecoveryRequired || _focusTimerExternalConflict) return false;
+    var migration = _migrateLegacyTaskCreditMetadataLocked();
+    if (!migration || migration.ok !== true) {
+      showAlertModal("تعذر تجهيز رصيد المهمة",
+        "لم نُنشئ معاملة الجلسة لأن ترحيل رصيد المهمة أو التحقق من خط الأساس لم يكتمل. السبب: "
+          + (migration && migration.reason ? migration.reason : "unknown"));
+      return false;
+    }
+    var snapshot = params.snapshot;
+    if (!_focusTimerSnapshotMatchesState(snapshot) || snapshot.running !== false
+        || snapshot.taskId === null || snapshot.taskId === undefined
+        || snapshot.phase !== "work" || snapshot.mode !== "pomodoro"
+        || snapshot.clockAdjusted === true) {
+      showAlertModal("تعارض لقطة الجلسة",
+        "تغيرت حالة المؤقت أو لم تعد جلسة العمل صالحة لعقد V2؛ لم نكتب اعتمادًا.");
+      return false;
+    }
+    var task = tasks.find(function(row) { return row && row.id === snapshot.taskId; });
+    if (!task || !_capturePendingFocusCreditSnapshot(task)) {
+      showAlertModal("رصيد المهمة غير جاهز",
+        "لم تجتز المهمة ترحيل رصيد V2؛ لم نُسجل الجلسة أو نغيّر الرصيد.");
+      return false;
+    }
+    var baseline = _focusCommitBaselinesMatch(snapshot);
+    if (!baseline) {
+      showAlertModal("تعارض خط الأساس",
+        "لم نتحقق من خطوط أساس المهمة والمؤقت والجلسات؛ لم ننفذ معاملة V2.");
+      return false;
+    }
+    var sessionFields = _buildPendingFocusSessionFields(snapshot, task, params.minutesToAdd);
+    if (!sessionFields) {
+      showAlertModal("بيانات الجلسة غير صالحة",
+        "تعذر بناء سجل V2 موثوق من لقطة المؤقت والقيمة المعتمدة؛ بقيت البيانات دون تعديل.");
+      return false;
+    }
+
+    _focusCommitInFlight = true;
+    _renderFocusTimer();
+    var committed = _commitFocusSessionV2Locked(sessionFields);
+    if (!committed) {
+      if (_focusTimer.pendingFocusCommit) storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof params._releaseCheckpointHold === "function") {
+      params._releaseCheckpointHold();
+      releaseHold = null;
+    } else if (releaseHold) {
+      releaseHold();
+      releaseHold = null;
+    }
+    if (!_completeRollingRecoveryCheckpoint("focus-session-v2-commit",
+        "حُفظت جلسة التركيز", "حُفظت الجلسة لكن تعذر التحقق من لقطة استرداد متسقة؛ أوقفنا الكتابة اللاحقة.")) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof params.onCommitted === "function" && params.onCommitted() !== true) {
+      showAlertModal("حُفظت الجلسة ولم يكتمل الانتقال",
+        "لم يُرجع callback الانتقال true؛ لم نعلن بدء الجلسة التالية.");
+      return false;
+    }
+    if (params.successToast) showToast(params.successToast);
+    renderFocusSessionsCard();
+    return true;
+  }).catch(function(error) {
+    if (_focusTimer && _focusTimer.pendingFocusCommit) storageRecoveryRequired = true;
+    console.error("Pending focus session commit failed:", error);
+    showAlertModal("تعذر تأمين معاملة جلسة التركيز",
+      "لم نتابع عملية قد تتداخل مع نافذة أخرى؛ بقي سجل الاسترداد محفوظًا.");
+    return false;
+  }).finally(function() {
+    if (releaseHold) releaseHold();
+    _focusCommitInFlight = false;
+    if (_focusCommitPendingPromise === pending) _focusCommitPendingPromise = null;
+    _renderFocusTimer();
+  });
+  _focusCommitPendingPromise = pending;
+  return pending;
 }
 
 function _verifySiblingTransactionOutcome(bundle, expectedTx, bootPersistedGeneration) {
@@ -14851,8 +15106,16 @@ function finishTimer(_nativeClockSynchronized) {
 function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot) {
   var snapshot=frozenSnapshot||_captureFocusTimerSnapshot();
   if(!snapshot||snapshot.baseElapsed!==elapsedSec||snapshot.phase!==capturedPhase)return Promise.resolve(false);
-  return _commitFocusTaskSession({snapshot:snapshot,taskId:snapshot.taskId,minutesToAdd:minutesToAdd,
-    completed:true,successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"});
+  var request = {
+    snapshot:snapshot, taskId:snapshot.taskId, minutesToAdd:minutesToAdd,
+    completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
+  };
+  if (snapshot.mode === "pomodoro" && snapshot.phase === "work"
+      && snapshot.taskId !== null && snapshot.taskId !== undefined
+      && task && snapshot.clockAdjusted !== true) {
+    return _commitPendingFocusSessionV2(request);
+  }
+  return _commitFocusTaskSession(request);
 }
 function _resetAfterSession() {
   if (_focusTimerExternalConflict) {
