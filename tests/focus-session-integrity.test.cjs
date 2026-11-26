@@ -466,6 +466,7 @@ test('V2 measured credit must equal the floored active seconds', () => {
   assert.equal(hValidate(validV2Session({
     activeDurationMs: 1_540_900,
     durationSec: 1_540,
+    plannedDurationMs: 1_800_000,
     creditedSeconds: 1_540
   })), true);
   assert.equal(hValidate(validV2Session({
