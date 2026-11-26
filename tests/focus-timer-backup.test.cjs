@@ -47,10 +47,10 @@ function loadTopLevelFunction(name) {
   assert.notEqual(end, -1, `Could not find end of function ${name}`);
   const helperStart = html.indexOf('function _validateTaskCreditFields(');
   assert.notEqual(helperStart, -1, 'task credit validator exists');
-  const helperEnd = html.indexOf('\\n}', helperStart);
+  const helperEnd = html.indexOf('\n}', helperStart);
   assert.notEqual(helperEnd, -1, 'task credit validator closes');
   const helper = html.slice(helperStart, helperEnd + 2);
-  return vm.runInNewContext(helper + '\\n(' + html.slice(start, end + 2) + ')');
+  return vm.runInNewContext(helper + '\n(' + html.slice(start, end + 2) + ')');
 }
 
 const buildSnapshot = loadTopLevelFunction('_buildFocusTimerBackupSnapshot');
