@@ -2543,6 +2543,7 @@ function _validateTaskCreditOperationV1(operation) {
       && (typeof operation.previousLastCreditOperationId !== "string"
         || !uuidPattern.test(operation.previousLastCreditOperationId))) return false;
   if (operation.previousLastCreditOperationId === operation.operationId) return false;
+  if ((operation.previousCreditRevision === 0) !== (operation.previousLastCreditOperationId === null)) return false;
 
   if (!Number.isSafeInteger(operation.createdAt) || operation.createdAt < 0
       || !Number.isFinite(new Date(operation.createdAt).getTime())) return false;
