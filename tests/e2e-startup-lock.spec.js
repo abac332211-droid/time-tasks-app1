@@ -285,38 +285,44 @@ async function primeLinkedWorkTimer(page, {
   taskId = 7011, mode = 'stopwatch', durationSec = 180
 } = {}) {
   await page.evaluate(async ({ taskId, mode, durationSec }) => {
-    if (_focusTimer.running) toggleTimer();
-    _focusTimer.mode = mode;
-    _focusTimer.phase = 'work';
-    _focusTimer.running = false;
-    _focusTimer.baseElapsed = 0;
-    _focusElapsedRemainderMs = 0;
-    _focusTimer.startedAt = null;
-    _focusTimer.sessionStartAt = null;
-    _focusTimer.taskId = null;
-    _focusTimer.awaitingConfirmation = false;
-    _focusTimer.pendingStopwatchTransaction = null;
-    _clearFocusTimerClock();
-    if (!_saveFocusTimer()) throw new Error('Could not persist the clean timer fixture');
+    if (_focusTimer.running) await toggleTimer();
+    const cleanSaved = await _withTaskStorageLock(function() {
+      _focusTimer.mode = mode;
+      _focusTimer.phase = 'work';
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = 0;
+      _focusElapsedRemainderMs = 0;
+      _focusTimer.startedAt = null;
+      _focusTimer.sessionStartAt = null;
+      _focusTimer.taskId = null;
+      _focusTimer.awaitingConfirmation = false;
+      _focusTimer.pendingStopwatchTransaction = null;
+      _clearFocusTimerClock();
+      return _saveFocusTimer();
+    });
+    if (!cleanSaved) throw new Error('Could not persist the clean timer fixture');
 
     if (mode === 'pomodoro') {
       const started = await startTimerForTask(taskId);
       if (started !== true) throw new Error('Pomodoro task timer did not start');
     } else {
-      linkTimerToTask(taskId);
-      toggleTimer();
+      await linkTimerToTask(taskId);
+      await toggleTimer();
     }
     if (!_focusTimer.running || _focusTimer.taskId !== taskId) {
       throw new Error('The linked work timer did not enter its running state');
     }
 
     const elapsedMs = durationSec * 1000;
-    const startedAt = Date.now() - elapsedMs;
-    const monotonicStart = performance.now() - elapsedMs;
-    _focusTimer.startedAt = startedAt;
-    _focusTimer.sessionStartAt = startedAt;
-    _anchorFocusTimerClock(startedAt, 0, monotonicStart, startedAt);
-    if (!_saveFocusTimer()) throw new Error('Could not persist the running timer fixture');
+    const persisted = await _withTaskStorageLock(function() {
+      const startedAt = Date.now() - elapsedMs;
+      const monotonicStart = performance.now() - elapsedMs;
+      _focusTimer.startedAt = startedAt;
+      _focusTimer.sessionStartAt = startedAt;
+      _anchorFocusTimerClock(startedAt, 0, monotonicStart, startedAt);
+      return _saveFocusTimer();
+    });
+    if (!persisted) throw new Error('Could not persist the running timer fixture');
   }, { taskId, mode, durationSec });
 }
 
