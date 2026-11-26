@@ -2733,6 +2733,10 @@ function _validatePendingFocusCommit(record) {
     return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
   }
   if (!validIso(record.createdAt) || !validIso(record.updatedAt)) return false;
+  if (!_validatePendingFocusCreditSnapshot(record.creditBefore)
+      || !_validatePendingFocusCreditSnapshot(record.creditAfter)
+      || !_validatePendingFocusTimerProjection(record.timerBefore)
+      || !_validatePendingFocusTimerProjection(record.timerAfter)) return false;
   if (!_validateCreditOperationRecord(record.operation)
       || record.operation.kind !== "session"
       || record.operation.operationId !== record.operationId
@@ -2745,11 +2749,10 @@ function _validatePendingFocusCommit(record) {
       || record.session.creditSource !== record.operation.source
       || record.session.creditedSeconds !== record.operation.creditedSeconds
       || record.session.durationSec !== record.operation.measuredSeconds
-      || record.operation.measuredSeconds !== Math.floor(record.session.activeDurationMs / 1000)) return false;
-  if (!_validatePendingFocusCreditSnapshot(record.creditBefore)
-      || !_validatePendingFocusCreditSnapshot(record.creditAfter)
-      || !_validatePendingFocusTimerProjection(record.timerBefore)
-      || !_validatePendingFocusTimerProjection(record.timerAfter)) return false;
+      || record.operation.measuredSeconds !== Math.floor(record.session.activeDurationMs / 1000)
+      || record.operation.createdAt !== record.session.endedAt
+      || !Number.isFinite(record.timerBefore.sessionStartAt)
+      || new Date(record.timerBefore.sessionStartAt).getTime() !== Date.parse(record.session.startedAt)) return false;
   var before = record.creditBefore, after = record.creditAfter, operation = record.operation;
   if (before.creditRevision >= Number.MAX_SAFE_INTEGER
       || after.creditRevision !== before.creditRevision + 1
@@ -2776,7 +2779,9 @@ function _validatePendingFocusCommit(record) {
       || timerAfter.awaitingConfirmation
       || timerAfter.pendingPhaseEndedAt !== null
       || timerAfter.nativeSessionToken !== null
-      || timerAfter.pendingNotificationFinish !== null) return false;
+      || timerAfter.pendingNotificationFinish !== null
+      || JSON.stringify(timerAfter.handledNotificationActionIds)
+        !== JSON.stringify(record.timerBefore.handledNotificationActionIds)) return false;
   return true;
 }
 
