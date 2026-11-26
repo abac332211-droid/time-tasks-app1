@@ -11257,7 +11257,7 @@ function toggleNotifications() {
   }
   if (perm === 'granted') {
     var v = !pref.enabled;
-    return _setNotificationsPrefWithLock(v).then(function(saved) {
+    return Promise.resolve(_setNotificationsPrefWithLock(v)).then(function(saved) {
       if (!saved) { showToast('⚠️ تعذر الحفظ'); return false; }
       _updateNotifToggleUI();
       showToast(v ? '🔔 الإشعارات مفعّلة' : '🔕 الإشعارات معطّلة');
@@ -11278,7 +11278,7 @@ function toggleNotifications() {
 
 function _applyNotifPermissionResult(result) {
   if (result === 'granted' || result === 'denied') {
-    return _setNotificationsPrefWithLock(result === 'granted').then(function(saved) {
+    return Promise.resolve(_setNotificationsPrefWithLock(result === 'granted')).then(function(saved) {
       if (!saved) {
         showToast('⚠️ تعذر حفظ تفضيل الإشعارات');
         return false;
