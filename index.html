@@ -13825,6 +13825,12 @@ function _applyPendingFocusTimerProjection(projection) {
 }
 
 function _persistPendingFocusCommitStage(journal, stage) {
+  var order = { prepared: 0, credit_applied: 1, session_applied: 2, timer_applied: 3 };
+  if (!Object.prototype.hasOwnProperty.call(order, stage)
+      || !Object.prototype.hasOwnProperty.call(order, journal && journal.stage)) return false;
+  // Recovery can infer that a later durable step completed before its stage
+  // marker was saved. Never move the durable marker backwards on replay.
+  if (order[stage] <= order[journal.stage]) return true;
   var next = JSON.parse(JSON.stringify(journal));
   next.stage = stage;
   next.updatedAt = new Date().toISOString();
