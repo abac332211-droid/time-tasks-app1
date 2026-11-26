@@ -127,6 +127,7 @@ test('all interactive and native focus timer writer entrypoints are lock-gated',
   }
   assert.match(extractFunction('_freezeFocusTimerForDecision'), /_isTaskStorageLockHeld/);
   assert.match(extractFunction('_startDisplayTick'), /_withTaskStorageLock/);
+  assert.match(extractFunction('_scheduleNativeStopwatchClockAttach'), /setTimeout/);
   assert.match(extractFunction('_saveFocusTimer'), /_isTaskStorageLockHeld/);
 });
 
