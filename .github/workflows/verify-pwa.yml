@@ -16,6 +16,7 @@ on:
       - codex/pomodoro-storage-gates-pwa-integration
       - codex/pomodoro-credit-schema-v2
       - codex/pomodoro-credit-operation-ledger-v1
+      - codex/pending-focus-commit-v1
   pull_request:
     branches:
       - main
