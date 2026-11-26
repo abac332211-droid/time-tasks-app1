@@ -150,6 +150,27 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
   assert.deepEqual(sandbox._sessionsCache, []);
 });
 
+test('session saver refuses to write without shared Web Lock ownership', () => {
+  let writes = 0;
+  const sandbox = {
+    FOCUS_MAX_SESSIONS: 500,
+    FOCUS_SESSIONS_KEY: 'focus-sessions',
+    _stopwatchTransactionLockDepth: 0,
+    _sessionsCache: [],
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified: () => { writes++; return true; },
+    _storeRollingRecoveryBackup: () => true,
+    console
+  };
+  vm.runInNewContext(
+    extractFunction('_isTaskStorageLockHeld') + '\\n' + extractFunction('_saveSessions'),
+    sandbox
+  );
+  assert.equal(sandbox._saveSessions([validSession()]), false);
+  assert.equal(writes, 0);
+  assert.deepEqual(sandbox._sessionsCache, []);
+});
+
 test('session logging corrects a supplied endpoint that disagrees with the measured duration', () => {
   const h = createLogHarness();
   const suppliedEnd = baseStart + 90_000;
