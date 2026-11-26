@@ -17,7 +17,11 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  if (name === '_isTaskStorageLockHeld') return match[0];
+  return [
+    'function _isTaskStorageLockHeld() { return true; }',
+    match[0]
+  ].join('\n');
 }
 
 function createPersistentStorage(seed = {}) {
