@@ -2905,6 +2905,13 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
     assert.equal(committed.timer.pendingFocusCommit, null);
     assert.equal(committed.timer.baseElapsed, 0);
 
+    // The durable keys are written before the outer transaction finishes its
+    // checkpoint and releases the in-flight guard. Do not race ordinary task
+    // writers against that finalization window.
+    await pageA.waitForFunction(() =>
+      !_focusCommitInFlight && !_focusCommitPendingPromise,
+    null, { timeout: 10000 });
+
     // Editing an already-migrated task must append manual_adjustment operations
     // through the ordinary saveData path, preserving null as distinct from zero.
     const manualAdjustmentsSaved = await pageA.evaluate(async () =>

@@ -4667,6 +4667,14 @@ function saveData() {
 
       var actualMinutesChanged = nextTask.actual !== previousTask.actual;
       var actualSecondsChanged = nextTask.actualSeconds !== previousTask.actualSeconds;
+      // Ordinary task writers own the legacy minute field, not the durable
+      // seconds ledger. A seconds-only mutation has no trusted user intent and
+      // must not be converted into a synthetic manual adjustment.
+      if (!actualMinutesChanged && actualSecondsChanged) {
+        showAlertModal("تعارض سجل الرصيد",
+          "رفضنا حفظ تغيير مباشر في ثواني الرصيد دون تغيير قيمة الدقائق المعتمدة؛ لم نعدّل سجل العمليات.");
+        return false;
+      }
       if (!actualMinutesChanged && !actualSecondsChanged) continue;
 
       var targetSeconds;

@@ -439,6 +439,10 @@ function primaryWriterContext(initialData) {
   };
 
   vm.runInNewContext([
+    extractFunction('_validateTaskCreditFields'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_validateCreditOperationLedger'),
+    extractFunction('_creditOperationLedgerPreservesHistory'),
     extractFunction('saveData'),
     extractFunction('persistDailyLog')
   ].join('\n'), sandbox);

@@ -280,6 +280,7 @@ function createCreditLedgerSaveHarness(taskOverrides = {}) {
     extractFunction('_validateTaskCreditFields'),
     extractFunction('_validateCreditOperationRecord'),
     extractFunction('_validateCreditOperationLedger'),
+    extractFunction('_creditOperationLedgerPreservesHistory'),
     extractFunction('saveData')
   ].join('\n'), sandbox);
   sandbox.validateV2 = function(data) {
