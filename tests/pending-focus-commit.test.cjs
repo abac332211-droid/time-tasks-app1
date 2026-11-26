@@ -748,7 +748,7 @@ function sessionFinishRoutingContext(snapshot) {
   vm.runInNewContext([
     extractFunction('_buildPendingFocusSessionFields'),
     extractFunction('_applyTimerFinish')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
   return { app: sandbox, calls };
 }
 
