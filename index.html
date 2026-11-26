@@ -10256,10 +10256,13 @@ function _saveFocusTimer() {
     var checkpointRemainderMs = running
       ? (useNativeAnchor
           ? Math.floor(_focusTimer.nativeAnchorBaseMs % 1000)
-          : elapsedParts.remainderMs)
+          : (Number.isFinite(elapsedParts.remainderMs) && elapsedParts.remainderMs >= 0
+              && elapsedParts.remainderMs < 1000 ? Math.floor(elapsedParts.remainderMs) : NaN))
       : (Number.isFinite(_focusElapsedRemainderMs) && _focusElapsedRemainderMs >= 0
           && _focusElapsedRemainderMs < 1000 ? Math.floor(_focusElapsedRemainderMs) : 0);
-    if (!Number.isFinite(checkpointElapsed) || checkpointElapsed < 0) {
+    if (!Number.isFinite(checkpointElapsed) || checkpointElapsed < 0
+        || !Number.isInteger(checkpointRemainderMs) || checkpointRemainderMs < 0
+        || checkpointRemainderMs >= 1000) {
       storageRecoveryRequired = true;
       return false;
     }
