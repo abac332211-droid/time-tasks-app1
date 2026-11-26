@@ -6593,8 +6593,14 @@ function _validateFocusSessionRecordV2(session) {
   if ((session.outcome === "skipped" || session.outcome === "discarded")
       && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
   if (session.creditSource === "none" && session.creditedSeconds !== 0) return false;
+  if (session.creditSource === "measured"
+      && session.creditedSeconds !== Math.floor(session.activeDurationMs / 1000)) return false;
   if ((session.phase !== "work" || session.taskId === null || session.taskId === undefined)
-      && session.creditedSeconds !== 0) return false;
+      && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
+  if (session.clockTrust === "untrusted"
+      && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
+        || session.creditSource !== "none")) return false;
+  if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
   return true;
 }
 
