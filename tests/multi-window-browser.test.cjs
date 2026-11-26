@@ -2448,7 +2448,7 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
 });
 
 
-test('closing a real Chromium page persists the conservative PWA pause before a fresh page reads storage', {
+test('closing a real Chromium page never resumes or credits a PWA timer on the next cold start', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
   timeout: 60000
 }, async () => {
@@ -2525,8 +2525,8 @@ test('closing a real Chromium page persists the conservative PWA pause before a 
     assert.equal(started.taskActual, 11);
 
     // Exercise an actual browser page close. The observer snapshots LocalStorage
-    // in an init script before the application startup coordinator can normalize it.
-    await sourcePage.close({ runBeforeUnload: true });
+    // before application startup can normalize a possibly still-running checkpoint.
+    await sourcePage.close();
     assert.equal(sourcePage.isClosed(), true);
 
     const observer = await context.newPage();
@@ -2542,22 +2542,36 @@ test('closing a real Chromium page persists the conservative PWA pause before a 
       sessions: window.__sessionsRawBeforeAppInit
     }));
     assert.ok(beforeNormalization.timer, 'the closed page must leave a readable timer record');
-    const timer = JSON.parse(beforeNormalization.timer);
-    const main = JSON.parse(beforeNormalization.main);
-    const sessions = JSON.parse(beforeNormalization.sessions || '[]');
-    assert.equal(timer.running, false,
-      'a real page close must persist a stopped timer before another page reads storage');
-    assert.equal(timer.startedAt, null);
-    assert.equal(timer.clockAdjusted, true);
-    assert.equal(timer.baseElapsed, started.timer.baseElapsed,
-      'a real page close must not credit time beyond the last durable checkpoint');
-    assert.equal(timer.elapsedRemainderMs, started.timer.elapsedRemainderMs);
-    assert.equal(main.tasks.find(item => item.id === 9902).actual, 11,
-      'a real page close must not change the linked task balance');
-    assert.equal(sessions.length, 0,
-      'a page close must not synthesize a completed focus session');
+    const timerBeforeStartup = JSON.parse(beforeNormalization.timer);
+    const mainBeforeStartup = JSON.parse(beforeNormalization.main);
+    const sessionsBeforeStartup = JSON.parse(beforeNormalization.sessions || '[]');
+    assert.ok(Number.isInteger(timerBeforeStartup.elapsedRemainderMs)
+      && timerBeforeStartup.elapsedRemainderMs >= 0 && timerBeforeStartup.elapsedRemainderMs < 1000,
+    'the closed page must leave a checkpoint accepted by the cold-start validator');
+    assert.equal(timerBeforeStartup.baseElapsed, started.timer.baseElapsed,
+      'closing must not credit time beyond the last durable checkpoint');
+    assert.equal(mainBeforeStartup.tasks.find(item => item.id === 9902).actual, 11,
+      'closing must not change the linked task balance');
+    assert.equal(sessionsBeforeStartup.length, 0,
+      'closing must not synthesize a completed focus session');
 
     await waitForSafeStartup(observer, 'real page-close observer');
+    const afterStartup = await observer.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9902).actual,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+    }));
+    assert.equal(afterStartup.timer.running, false,
+      'cold start after a real page close must never resume the old untrusted interval');
+    assert.equal(afterStartup.timer.startedAt, null);
+    assert.equal(afterStartup.timer.clockAdjusted, true);
+    assert.equal(afterStartup.timer.baseElapsed, started.timer.baseElapsed);
+    assert.equal(afterStartup.timer.elapsedRemainderMs, started.timer.elapsedRemainderMs);
+    assert.equal(afterStartup.taskActual, 11,
+      'cold start after page close must preserve the linked task balance');
+    assert.equal(afterStartup.sessions.length, 0,
+      'cold start after page close must not create an uncommitted session');
     await context.close();
   } finally {
     if (browser) await browser.close();
