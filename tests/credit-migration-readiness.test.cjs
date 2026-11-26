@@ -7,13 +7,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const scripts = Array.from(html.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi))
+const scripts = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
   .map((match) => match[1]).filter((source) => source.trim());
 const appScript = scripts.find((source) => source.includes('APP_VERSION'));
 assert.ok(appScript, 'application script exists');
 
 function extractFunction(name) {
-  const pattern = new RegExp('function\\\\s+' + name + '\\\\s*\\\\([^)]*\\\\)\\\\s*\\\\{[\\\\s\\\\S]*?\\\\n\\\\}');
+  const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists');
   return match[0];
@@ -26,8 +26,8 @@ function runtime(overrides = {}) {
   ]);
   const storage = {
     getItem(key) { return values.has(key) ? values.get(key) : null; },
-    setItem(key, value) { values.set(key, String(value)); },
-    removeItem(key) { values.delete(key); }
+    setItem(key, value) { values.set(String(key), String(value)); },
+    removeItem(key) { values.delete(String(key)); }
   };
   const timerRaw = storage.getItem('timer');
   const sandbox = {
