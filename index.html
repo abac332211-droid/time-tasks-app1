@@ -13486,6 +13486,9 @@ function _readAndValidateResyncBundle() {
       if (!timerObj || typeof timerObj !== "object" || Array.isArray(timerObj)) return null;
       if (timerObj.pendingStopwatchTransaction
           && !_validatePendingStopwatchTransaction(timerObj.pendingStopwatchTransaction)) return null;
+      if (timerObj.pendingFocusCommit
+          && !_validatePendingFocusCommit(timerObj.pendingFocusCommit)) return null;
+      if (timerObj.pendingStopwatchTransaction && timerObj.pendingFocusCommit) return null;
     }
 
     var sessionsRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
@@ -13495,6 +13498,7 @@ function _readAndValidateResyncBundle() {
       if (!Array.isArray(parsedSessions) || parsedSessions.length > FOCUS_MAX_SESSIONS) return null;
       var sessionIds = new Set();
       var transactionIds = new Set();
+      var v2SessionIds = new Set();
       for (var si = 0; si < parsedSessions.length; si++) {
         var session = parsedSessions[si];
         if (!_validateFocusSessionRecord(session)) return null;
@@ -13505,6 +13509,10 @@ function _readAndValidateResyncBundle() {
         if (session.transactionId !== undefined) {
           if (transactionIds.has(session.transactionId)) return null;
           transactionIds.add(session.transactionId);
+        }
+        if (session.recordVersion === 2) {
+          if (v2SessionIds.has(session.sessionId)) return null;
+          v2SessionIds.add(session.sessionId);
         }
       }
       sessionsArr = parsedSessions;
@@ -14595,7 +14603,8 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
     return { ok: false, reason: "main_storage_baseline_capture_failed" };
   }
   var bundle = _readAndValidateResyncBundle();
-  if (!bundle || (bundle.timerObj && bundle.timerObj.pendingStopwatchTransaction)) {
+  if (!bundle || (bundle.timerObj
+      && (bundle.timerObj.pendingStopwatchTransaction || bundle.timerObj.pendingFocusCommit))) {
     storageRecoveryRequired = true;
     return { ok: false, reason: "normal_startup_bundle_invalid_or_transaction_present" };
   }
