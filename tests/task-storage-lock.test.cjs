@@ -214,9 +214,9 @@ function createCreditLedgerSaveHarness(taskOverrides = {}) {
     actualSeconds: 120,
     creditRevision: 1,
     creditSchemaVersion: 1,
-    lastCreditOperationId: operationId,
-    ...taskOverrides
+    lastCreditOperationId: operationId
   };
+  const inMemoryTask = { ...task, ...taskOverrides };
   const initialMain = {
     schemaVersion: 2,
     createdByVersion: '2.9.0',
@@ -241,7 +241,7 @@ function createCreditLedgerSaveHarness(taskOverrides = {}) {
     _mainStorageBaselineRaw: initialRaw,
     _mainStorageBaselineReady: true,
     _mainStorageExternalChangeObserved: false,
-    tasks: [{ ...task }],
+    tasks: [{ ...inMemoryTask }],
     appSettings: {
       firstUseDate: '2026-11-26',
       operationalDayStart: 4,
