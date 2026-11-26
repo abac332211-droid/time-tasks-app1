@@ -1510,6 +1510,8 @@ var _rollingRecoveryCheckpointHold = 0;
 var _stopwatchTransactionLockDepth = 0;
 var _focusCommitInFlight = false;
 var _focusCommitWriteDepth = 0;
+var _pendingFocusCommitWriteDepth = 0;
+var _pendingFocusCommitOwnerId = null;
 var _focusCommitPendingPromise = null;
 var _rollingRecoveryBackupPending = null;
 var _rollingRecoveryBackupEpoch = 0;
@@ -1626,6 +1628,55 @@ function _hasPersistedPendingStopwatchTransaction() {
       && timerRecord.pendingStopwatchTransaction !== undefined;
   } catch (e) {
     return true;
+  }
+}
+
+function _hasPersistedPendingFocusCommit() {
+  try {
+    var raw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (raw === null) return false;
+    var timerRecord = JSON.parse(raw);
+    if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return true;
+    if (!Object.prototype.hasOwnProperty.call(timerRecord, "pendingFocusCommit")
+        || timerRecord.pendingFocusCommit === null
+        || timerRecord.pendingFocusCommit === undefined) return false;
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
+// A transaction-owned writer scope is narrower than ordinary Web Lock ownership.
+// It is valid only for the exact durable operation identity (or the one initial
+// journal write whose validated intent is already held in memory).
+function _withPendingFocusCommitWrite(operationId, callback, allowCreate) {
+  if (typeof callback !== "function" || typeof operationId !== "string"
+      || !_isTaskStorageLockHeld()) return false;
+  if (_pendingFocusCommitWriteDepth > 0 && _pendingFocusCommitOwnerId !== operationId) return false;
+  var timerRecord = null;
+  try {
+    var raw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (raw !== null) {
+      timerRecord = JSON.parse(raw);
+      if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return false;
+    }
+  } catch (e) { return false; }
+  var persisted = timerRecord && timerRecord.pendingFocusCommit
+    ? timerRecord.pendingFocusCommit : null;
+  if (persisted) {
+    if (!_validatePendingFocusCommit(persisted) || persisted.operationId !== operationId) return false;
+  } else {
+    if (allowCreate !== true || !_focusTimer || !_focusTimer.pendingFocusCommit
+        || !_validatePendingFocusCommit(_focusTimer.pendingFocusCommit)
+        || _focusTimer.pendingFocusCommit.operationId !== operationId) return false;
+  }
+  var previousOwner = _pendingFocusCommitOwnerId;
+  _pendingFocusCommitOwnerId = operationId;
+  _pendingFocusCommitWriteDepth++;
+  try { return callback(); }
+  finally {
+    _pendingFocusCommitWriteDepth = Math.max(0, _pendingFocusCommitWriteDepth - 1);
+    _pendingFocusCommitOwnerId = _pendingFocusCommitWriteDepth > 0 ? previousOwner : null;
   }
 }
 
@@ -1762,12 +1813,17 @@ function _pendingStopwatchWriteAllowed() {
     if (timerRaw === null) return true;
     var timerRecord = JSON.parse(timerRaw);
     if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return false;
+    var focusCommit = timerRecord.pendingFocusCommit;
+    if (focusCommit !== null && focusCommit !== undefined) {
+      if (!_validatePendingFocusCommit(focusCommit)) return false;
+      return _isTaskStorageLockHeld()
+        && _pendingFocusCommitWriteDepth > 0
+        && _pendingFocusCommitOwnerId === focusCommit.operationId;
+    }
     if (!timerRecord.pendingStopwatchTransaction) return true;
 
-    // Transaction IDs identify the journal; only the runtime executing inside
-    // the successfully granted Web Lock callback owns the right to write.
-    return typeof _stopwatchTransactionLockDepth === "number"
-      && _stopwatchTransactionLockDepth > 0;
+    // The legacy journal remains isolated from the V2 focus-commit journal.
+    return _isTaskStorageLockHeld();
   } catch (e) {
     return false;
   }
@@ -9837,6 +9893,7 @@ var _focusTimer = {
   pendingPhaseEndedAt: null,
   clockAdjusted: false,
   pendingStopwatchTransaction: null,
+  pendingFocusCommit: null,
   nativeClockActive: false,
   nativeSessionToken: null,
   handledNotificationActionIds: [],
@@ -9944,7 +10001,7 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
         mode: "pomodoro", phase: "work", running: false, baseElapsed: 0,
         startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: null,
         awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false,
-        pendingStopwatchTransaction: null, nativeClockActive: false,
+        pendingStopwatchTransaction: null, pendingFocusCommit: null, nativeClockActive: false,
         nativeAnchorElapsedRealtimeMs: null, nativeAnchorBootCount: null,
         nativeAnchorBaseMs: null, nativeAnchorWallMs: null,
         nativeRestorePending: false, nativeBootMismatch: false,
@@ -9998,6 +10055,13 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
       && (typeof _validatePendingStopwatchTransaction !== "function"
         || !_validatePendingStopwatchTransaction(pendingTransaction)))
     return invalid("invalid_pending_stopwatch_transaction");
+  var pendingFocusCommit = owns("pendingFocusCommit") ? record.pendingFocusCommit : null;
+  if (pendingFocusCommit !== null && pendingFocusCommit !== undefined
+      && (typeof _validatePendingFocusCommit !== "function"
+        || !_validatePendingFocusCommit(pendingFocusCommit)))
+    return invalid("invalid_pending_focus_commit");
+  if (pendingTransaction && pendingFocusCommit)
+    return invalid("overlapping_focus_transaction_journals");
   var sessionToken = owns("nativeSessionToken") ? record.nativeSessionToken : null;
   if (sessionToken !== null && sessionToken !== undefined && !_isNativeStopwatchUuid(sessionToken))
     return invalid("invalid_native_session_token");
@@ -10038,7 +10102,8 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
     if (strictTaskReference === true) return invalid("task_reference_invalid");
     // A removed task must not invalidate unrelated elapsed timer history. Keep
     // the full transaction only when its task identity can still be verified.
-    if (pendingTransaction) return invalid("task_reference_invalid_with_transaction");
+    if (pendingTransaction || pendingFocusCommit)
+      return invalid("task_reference_invalid_with_transaction");
     taskId = null;
     clockAdjusted = true;
     migrated = true;
@@ -10083,6 +10148,7 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
       pendingPhaseEndedAt: pendingEnd,
       clockAdjusted: clockAdjusted,
       pendingStopwatchTransaction: pendingTransaction || null,
+      pendingFocusCommit: pendingFocusCommit || null,
       nativeClockActive: nativeActive,
       // Preserve the last verified service anchor while paused so FIFO
       // notification actions already queued for this token can still be checked
@@ -10826,6 +10892,7 @@ function _saveFocusTimer() {
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
       clockAdjusted: _focusTimer.clockAdjusted === true,
       pendingStopwatchTransaction: _focusTimer.pendingStopwatchTransaction || null,
+      pendingFocusCommit: _focusTimer.pendingFocusCommit || null,
       nativeClockActive: _focusTimer.nativeClockActive === true,
       nativeSessionToken: _focusTimer.nativeSessionToken || null,
       handledNotificationActionIds: Array.isArray(_focusTimer.handledNotificationActionIds)
