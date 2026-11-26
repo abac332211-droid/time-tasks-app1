@@ -236,3 +236,191 @@ test('timer projections reject duplicated native notification IDs and malformed 
     pendingPhaseEndedAt: null
   })), false);
 });
+
+
+function recoveryHarness(state) {
+  const sandbox = {
+    FOCUS_TIMER_KEY: 'timer',
+    storageRecoveryRequired: false,
+    _focusTimer: { pendingFocusCommit: JSON.parse(JSON.stringify(state.journal)) },
+    _isTaskStorageLockHeld: () => true,
+    _validatePendingFocusCommit: () => true,
+    _withPendingFocusCommitWrite: (id, callback) =>
+      id === operationId ? callback() : false,
+    _writePendingFocusCommitCredit: () => {
+      if (failOnce('credit')) return false;
+      if (!state.creditApplied) {
+        state.creditApplied = true;
+        state.creditWrites++;
+      }
+      return true;
+    },
+    _persistPendingFocusCommitStage: (journal, stage) => {
+      if (failOnce('stage:' + stage)) return false;
+      const next = { ...journal, stage, updatedAt: '2026-11-26T10:02:00.000Z' };
+      state.journal = JSON.parse(JSON.stringify(next));
+      sandbox._focusTimer.pendingFocusCommit = JSON.parse(JSON.stringify(next));
+      return true;
+    },
+    _ensurePendingFocusCommitSession: () => {
+      if (failOnce('session')) return false;
+      if (!state.sessionApplied) {
+        state.sessionApplied = true;
+        state.sessionWrites++;
+      }
+      return true;
+    },
+    _capturePendingFocusTimerProjection: () =>
+      JSON.parse(JSON.stringify(sandbox.memoryProjection)),
+    _applyPendingFocusTimerProjection: projection => {
+      sandbox.memoryProjection = JSON.parse(JSON.stringify(projection));
+      return true;
+    },
+    _saveFocusTimer: () => {
+      const isClearing = sandbox._focusTimer.pendingFocusCommit === null;
+      const isTimerUpdate = !isClearing
+        && sandbox._focusCommitDeepEqual(
+          sandbox.memoryProjection, state.journal.timerAfter
+        );
+      if (isClearing && failOnce('clear-save')) return false;
+      if (isTimerUpdate && failOnce('timer-save')) return false;
+      state.journal = sandbox._focusTimer.pendingFocusCommit === null
+        ? null : JSON.parse(JSON.stringify(sandbox._focusTimer.pendingFocusCommit));
+      state.durableProjection = JSON.parse(JSON.stringify(sandbox.memoryProjection));
+      return true;
+    },
+    _verifyPendingFocusCommitStorage: (journal, requirePending) => {
+      if (requirePending && failOnce('verify-before-clear')) return false;
+      if (!requirePending && failOnce('verify-after-clear')) return false;
+      return requirePending
+        ? sandbox._focusCommitDeepEqual(state.journal, journal)
+          && sandbox._focusCommitDeepEqual(state.durableProjection, journal.timerAfter)
+        : state.journal === null
+          && sandbox._focusCommitDeepEqual(state.durableProjection, journal.timerAfter);
+    },
+    _storeRollingRecoveryBackup: () => { state.backupCalls++; return true; },
+    console: { error() {}, warn() {}, log() {} },
+    localStorage: {
+      getItem(key) {
+        if (key !== 'timer') return null;
+        return JSON.stringify({
+          pendingFocusCommit: state.journal,
+          pendingStopwatchTransaction: null
+        });
+      }
+    }
+  };
+  sandbox.memoryProjection = JSON.parse(JSON.stringify(state.durableProjection));
+  vm.runInNewContext([
+    extractFunction('_focusCommitDeepEqual'),
+    extractFunction('_recoverPendingFocusCommitLocked')
+  ].join('\n'), sandbox);
+  function failOnce(point) {
+    if (state.failAt === point && !state.didFail) {
+      state.didFail = true;
+      return true;
+    }
+    return false;
+  }
+  return sandbox;
+}
+
+test('pending focus commit replays safely after interruption at every durable boundary', () => {
+  const failurePoints = [
+    'credit',
+    'stage:credit_applied',
+    'session',
+    'stage:session_applied',
+    'timer-save',
+    'stage:timer_applied',
+    'verify-before-clear',
+    'clear-save',
+    'verify-after-clear'
+  ];
+
+  for (const failAt of failurePoints) {
+    const journal = validPendingFocusCommit();
+    const state = {
+      journal: JSON.parse(JSON.stringify(journal)),
+      durableProjection: JSON.parse(JSON.stringify(journal.timerBefore)),
+      creditApplied: false,
+      sessionApplied: false,
+      creditWrites: 0,
+      sessionWrites: 0,
+      backupCalls: 0,
+      failAt,
+      didFail: false
+    };
+
+    const first = recoveryHarness(state);
+    assert.equal(first._recoverPendingFocusCommitLocked(), false,
+      'injected interruption at ' + failAt);
+    assert.ok(state.journal,
+      'the recovery journal must survive interruption at ' + failAt);
+    assert.equal(state.creditWrites <= 1, true);
+    assert.equal(state.sessionWrites <= 1, true);
+
+    state.failAt = null;
+    state.didFail = false;
+    const restarted = recoveryHarness(state);
+    assert.equal(restarted._recoverPendingFocusCommitLocked(), true,
+      'replay should finish after restart from ' + failAt);
+    assert.equal(state.journal, null, 'journal clears only after verified completion');
+    assert.equal(state.creditWrites, 1, 'credit side effect must apply once');
+    assert.equal(state.sessionWrites, 1, 'session side effect must apply once');
+    assert.deepEqual(state.durableProjection, journal.timerAfter);
+    assert.equal(state.backupCalls, 1);
+  }
+});
+
+function pendingFocusOwnerContext(options = {}) {
+  const journal = validPendingFocusCommit();
+  const persisted = options.persisted === false
+    ? null : { pendingFocusCommit: journal };
+  const sandbox = {
+    FOCUS_TIMER_KEY: 'timer',
+    localStorage: {
+      getItem(key) {
+        return key === 'timer' && persisted !== null
+          ? JSON.stringify(persisted) : null;
+      }
+    },
+    _focusTimer: { pendingFocusCommit: journal },
+    _isTaskStorageLockHeld: () => options.lockHeld !== false,
+    _validatePendingFocusCommit: () => options.valid !== false,
+    _pendingFocusCommitWriteDepth: 0,
+    _pendingFocusCommitOwnerId: null
+  };
+  vm.runInNewContext([
+    'var _pendingFocusCommitWriteDepth = 0;',
+    'var _pendingFocusCommitOwnerId = null;',
+    extractFunction('_withPendingFocusCommitWrite'),
+    extractFunction('_pendingStopwatchWriteAllowed')
+  ].join('\n'), sandbox);
+  return sandbox;
+}
+
+test('pending focus writes require the shared lock and the exact durable operation owner', () => {
+  const app = pendingFocusOwnerContext();
+  assert.equal(app._pendingStopwatchWriteAllowed(), false);
+  assert.equal(app._withPendingFocusCommitWrite(operationId, () =>
+    app._pendingStopwatchWriteAllowed()), true);
+  assert.equal(app._pendingFocusCommitWriteDepth, 0);
+  assert.equal(app._pendingFocusCommitOwnerId, null);
+  assert.equal(app._pendingStopwatchWriteAllowed(), false);
+  assert.equal(app._withPendingFocusCommitWrite(
+    '223e4567-e89b-42d3-a456-426614174001', () => true), false);
+
+  const noLock = pendingFocusOwnerContext({ lockHeld: false });
+  assert.equal(noLock._withPendingFocusCommitWrite(operationId, () => true), false);
+});
+
+test('the first pending focus journal write requires a validated in-memory intent', () => {
+  const app = pendingFocusOwnerContext({ persisted: false });
+  assert.equal(app._withPendingFocusCommitWrite(operationId, () =>
+    app._pendingStopwatchWriteAllowed(), true), true);
+  assert.equal(app._withPendingFocusCommitWrite(operationId, () => true, false), false);
+
+  const invalid = pendingFocusOwnerContext({ persisted: false, valid: false });
+  assert.equal(invalid._withPendingFocusCommitWrite(operationId, () => true, true), false);
+});
