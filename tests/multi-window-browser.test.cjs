@@ -2233,14 +2233,31 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
   try {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ serviceWorkers: 'block' });
-    await context.addInitScript((initial) => {
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 9901,
+      name: 'PWA lifecycle credit guard',
+      type: 'معرفية',
+      status: 'pending',
+      expected: 30,
+      actual: 7,
+      plannedDate: '2026-11-26',
+      plannedTime: '',
+      completedAt: null,
+      createdAt: Date.now(),
+      projectId: null,
+      priority: null,
+      recurrence: null,
+      checklist: null
+    }];
+    await context.addInitScript((value) => {
       if (localStorage.getItem('timeTasksApp_v1') === null)
-        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
       if (localStorage.getItem('timeTasksApp_focusTimer') === null)
-        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
       if (localStorage.getItem('timeTasksApp_focusSessions') === null)
         localStorage.setItem('timeTasksApp_focusSessions', '[]');
-    }, seed);
+    }, initial);
 
     const page = await context.newPage();
     await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
@@ -2256,7 +2273,7 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
           _focusElapsedRemainderMs = 415;
           _focusTimer.startedAt = null;
           _focusTimer.cyclePosition = 0;
-          _focusTimer.taskId = null;
+          _focusTimer.taskId = 9901;
           _focusTimer.sessionStartAt = Date.now() - 83_415;
           _focusTimer.awaitingConfirmation = false;
           _focusTimer.pendingPhaseEndedAt = null;
@@ -2272,7 +2289,9 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
         return {
           toggleResult,
           timer,
-          sessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length
+          sessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length,
+          taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+            .find(item => item.id === 9901).actual
         };
       });
       assert.equal(started.toggleResult, true, 'the PWA Pomodoro segment must start under the shared lock');
@@ -2297,7 +2316,9 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
 
     const hiddenCheckpoint = await page.evaluate(() => ({
       timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
-      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
     }));
     assert.equal(hiddenCheckpoint.timer.baseElapsed, firstStart.timer.baseElapsed,
       'hiding must close at the last saved whole-second checkpoint');
@@ -2309,6 +2330,7 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     assert.equal(hiddenCheckpoint.timer.phase, firstStart.timer.phase);
     assert.equal(hiddenCheckpoint.sessions.length, firstStart.sessionCount,
       'hiding must not create or credit a session');
+    assert.equal(hiddenCheckpoint.taskActual, 7, 'hiding must not change the linked task balance');
 
     await page.evaluate(() => {
       window.__testVisibilityState = 'visible';
@@ -2319,12 +2341,15 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     await page.waitForTimeout(300);
     const afterFirstRestore = await page.evaluate(() => ({
       timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
-      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
     }));
     assert.equal(afterFirstRestore.timer.running, false,
       'pageshow and visible must not silently resume a paused PWA segment');
     assert.equal(afterFirstRestore.timer.baseElapsed, firstStart.timer.baseElapsed);
     assert.equal(afterFirstRestore.sessions.length, firstStart.sessionCount);
+    assert.equal(afterFirstRestore.taskActual, 7);
 
     const secondStart = await startPwaWorkSegment();
     await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
@@ -2332,26 +2357,32 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
       const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
       return timer.running === false && timer.clockAdjusted === true;
     }, null, { timeout: 10000 });
-    const afterPageHide = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
-    );
-    assert.equal(afterPageHide.baseElapsed, secondStart.timer.baseElapsed,
+    const afterPageHide = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(afterPageHide.timer.baseElapsed, secondStart.timer.baseElapsed,
       'pagehide must persist the same last trusted checkpoint');
-    assert.equal(afterPageHide.elapsedRemainderMs, Math.floor(secondStart.timer.elapsedRemainderMs));
-    assert.ok(secondStart.timer.elapsedRemainderMs - afterPageHide.elapsedRemainderMs >= 0
-      && secondStart.timer.elapsedRemainderMs - afterPageHide.elapsedRemainderMs < 1);
+    assert.equal(afterPageHide.timer.elapsedRemainderMs, Math.floor(secondStart.timer.elapsedRemainderMs));
+    assert.ok(secondStart.timer.elapsedRemainderMs - afterPageHide.timer.elapsedRemainderMs >= 0
+      && secondStart.timer.elapsedRemainderMs - afterPageHide.timer.elapsedRemainderMs < 1);
+    assert.equal(afterPageHide.taskActual, 7);
 
     await page.evaluate(() => {
       window.__testVisibilityState = 'visible';
       window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
     });
     await page.waitForTimeout(250);
-    const afterBfcacheReturn = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
-    );
-    assert.equal(afterBfcacheReturn.running, false,
+    const afterBfcacheReturn = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(afterBfcacheReturn.timer.running, false,
       'a bfcache pageshow must not resume the prior segment');
-    assert.equal(afterBfcacheReturn.baseElapsed, secondStart.timer.baseElapsed);
+    assert.equal(afterBfcacheReturn.timer.baseElapsed, secondStart.timer.baseElapsed);
+    assert.equal(afterBfcacheReturn.taskActual, 7);
 
     const thirdStart = await startPwaWorkSegment();
     const injectedFailure = await page.evaluate(() => {
@@ -2370,7 +2401,9 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
       raw: localStorage.getItem('timeTasksApp_focusTimer'),
       inMemoryRunning: _focusTimer.running,
       recoveryRequired: storageRecoveryRequired,
-      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
     }));
     assert.equal(failedPageHide.raw, injectedFailure,
       'failed pagehide persistence must not replace the durable running record');
@@ -2379,6 +2412,7 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
       'the current page must stop counting even when its checkpoint write fails');
     assert.equal(failedPageHide.recoveryRequired, true);
     assert.equal(failedPageHide.sessions.length, thirdStart.sessionCount);
+    assert.equal(failedPageHide.taskActual, 7);
 
     // A real reload creates a fresh page runtime while retaining LocalStorage.
     // Cold-start normalization must conservatively stop the unclosed old record.
@@ -2386,7 +2420,9 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     await waitForSafeStartup(page, 'PWA cold-start after failed pagehide');
     const afterColdStart = await page.evaluate(() => ({
       timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
-      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
     }));
     assert.equal(afterColdStart.timer.running, false,
       'cold-start normalization must not continue a segment whose pagehide write failed');
@@ -2398,6 +2434,8 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
     'cold start may discard only the sub-millisecond fraction of the last checkpoint');
     assert.equal(afterColdStart.sessions.length, thirdStart.sessionCount,
       'neither failed pagehide nor cold-start recovery may create an uncommitted session');
+    assert.equal(afterColdStart.taskActual, 7,
+      'neither failed pagehide nor cold start may increase the linked task balance');
 
     await context.close();
   } finally {
