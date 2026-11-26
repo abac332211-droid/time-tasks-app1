@@ -4615,7 +4615,21 @@ function saveData() {
     var previousCreditOperations = Array.isArray(existing.creditOperations)
       ? existing.creditOperations.slice() : [];
     var nextCreditOperations = previousCreditOperations.slice();
-    if (!_validateCreditOperationLedger(previousCreditOperations, previousTasks))
+    var hasCreditLedgerProtocol = previousCreditOperations.length > 0
+      || previousTasks.some(function(task) {
+        return task && ["actualSeconds", "creditRevision", "creditSchemaVersion",
+          "lastCreditOperationId"].some(function(key) {
+            return Object.prototype.hasOwnProperty.call(task, key);
+          });
+      })
+      || preparedTasks.some(function(task) {
+        return task && ["actualSeconds", "creditRevision", "creditSchemaVersion",
+          "lastCreditOperationId"].some(function(key) {
+            return Object.prototype.hasOwnProperty.call(task, key);
+          });
+      });
+    if (hasCreditLedgerProtocol
+        && !_validateCreditOperationLedger(previousCreditOperations, previousTasks))
       return false;
     var previousTaskById = new Map();
     for (var previousTaskIndex = 0; previousTaskIndex < previousTasks.length; previousTaskIndex++) {
@@ -4701,8 +4715,9 @@ function saveData() {
       nextTask.creditSchemaVersion = previousTask.creditSchemaVersion;
       nextTask.lastCreditOperationId = adjustmentId;
     }
-    if (!_creditOperationLedgerPreservesHistory(previousCreditOperations, nextCreditOperations)
-        || !_validateCreditOperationLedger(nextCreditOperations, preparedTasks)) return false;
+    if (hasCreditLedgerProtocol
+        && (!_creditOperationLedgerPreservesHistory(previousCreditOperations, nextCreditOperations)
+          || !_validateCreditOperationLedger(nextCreditOperations, preparedTasks))) return false;
 
     const v2 = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
