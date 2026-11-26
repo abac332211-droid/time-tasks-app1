@@ -4761,9 +4761,14 @@ function setDailyRating(field, value) {
     return _withTaskStorageLock(function() { return setDailyRating(field, value); });
   }
   const log = getOrCreateTodayLog();
+  const previousValue = log[field], previousUpdatedAt = log.updatedAt;
   log[field] = (log[field] === value) ? null : value;
   log.updatedAt = Date.now();
-  persistDailyLog(log);
+  if (!persistDailyLog(log)) {
+    log[field] = previousValue;
+    log.updatedAt = previousUpdatedAt;
+    return false;
+  }
   renderDailyLog();
   renderWeeklyReport();
 }
@@ -4773,9 +4778,14 @@ function setDailyEnergy(value) {
     return _withTaskStorageLock(function() { return setDailyEnergy(value); });
   }
   const log = getOrCreateTodayLog();
+  const previousEnergy = log.energy, previousUpdatedAt = log.updatedAt;
   log.energy = (log.energy === value) ? null : value;
   log.updatedAt = Date.now();
-  persistDailyLog(log);
+  if (!persistDailyLog(log)) {
+    log.energy = previousEnergy;
+    log.updatedAt = previousUpdatedAt;
+    return false;
+  }
   renderDailyLog();
   renderWeeklyReport();
 }
@@ -4785,13 +4795,18 @@ function setDailyDistractions(value) {
     return _withTaskStorageLock(function() { return setDailyDistractions(value); });
   }
   const log = getOrCreateTodayLog();
+  const previousDistractions = log.distractions, previousUpdatedAt = log.updatedAt;
   if (value === "" || value === null) log.distractions = null;
   else {
     const n = Number(value);
     log.distractions = (Number.isFinite(n) && n >= 0) ? Math.floor(n) : null;
   }
   log.updatedAt = Date.now();
-  persistDailyLog(log);
+  if (!persistDailyLog(log)) {
+    log.distractions = previousDistractions;
+    log.updatedAt = previousUpdatedAt;
+    return false;
+  }
   renderDailyLog();
   renderWeeklyReport();
 }
@@ -4801,9 +4816,14 @@ function setDailyMental(field, value) {
     return _withTaskStorageLock(function() { return setDailyMental(field, value); });
   }
   const log = getOrCreateTodayLog();
+  const previousValue = log[field], previousUpdatedAt = log.updatedAt;
   log[field] = String(value || "");
   log.updatedAt = Date.now();
-  persistDailyLog(log);
+  if (!persistDailyLog(log)) {
+    log[field] = previousValue;
+    log.updatedAt = previousUpdatedAt;
+    return false;
+  }
   renderDailyLog();
 }
 
@@ -5905,13 +5925,18 @@ function performShutdown() {
 
   closeModal();
   if (saveData()) {
-    if (nextLog) persistDailyLog(nextLog);
+    var dailyLogSaved = !nextLog || persistDailyLog(nextLog);
     renderAll();
     const parts = [];
     if (moved) parts.push('نُقلت ' + moved);
     if (cancelled) parts.push('أُلغيت ' + cancelled);
     if (kept) parts.push('بقيت ' + kept);
-    showToast('🌙 أُغلق اليوم — ' + (parts.join('، ') || 'لا تغييرات') + '. عقل حر.');
+    if (dailyLogSaved) {
+      showToast('🌙 أُغلق اليوم — ' + (parts.join('، ') || 'لا تغييرات') + '. عقل حر.');
+    } else {
+      showAlertModal("أُغلقت المهام ولم يُحفظ سجل اليوم",
+        "تم حفظ تغييرات المهام والتحقق منها، لكن تعذر حفظ الخطوة التالية في سجل اليوم. راجع السجل وأعد المحاولة.");
+    }
   } else {
     _snapshots.forEach(function(s) {
       s.ref.plannedDate = s.plannedDate;
@@ -7963,6 +7988,7 @@ function undoLastImport() {
 /* ============ Test Data ============ */
 
 function _writeMainStorageRecordVerified(raw) {
+  if (!_isTaskStorageLockHeld()) return false;
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   var previousRaw;
   try {
@@ -8010,6 +8036,7 @@ function _writeMainStorageRecordVerified(raw) {
 }
 
 function _writeTestMetadataVerified(key, value) {
+  if (!_isTaskStorageLockHeld()) return false;
   try {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -8020,6 +8047,7 @@ function _writeTestMetadataVerified(key, value) {
 }
 
 function _rollbackTestDataTransaction(previousMainRaw, previousFlagRaw, previousBackupRaw) {
+  if (!_isTaskStorageLockHeld()) return false;
   var mainOk = previousMainRaw === null
     ? (function() {
         try {
@@ -8064,6 +8092,7 @@ function injectTestData() {
   }
 
   showConfirmModal("زرع بيانات تجريبية", "سيتم إنشاء 3 أيام تجريبية. متابعة؟", function() {
+    return _withTaskStorageLock(function() {
     var currentRaw;
     try {
       if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
@@ -8158,10 +8187,15 @@ function injectTestData() {
     } catch (e) {
       showAlertModal("خطأ", "فشل الزرع: " + e.message);
     }
+
+    });
   });
 }
 
 function removeTestData() {
+  if (!_isTaskStorageLockHeld()) {
+    return _withTaskStorageLock(function() { return removeTestData(); });
+  }
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) {
     showAlertModal("الحفظ محمي", "توجد حالة تعارض أو استرداد معلّقة؛ لم تُحذف البيانات التجريبية.");
     return;
