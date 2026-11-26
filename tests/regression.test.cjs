@@ -21,7 +21,12 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return match[0];
+  return [
+    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0; }',
+    'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
+    match[0]
+  ].join('\\n');
 }
 
 test('inline application and service worker JavaScript parse', () => {
