@@ -2521,6 +2521,128 @@ function _validateTaskCreditFields(task) {
   return true;
 }
 
+// Durable, append-only credit history. It lives in the primary task record so a
+// task balance and the operation identity that changed it can be saved atomically.
+function _validateCreditOperationRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  var baseKeys = ["recordVersion", "operationId", "kind", "taskId", "revision",
+    "previousSeconds", "targetSeconds", "source", "sessionId", "createdAt"];
+  var sessionKeys = ["measuredSeconds", "creditedSeconds"];
+  var allowedKeys = baseKeys.concat(record.kind === "session" ? sessionKeys : []);
+  var ownKeys = Object.keys(record);
+  if (ownKeys.length !== allowedKeys.length) return false;
+  for (var i = 0; i < ownKeys.length; i++) {
+    if (allowedKeys.indexOf(ownKeys[i]) === -1) return false;
+  }
+  for (var j = 0; j < baseKeys.length; j++) {
+    if (!Object.prototype.hasOwnProperty.call(record, baseKeys[j])) return false;
+  }
+  var uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (record.recordVersion !== 1
+      || typeof record.operationId !== "string" || !uuidPattern.test(record.operationId)
+      || !Number.isSafeInteger(record.taskId) || record.taskId <= 0
+      || !Number.isSafeInteger(record.revision) || record.revision <= 0) return false;
+  if (record.previousSeconds !== null
+      && (!Number.isSafeInteger(record.previousSeconds) || record.previousSeconds < 0)) return false;
+  if (record.targetSeconds !== null
+      && (!Number.isSafeInteger(record.targetSeconds) || record.targetSeconds < 0)) return false;
+  if (typeof record.createdAt !== "string") return false;
+  var createdAtMs = Date.parse(record.createdAt);
+  if (!Number.isFinite(createdAtMs) || new Date(createdAtMs).toISOString() !== record.createdAt) return false;
+
+  if (record.kind === "session") {
+    if (typeof record.sessionId !== "string" || !uuidPattern.test(record.sessionId)
+        || record.sessionId !== record.operationId
+        || !Number.isSafeInteger(record.measuredSeconds) || record.measuredSeconds < 0
+        || !Number.isSafeInteger(record.creditedSeconds) || record.creditedSeconds < 0
+        || (record.source !== "measured" && record.source !== "user_adjusted")) return false;
+    if (record.source === "measured" && record.creditedSeconds !== record.measuredSeconds) return false;
+    var previous = record.previousSeconds === null ? 0 : record.previousSeconds;
+    var expectedTarget = record.creditedSeconds === 0 && record.previousSeconds === null
+      ? null : previous + record.creditedSeconds;
+    if (!Number.isSafeInteger(previous + record.creditedSeconds)
+        || record.targetSeconds !== expectedTarget) return false;
+    return true;
+  }
+  if (record.kind === "manual_adjustment") {
+    return record.sessionId === null && record.source === "manual_adjustment";
+  }
+  return false;
+}
+
+function _validateCreditOperationLedger(records, taskRecords) {
+  // Never trim this registry: dropping old IDs would make historical retries
+  // indistinguishable from new operations. At the cap, new credits must stop.
+  if (!Array.isArray(records) || records.length > 10000) return false;
+  var operationIds = new Set(), sessionIds = new Set();
+  var revisions = Object.create(null), latest = Object.create(null);
+  for (var i = 0; i < records.length; i++) {
+    var record = records[i];
+    if (!_validateCreditOperationRecord(record)) return false;
+    if (operationIds.has(record.operationId)) return false;
+    operationIds.add(record.operationId);
+    if (record.kind === "session") {
+      if (sessionIds.has(record.sessionId)) return false;
+      sessionIds.add(record.sessionId);
+    }
+    var taskKey = String(record.taskId);
+    var expectedRevision = (revisions[taskKey] || 0) + 1;
+    if (record.revision !== expectedRevision) return false;
+    if (expectedRevision > 1 && record.previousSeconds !== latest[taskKey].targetSeconds) return false;
+    revisions[taskKey] = expectedRevision;
+    latest[taskKey] = record;
+  }
+
+  if (taskRecords !== undefined) {
+    if (!Array.isArray(taskRecords)) return false;
+    for (var t = 0; t < taskRecords.length; t++) {
+      var task = taskRecords[t];
+      if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+      var hasCreditMetadata = ["actualSeconds", "creditRevision", "creditSchemaVersion",
+        "lastCreditOperationId"].some(function(key) {
+          return Object.prototype.hasOwnProperty.call(task, key);
+        });
+      var count = revisions[String(task.id)] || 0;
+      if (!hasCreditMetadata) {
+        if (count !== 0) return false;
+        continue;
+      }
+      if (!_validateTaskCreditFields(task) || task.creditRevision !== count) return false;
+      if (count === 0) {
+        if (task.lastCreditOperationId !== null) return false;
+      } else {
+        var finalOperation = latest[String(task.id)];
+        if (!finalOperation || finalOperation.operationId !== task.lastCreditOperationId
+            || finalOperation.targetSeconds !== task.actualSeconds) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function _classifyCreditOperationAttempt(records, candidate) {
+  if (!_validateCreditOperationLedger(records)) return { status: "invalid_ledger" };
+  if (!_validateCreditOperationRecord(candidate)) return { status: "invalid_operation" };
+  var existing = null;
+  for (var i = 0; i < records.length; i++) {
+    var row = records[i];
+    if (row.operationId === candidate.operationId
+        || (candidate.sessionId !== null && row.sessionId === candidate.sessionId)) {
+      if (existing) return { status: "conflict" };
+      existing = row;
+    }
+  }
+  if (!existing) return { status: "new" };
+  var keys = Object.keys(candidate);
+  if (keys.length !== Object.keys(existing).length) return { status: "conflict", record: existing };
+  for (var j = 0; j < keys.length; j++) {
+    var key = keys[j];
+    if (!Object.prototype.hasOwnProperty.call(existing, key)
+        || existing[key] !== candidate[key]) return { status: "conflict", record: existing };
+  }
+  return { status: "duplicate", record: existing };
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -2572,6 +2694,14 @@ function validateV2(data) {
         const _c = t.checklist[_ci];
         if (!_c || typeof _c.text !== "string" || typeof _c.done !== "boolean") return false;
       }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(data, "creditOperations")) {
+    if (!_validateCreditOperationLedger(data.creditOperations, data.tasks)) return false;
+  } else {
+    for (let i = 0; i < data.tasks.length; i++) {
+      if (Number.isSafeInteger(data.tasks[i].creditRevision) && data.tasks[i].creditRevision > 0) return false;
     }
   }
 
@@ -2674,7 +2804,8 @@ function buildEmptyV2(firstUseDate) {
       lastRecurringDates: {}
     },
     tasks: [],
-    dailyLogs: []
+    dailyLogs: [],
+    creditOperations: []
   };
 }
 
@@ -4153,7 +4284,8 @@ function saveData() {
       createdByVersion: createdVer,
       settings: persistedSettings,
       tasks: tasks,
-      dailyLogs: existing.dailyLogs || []
+      dailyLogs: existing.dailyLogs || [],
+      creditOperations: Array.isArray(existing.creditOperations) ? existing.creditOperations : []
     };
 
     if (!validateV2(v2)) {
@@ -6983,6 +7115,7 @@ function buildBackupObject() {
     exportedAt: localDateTimeString(), appVersion: APP_VERSION, schemaVersion: CURRENT_SCHEMA_VERSION,
     data: {
       settings: data.settings || {}, tasks: data.tasks, dailyLogs: data.dailyLogs,
+      creditOperations: Array.isArray(data.creditOperations) ? data.creditOperations : [],
       focusSessions: readArray("focusSessions", "جلسات التركيز"),
       focusTimer: _buildFocusTimerBackupSnapshot(timerRecord, Date.now(), elapsed.seconds, _phaseTargetSec(),
         new Set(data.tasks.map(function(task) { return task && task.id; })), elapsed.remainderMs, _focusElapsedRemainderMs),
@@ -7235,6 +7368,16 @@ function validateBackup(obj) {
     if (t._sourceTaskId !== undefined && t._sourceTaskId !== null
         && (!Number.isInteger(t._sourceTaskId) || t._sourceTaskId <= 0))
       return { valid: false, reason: "مرجع أصل المهمة المتكررة غير صالح (" + (i+1) + ")." };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(d, "creditOperations")) {
+    if (!_validateCreditOperationLedger(d.creditOperations, d.tasks))
+      return { valid: false, reason: "سجل عمليات اعتماد الرصيد غير صالح أو لا يطابق أرصدة المهام." };
+  } else {
+    for (let i = 0; i < d.tasks.length; i++) {
+      if (Number.isSafeInteger(d.tasks[i].creditRevision) && d.tasks[i].creditRevision > 0)
+        return { valid: false, reason: "تتطلب أرصدة المهام ذات الاعتمادات السابقة سجل عمليات الاعتماد الكامل." };
+    }
   }
 
   if (obj.backupFormatVersion >= 2
@@ -7610,6 +7753,7 @@ function showImportPreview(obj) {
   } catch (e) {}
 
   const optionalGroups = [
+    ["creditOperations", "سجل عمليات اعتماد الرصيد"],
     ["focusSessions", "جلسات التركيز"],
     ["focusTimer", "مؤقت التركيز"],
     ["mentalInbox", "الأفكار المفتوحة"],
@@ -7685,6 +7829,26 @@ function showImportPreview(obj) {
             return false;
           }
           currentRaw = localStorage.getItem(STORAGE_KEY);
+          var _existingCreditOperations = [];
+          if (currentRaw !== null) {
+            try {
+              var _existingMainForCreditLedger = JSON.parse(currentRaw);
+              if (!validateV2(_existingMainForCreditLedger)) throw new Error("existing main record failed validation");
+              _existingCreditOperations = Array.isArray(_existingMainForCreditLedger.creditOperations)
+                ? _existingMainForCreditLedger.creditOperations : [];
+            } catch (_creditLedgerReadError) {
+              storageRecoveryRequired = true;
+              showAlertModal("تعذر التحقق من سجل الاعتمادات",
+                "لم يبدأ الاستيراد لأن سجل المهام الحالي أو سجل هويات العمليات لا يمكن التحقق منه.");
+              return false;
+            }
+          }
+          if (_existingCreditOperations.length > 0
+              && (d.creditOperations === undefined || d.creditOperations === null)) {
+            showAlertModal("الاستيراد يحتاج إلى سجل الاعتمادات",
+              "هذه النسخة أقدم من سجل هويات عمليات الرصيد الموجود على هذا الجهاز. رفضنا الاستيراد حتى لا نفقد دليل العمليات السابقة أو نفتح باب إعادة اعتماد جلسة قديمة.");
+            return false;
+          }
         const settings = d.settings || {};
         const maxTaskId = d.tasks.reduce(function(max, task) {
           return Math.max(max, Number.isFinite(task && task.id) ? task.id : 0);
@@ -7710,7 +7874,8 @@ function showImportPreview(obj) {
             lastRecurringDates: settings.lastRecurringDates || {}
           }),
           tasks: d.tasks,
-          dailyLogs: d.dailyLogs
+          dailyLogs: d.dailyLogs,
+          creditOperations: Array.isArray(d.creditOperations) ? d.creditOperations : []
         };
 
         _healTaskArray(newData.tasks);
