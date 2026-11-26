@@ -162,7 +162,8 @@ test('visibility, pagehide and pageshow listeners use the conservative lifecycle
 
 test('the PWA pause helper uses the durable baseElapsed checkpoint and never computes fresh elapsed time', () => {
   const source = extractFunction('_pausePwaFocusTimerAtLastCheckpoint');
-  assert.match(source, /_focusTimer\\.baseElapsed/);
-  assert.match(source, /_focusElapsedRemainderMs/);
-  assert.doesNotMatch(source, /_getElapsedSec|_getFocusTimerElapsedParts|Date\\.now|performance\\.now/);
+  const executableSource = source.replace(/\\/\\/.*$/gm, '');
+  assert.match(executableSource, /_focusTimer\\.baseElapsed/);
+  assert.match(executableSource, /_focusElapsedRemainderMs/);
+  assert.doesNotMatch(executableSource, /_getElapsedSec|_getFocusTimerElapsedParts|Date\\.now|performance\\.now/);
 });
