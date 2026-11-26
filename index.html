@@ -2515,6 +2515,9 @@ function _validateTaskCreditFields(task) {
   if (task.lastCreditOperationId !== null
       && (typeof task.lastCreditOperationId !== "string"
         || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.lastCreditOperationId))) return false;
+  // Revision zero means no credit-changing operation has ever been applied.
+  // Every accepted operation, including a zero-second credit, advances both fields.
+  if ((task.creditRevision === 0) !== (task.lastCreditOperationId === null)) return false;
   return true;
 }
 
