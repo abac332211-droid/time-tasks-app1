@@ -2113,7 +2113,12 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     }
   };
   vm.runInNewContext(
-    extractFunction('_readPersistedRollingBackupGeneration') + '\n'
+    extractFunction('_validateTaskCreditFields') + '\n'
+      + extractFunction('_validateCreditOperationRecord') + '\n'
+      + extractFunction('_validateCreditOperationLedger') + '\n'
+      + extractFunction('_creditOperationLedgerPreservesHistory') + '\n'
+      + extractFunction('_creditOperationSnapshotPreservesHistory') + '\n'
+      + extractFunction('_readPersistedRollingBackupGeneration') + '\n'
       + extractFunction('_parseRollingRecoveryBackup') + '\n'
       + extractFunction('_getLatestRollingRecoveryBackup') + '\n'
       + extractFunction('_storeRollingRecoveryBackupLocked') + '\n'

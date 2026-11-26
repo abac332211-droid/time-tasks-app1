@@ -549,6 +549,13 @@ function restoreContext(storage) {
     _reloadAfterVerifiedOperation: () => context.location.reload(),
     _invalidateProjectsCache: () => { invalidations++; }
   };
+  vm.runInNewContext([
+    extractTopLevelSource('_validateTaskCreditFields'),
+    extractTopLevelSource('_validateCreditOperationRecord'),
+    extractTopLevelSource('_validateCreditOperationLedger'),
+    extractTopLevelSource('_creditOperationLedgerPreservesHistory'),
+    extractTopLevelSource('_creditOperationSnapshotPreservesHistory')
+  ].join('\\n'), context);
   return {
     context,
     invalidationCount: () => invalidations
@@ -1800,7 +1807,7 @@ test('manual undo marks restoration in progress and startup recovery completes a
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
   const faults = { throwOnSetKey: STORAGE_KEYS.PROJECTS };
   const storage = memoryStorage({
-    [STORAGE_KEYS.MAIN]: 'current-main',
+    [STORAGE_KEYS.MAIN]: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'current-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: 'current-timer',
     [STORAGE_KEYS.MENTAL_INBOX]: 'current-inbox',
