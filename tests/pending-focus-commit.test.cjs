@@ -615,6 +615,7 @@ function creditWriterContext(task, operations, journal) {
     extractFunction('_capturePendingFocusCreditSnapshot'),
     extractFunction('_pendingFocusTaskMatchesCreditSnapshot'),
     extractFunction('_focusCommitDeepEqual'),
+    extractFunction('_focusCommitLedgerCanAcceptOperation'),
     extractFunction('_writePendingFocusCommitCredit')
   ].join('\n');
   vm.createContext(sandbox);
@@ -723,6 +724,9 @@ test('V2 credit writer refuses a new operation when the append-only ledger is fu
     lastCreditOperationId: records[records.length - 1].operationId
   });
   const runtime = creditWriterContext(task, records, journal);
+  assert.equal(runtime.app._focusCommitLedgerCanAcceptOperation(
+    runtime.readMain(), 7, journal.creditBefore), false,
+    'a full ledger must be rejected before the commit entry point writes a pending journal');
   assert.equal(runtime.app._writePendingFocusCommitCredit(journal), false);
   assert.equal(runtime.values.get('main'), runtime.originalRaw,
     'the full append-only ledger must be retained byte-for-byte');

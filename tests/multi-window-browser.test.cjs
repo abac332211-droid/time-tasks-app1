@@ -2912,6 +2912,21 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
       !_focusCommitInFlight && !_focusCommitPendingPromise,
     null, { timeout: 10000 });
 
+    const postCommitReadiness = await pageA.evaluate(() => ({
+      storageRecoveryRequired,
+      focusCommitInFlight: _focusCommitInFlight,
+      focusCommitPending: !!_focusCommitPendingPromise,
+      lockDepth: _stopwatchTransactionLockDepth,
+      mainBaselineReady: _mainStorageBaselineReady,
+      mainBaselineMatches: localStorage.getItem(STORAGE_KEY) === _mainStorageBaselineRaw,
+      externalChangeObserved: _mainStorageExternalChangeObserved,
+      storageWriteAllowed: _storageWriteAllowed(),
+      pendingStopwatchWriteAllowed: _pendingStopwatchWriteAllowed(),
+      rollingCheckpointHold: _rollingRecoveryCheckpointHold
+    }));
+    assert.equal(postCommitReadiness.storageWriteAllowed, true,
+      'a completed V2 commit must release all normal-write guards: ' + JSON.stringify(postCommitReadiness));
+
     // Editing an already-migrated task must append manual_adjustment operations
     // through the ordinary saveData path, preserving null as distinct from zero.
     const manualAdjustmentsSaved = await pageA.evaluate(async () =>

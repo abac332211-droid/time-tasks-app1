@@ -14333,20 +14333,41 @@ function _newPendingFocusCommitUuid() {
 
 // V2-only commit entry point. It requires an already-migrated task credit
 // snapshot; the legacy Stopwatch writer remains unchanged and separate.
+function _focusCommitLedgerCanAcceptOperation(mainData, taskId, creditSnapshot) {
+  if (!mainData || !validateV2(mainData) || !Array.isArray(mainData.tasks)
+      || !Array.isArray(mainData.creditOperations)
+      || mainData.creditOperations.length >= 10000
+      || JSON.stringify(mainData.tasks) !== JSON.stringify(tasks)) return false;
+  var persistedTask = mainData.tasks.find(function(row) { return row && row.id === taskId; });
+  return !!persistedTask && _pendingFocusTaskMatchesCreditSnapshot(persistedTask, creditSnapshot);
+}
+
 function _commitFocusSessionV2Locked(sessionFields) {
   if (!_isTaskStorageLockHeld() || !sessionFields
       || typeof sessionFields !== "object" || Array.isArray(sessionFields)
       || _focusTimer.running !== false || _focusTimer.pendingStopwatchTransaction
       || _focusTimer.pendingFocusCommit
       || _hasPersistedPendingFocusCommit()) return false;
-  var sessionId = _newPendingFocusCommitUuid();
-  if (!sessionId) return false;
   var timerBefore = _capturePendingFocusTimerProjection();
   if (!timerBefore || timerBefore.taskId === null
       || timerBefore.mode !== sessionFields.mode || timerBefore.phase !== "work") return false;
   var task = tasks.find(function(row) { return row && row.id === timerBefore.taskId; });
   var creditBefore = _capturePendingFocusCreditSnapshot(task);
   if (!creditBefore || creditBefore.creditRevision >= Number.MAX_SAFE_INTEGER) return false;
+  // Refuse a full or stale append-only ledger before creating the durable
+  // journal. Otherwise a capacity failure would leave a transaction that can
+  // never advance and would unnecessarily lock normal writes.
+  var mainRaw;
+  var mainData;
+  try {
+    mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null || !_mainStorageBaselineReady
+        || _mainStorageExternalChangeObserved || mainRaw !== _mainStorageBaselineRaw) return false;
+    mainData = JSON.parse(mainRaw);
+  } catch (ledgerReadError) {
+    return false;
+  }
+  if (!_focusCommitLedgerCanAcceptOperation(mainData, timerBefore.taskId, creditBefore)) return false;
   var measured = sessionFields.durationSec;
   var credited = sessionFields.creditedSeconds;
   if (!Number.isSafeInteger(measured) || measured < 0
@@ -14362,6 +14383,10 @@ function _commitFocusSessionV2Locked(sessionFields) {
 
   var sessions = _readPendingFocusSessions();
   if (!sessions.ok) return false;
+  var sessionId = _newPendingFocusCommitUuid();
+  if (!sessionId
+      || mainData.creditOperations.some(function(row) { return row.operationId === sessionId; })
+      || sessions.rows.some(function(row) { return row && row.sessionId === sessionId; })) return false;
   var existingIdentity = sessions.rows.some(function(row) {
     return row && row.startedAt === sessionFields.startedAt
       && row.taskId === timerBefore.taskId
