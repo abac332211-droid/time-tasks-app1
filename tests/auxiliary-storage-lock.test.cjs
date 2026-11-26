@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const appScript = Array.from(html.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi))
+const appScript = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
   .map((match) => match[1])
   .find((source) => source.includes('APP_VERSION'));
 
@@ -15,7 +15,7 @@ assert.ok(appScript, 'application script exists');
 
 function extractFunction(name) {
   const pattern = new RegExp(
-    'function\\\\s+' + name + '\\\\s*\\\\([^)]*\\\\)\\\\s*\\\\{[\\\\s\\\\S]*?\\\\n\\\\}'
+    'function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}'
   );
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists');
@@ -23,10 +23,10 @@ function extractFunction(name) {
 }
 
 function extractTopLevelFunction(name) {
-  const pattern = new RegExp('^(?:async\\\\s+)?function\\\\s+' + name + '\\\\s*\\\\(', 'm');
+  const pattern = new RegExp('^(?:async\\s+)?function\\s+' + name + '\\s*\\(', 'm');
   const start = appScript.search(pattern);
   assert.notEqual(start, -1, 'top-level function ' + name + ' exists');
-  const nextFunction = appScript.slice(start + 1).search(/^function\\s+|^async function\\s+/m);
+  const nextFunction = appScript.slice(start + 1).search(/^function\s+|^async function\s+/m);
   return nextFunction === -1
     ? appScript.slice(start)
     : appScript.slice(start, start + 1 + nextFunction);
@@ -116,7 +116,7 @@ test('each secondary collection save helper independently requires lock ownershi
   ]) {
     assert.match(
       extractFunction(name),
-      /_isTaskStorageLockHeld\\s*\\(\\s*\\)/,
+      /_isTaskStorageLockHeld\s*\(\s*\)/,
       name + ' must reject calls outside the shared lock'
     );
   }
@@ -141,21 +141,21 @@ test('mental inbox, thought, project, and duration mutators acquire the shared l
   ]) {
     assert.match(
       extractTopLevelFunction(name),
-      /_withTaskStorageLock\\s*\\(/,
+      /_withTaskStorageLock\s*\(/,
       name + ' must acquire the shared lock before writing'
     );
   }
 });
 
 test('notification preference writes use the shared lock without holding it during permission prompts', () => {
-  assert.match(extractFunction('_setNotificationsPrefWithLock'), /_withTaskStorageLock\\s*\\(/);
+  assert.match(extractFunction('_setNotificationsPrefWithLock'), /_withTaskStorageLock\s*\(/);
   assert.match(extractTopLevelFunction('_setCapacitorNotificationsEnabled'), /_setNotificationsPrefWithLock/);
   assert.match(extractTopLevelFunction('toggleNotifications'), /_setNotificationsPrefWithLock/);
   assert.match(extractTopLevelFunction('_applyNotifPermissionResult'), /_setNotificationsPrefWithLock/);
 
-  const directCalls = appScript.split('\\n').filter((line) =>
-    /_setNotificationsPref\\s*\\(/.test(line)
-    && !/^function _setNotificationsPref\\s*\\(/.test(line)
+  const directCalls = appScript.split('\n').filter((line) =>
+    /_setNotificationsPref\s*\(/.test(line)
+    && !/^function _setNotificationsPref\s*\(/.test(line)
     && !/_setNotificationsPrefWithLock/.test(line)
   );
   assert.deepEqual(directCalls, [
