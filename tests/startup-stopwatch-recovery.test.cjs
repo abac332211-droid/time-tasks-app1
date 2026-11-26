@@ -581,6 +581,7 @@ test('timer and task write gates remain closed after startup recovery failure', 
     _focusCommitInFlight: false,
     _focusTimerExternalConflict: false,
     _stopwatchTransactionLockDepth: 0,
+    _taskStorageWriteInFlight: false,
     _mainStorageExternalChangeObserved: false,
     _isFocusCommitBlocked() { return false; }
   };
