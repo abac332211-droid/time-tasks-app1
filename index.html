@@ -3979,7 +3979,33 @@ function _recoverInterruptedReset(options) {
   }
 }
 
+function _runWithTaskStorageWriteLock(callback) {
+  if (typeof callback !== "function") return false;
+  function reportFailure(error) {
+    console.error("Task storage write could not acquire the shared transaction lock:", error);
+    showAlertModal("تعذر تأمين حفظ البيانات",
+      "لم تُحفظ العملية لأن القفل الحصري لبيانات المهام غير متاح. لم نكتب فوق بيانات أحدث؛ أعد المحاولة بعد تحديث الصفحة.");
+    return false;
+  }
+  if (typeof _stopwatchTransactionLockDepth === "number"
+      && _stopwatchTransactionLockDepth > 0) {
+    try {
+      var nestedResult = callback();
+      return nestedResult && typeof nestedResult.then === "function"
+        ? nestedResult.catch(reportFailure) : nestedResult;
+    } catch (error) {
+      return reportFailure(error);
+    }
+  }
+  return _withStopwatchTransactionLock(callback).catch(reportFailure);
+}
+
 function saveData() {
+  if (typeof _stopwatchTransactionLockDepth !== "number" || _stopwatchTransactionLockDepth <= 0) {
+    console.error("saveData: refusing write without the shared exclusive Web Lock");
+    showToast("⚠️ أوقفنا الحفظ لأن القفل الحصري لبيانات المهام غير مملوك.");
+    return false;
+  }
   var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
     && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
