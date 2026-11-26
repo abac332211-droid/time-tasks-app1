@@ -275,8 +275,8 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   const backup = buildBackup();
 
   assert.equal(backup.backupFormatVersion, 2);
-  assert.deepEqual(backup.data.creditOperations, [creditOperation],
-    'backup export must retain the durable operation identity ledger');
+  assert.equal(JSON.stringify(backup.data.creditOperations), JSON.stringify([creditOperation]),
+    'backup export must retain the durable operation identity ledger across the VM boundary');
 
   assert.equal(backup.data.focusTimer.running, false);
   assert.equal(backup.data.focusTimer.baseElapsed, 300);
