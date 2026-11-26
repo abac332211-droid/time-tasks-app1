@@ -168,6 +168,14 @@ test('operation identity, task identity and revision chain must be valid', () =>
   assert.equal(app._validateTaskCreditOperationV1(sessionCredit({ taskId: 0 })), false);
   assert.equal(app._validateTaskCreditOperationV1(sessionCredit({ previousLastCreditOperationId: 'bad-id' })), false);
   assert.equal(app._validateTaskCreditOperationV1(sessionCredit({ previousLastCreditOperationId: operationId })), false);
+  assert.equal(app._validateTaskCreditOperationV1(sessionCredit({
+    previousCreditRevision: 0,
+    previousLastCreditOperationId: previousOperationId
+  })), false);
+  assert.equal(app._validateTaskCreditOperationV1(sessionCredit({
+    previousCreditRevision: 1,
+    previousLastCreditOperationId: null
+  })), false);
   assert.equal(app._validateTaskCreditOperationV1(sessionCredit({ targetCreditRevision: 2 })), false);
   assert.equal(app._validateTaskCreditOperationV1(sessionCredit({
     previousCreditRevision: Number.MAX_SAFE_INTEGER,
