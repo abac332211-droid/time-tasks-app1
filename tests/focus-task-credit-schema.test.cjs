@@ -37,16 +37,19 @@ function context() {
     VALID_TYPES: ['معرفية', 'بدنية', 'إدارية'],
     CURRENT_SCHEMA_VERSION: 2,
     BACKUP_FORMAT_VERSION: 2,
+    FOCUS_MAX_SESSIONS: 500,
     isValidCalendarDate: value => /^\d{4}-\d{2}-\d{2}$/.test(value),
     isValidLocalTime: value => value === '' || /^\d{2}:\d{2}$/.test(value),
     isValidLocalDateTime: value => typeof value === 'string',
     validateDailyLog: () => true,
     _validateLastRecurringDates: () => true,
-    _validateFocusTimerBackupSnapshot: () => ({ valid: true }),
-    _validateFocusSessionRecord: () => true
+    _validateFocusTimerBackupSnapshot: () => ({ valid: true })
   };
   vm.runInNewContext([
     extractFunction('_validateTaskCreditFields'),
+    extractFunction('_parseStrictFocusSessionTimestamp'),
+    extractFunction('_validateFocusSessionRecordV2'),
+    extractFunction('_validateFocusSessionRecord'),
     extractFunction('validateV2'),
     extractFunction('validateBackup')
   ].join('\n'), sandbox);
@@ -111,4 +114,50 @@ test('stored V2 validation and backup validation both enforce the same task-cred
     ...backup,
     data: { tasks: [creditTask({ actualSeconds: 1560, actual: 25 })], dailyLogs: [] }
   }).valid, false);
+});
+
+ 
+test('backup validation rejects duplicate V2 sessionId even when record IDs differ', () => {
+  const app = context();
+  const session = {
+    id: 41,
+    recordVersion: 2,
+    sessionId: uuid,
+    mode: 'pomodoro',
+    phase: 'work',
+    taskId: 1,
+    taskName: 'جلسة اختبار',
+    startedAt: '2026-11-26T10:00:00.000Z',
+    endedAt: '2026-11-26T10:25:00.000Z',
+    activeDurationMs: 25 * 60 * 1000,
+    durationSec: 25 * 60,
+    plannedDurationMs: 25 * 60 * 1000,
+    creditedSeconds: 25 * 60,
+    creditSource: 'measured',
+    outcome: 'completed',
+    clockSource: 'performance_now',
+    clockTrust: 'trusted',
+    clockAdjusted: false,
+    completed: true
+  };
+  const backup = {
+    backupFormatVersion: 1,
+    schemaVersion: 2,
+    data: {
+      tasks: [creditTask()],
+      dailyLogs: [],
+      focusSessions: [session]
+    }
+  };
+
+  assert.equal(app.validateBackup(backup).valid, true,
+    'a single valid V2 session must remain importable');
+  const duplicate = { ...session, id: session.id + 1 };
+  const rejected = app.validateBackup({
+    ...backup,
+    data: { ...backup.data, focusSessions: [session, duplicate] }
+  });
+  assert.equal(rejected.valid, false);
+  assert.match(rejected.reason, /هوية جلسة تركيز V2 مكررة/,
+    'the rejection must identify the duplicated logical session identity');
 });
