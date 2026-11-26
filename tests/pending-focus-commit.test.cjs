@@ -793,3 +793,83 @@ test('linked Stopwatch work sessions use V2 only when the approved seconds exact
   assert.equal(await untrusted.app._applyTimerFinish(120, { id: 7, name: 'Task' }, 2, 'work', clockAdjusted), 'legacy');
   assert.equal(untrusted.calls[0].writer, 'legacy');
 });
+
+
+test('successful V2 focus commit refreshes task cards and task-derived analytics immediately', async () => {
+  const refreshed = [];
+  const task = { id: 7, actual: 0, actualSeconds: 0 };
+  const sandbox = {
+    _focusCommitPendingPromise: null,
+    _focusCommitInFlight: false,
+    _startupResetRecoveryInFlight: false,
+    _resetRecoveryInFlight: false,
+    _resetInFlight: false,
+    storageRecoveryRequired: false,
+    _focusTimerExternalConflict: false,
+    _focusTimer: { pendingFocusCommit: null },
+    tasks: [task],
+    _acquireRollingRecoveryCheckpointHold: () => () => {},
+    _withStopwatchTransactionLock: callback => Promise.resolve().then(callback),
+    _migrateLegacyTaskCreditMetadataLocked: () => ({ ok: true }),
+    _focusTimerSnapshotMatchesState: () => true,
+    _capturePendingFocusCreditSnapshot: () => ({ actualSeconds: 0 }),
+    _focusCommitBaselinesMatch: () => true,
+    _buildPendingFocusSessionFields: () => ({ sessionId: operationId }),
+    _commitFocusSessionV2Locked: () => {
+      task.actual = 5;
+      task.actualSeconds = 300;
+      return true;
+    },
+    _completeRollingRecoveryCheckpoint: () => true,
+    _renderFocusTimer() {},
+    showToast() {},
+    renderTasks: () => refreshed.push('tasks'),
+    renderStats: () => refreshed.push('stats'),
+    renderTypeGapAnalysis: () => refreshed.push('type-gap'),
+    renderFocusSessionsCard: () => refreshed.push('sessions'),
+    console: { warn() {}, error() {} }
+  };
+  vm.runInNewContext(extractFunction('_commitPendingFocusSessionV2'), sandbox);
+  const committed = await sandbox._commitPendingFocusSessionV2({
+    snapshot: { taskId: 7, mode: 'pomodoro', phase: 'work', running: false, clockAdjusted: false },
+    minutesToAdd: 5,
+    successToast: 'saved'
+  });
+  assert.equal(committed, true);
+  assert.deepEqual(refreshed, ['tasks', 'stats', 'type-gap', 'sessions']);
+  assert.equal(task.actual, 5);
+});
+
+test('focus session list shows per-session remainder seconds instead of hiding them', () => {
+  const container = { innerHTML: '' };
+  const sandbox = {
+    document: {
+      getElementById() { return container; }
+    },
+    _todaySessionsStats: () => ({ count: 1, totalSec: 65 }),
+    _weeklySessionsStats: () => ({ count: 1, totalSec: 65 }),
+    _loadSessions: () => [{
+      mode: 'pomodoro',
+      phase: 'work',
+      taskName: 'مهمة',
+      durationSec: 65
+    }],
+    _formatDuration: () => '1 د',
+    _formatFocusSessionDuration: sec => {
+      assert.equal(sec, 65);
+      return '1 د 5 ث';
+    },
+    escapeHTML: value => value
+  };
+  vm.runInNewContext(extractFunction('renderFocusSessionsCard'), sandbox);
+  sandbox.renderFocusSessionsCard();
+  assert.match(container.innerHTML, /1 د 5 ث/);
+});
+
+test('focus session duration formatter retains seconds across minute and hour boundaries', () => {
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_formatFocusSessionDuration'), sandbox);
+  assert.equal(sandbox._formatFocusSessionDuration(65), '1 د 5 ث');
+  assert.equal(sandbox._formatFocusSessionDuration(120), '2 د');
+  assert.equal(sandbox._formatFocusSessionDuration(3665), '1س 1 د 5 ث');
+});
