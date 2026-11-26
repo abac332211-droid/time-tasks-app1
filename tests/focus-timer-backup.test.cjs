@@ -1177,6 +1177,7 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
     extractTopLevelSource('_validateCreditOperationRecord'),
     extractTopLevelSource('_validateCreditOperationLedger'),
     extractTopLevelSource('_creditOperationLedgerPreservesHistory'),
+    extractTopLevelSource('_getHighestCreditOperationTaskId'),
     extractTopLevelSource('_restoreFocusTimerSnapshot'),
     extractTopLevelSource('_restoreStorageSnapshot'),
     extractTopLevelSource('_rollbackRestore'),
