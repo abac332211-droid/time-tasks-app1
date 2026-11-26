@@ -13938,7 +13938,15 @@ function _recoverPendingFocusCommitLocked() {
       journal = _focusTimer.pendingFocusCommit;
       var currentProjection = _capturePendingFocusTimerProjection();
       if (_focusCommitDeepEqual(currentProjection, journal.timerBefore)) {
-        if (!_applyPendingFocusTimerProjection(journal.timerAfter) || !_saveFocusTimer()) {
+        if (!_applyPendingFocusTimerProjection(journal.timerAfter)) {
+          storageRecoveryRequired = true;
+          return false;
+        }
+        if (!_saveFocusTimer()) {
+          // Keep the in-memory view aligned with the last proven projection.
+          // A write that reached storage but failed verification will be
+          // reconciled from the durable timer record on the next recovery pass.
+          _applyPendingFocusTimerProjection(journal.timerBefore);
           storageRecoveryRequired = true;
           return false;
         }
