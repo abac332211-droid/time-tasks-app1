@@ -11426,10 +11426,39 @@ function _sessionsForDay(dateStr) {
   });
 }
 
+function _focusSessionStatsForList(list) {
+  var workCount = 0, workSeconds = 0, breakCount = 0, breakSeconds = 0;
+  function trustedSeconds(session) {
+    if (!session || session.clockTrust === "untrusted") return 0;
+    var seconds = session.durationSec;
+    return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : 0;
+  }
+  (Array.isArray(list) ? list : []).forEach(function(session) {
+    if (!session) return;
+    var seconds = trustedSeconds(session);
+    if (session.phase === "work") {
+      if (seconds > 0) {
+        workCount++;
+        workSeconds += seconds;
+      }
+    } else if (session.mode === "pomodoro"
+        && (session.phase === "short-break" || session.phase === "long-break")) {
+      if (seconds > 0) {
+        breakCount++;
+        breakSeconds += seconds;
+      }
+    }
+  });
+  return {
+    count: workCount,
+    totalSec: workSeconds,
+    breakCount: breakCount,
+    breakSec: breakSeconds
+  };
+}
+
 function _todaySessionsStats() {
-  var list = _sessionsForDay(todayStr());
-  var total = list.reduce(function(s, x) { return s + (x.durationSec || 0); }, 0);
-  return { count: list.length, totalSec: total };
+  return _focusSessionStatsForList(_sessionsForDay(todayStr()));
 }
 
 function _weeklySessionsStats() {
@@ -11438,8 +11467,7 @@ function _weeklySessionsStats() {
   var all = _loadSessions().filter(function(s) {
     return s.startedAt && daySet.has(_operationalDateFromIso(s.startedAt));
   });
-  var total = all.reduce(function(s, x) { return s + (x.durationSec || 0); }, 0);
-  return { count: all.length, totalSec: total };
+  return _focusSessionStatsForList(all);
 }
 
 function _formatFocusTime(sec) {
