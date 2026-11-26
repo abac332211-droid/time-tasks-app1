@@ -13558,6 +13558,588 @@ function _applyValidatedResyncBundle(bundle) {
   return true;
 }
 
+
+function _focusCommitDeepEqual(left, right) {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
+    return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (!_focusCommitDeepEqual(left[i], right[i])) return false;
+    }
+    return true;
+  }
+  var leftKeys = Object.keys(left).sort(), rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (var k = 0; k < leftKeys.length; k++) {
+    if (leftKeys[k] !== rightKeys[k]
+        || !_focusCommitDeepEqual(left[leftKeys[k]], right[rightKeys[k]])) return false;
+  }
+  return true;
+}
+
+function _pendingFocusTimerProjectionFromTimer(timer, remainderMs) {
+  if (!timer || timer.running !== false) return null;
+  var remainder = Number.isInteger(remainderMs) ? remainderMs : 0;
+  var projection = {
+    mode: timer.mode,
+    phase: timer.phase,
+    running: false,
+    baseElapsed: timer.baseElapsed,
+    elapsedRemainderMs: remainder,
+    cyclePosition: timer.cyclePosition,
+    taskId: timer.taskId === undefined ? null : timer.taskId,
+    sessionStartAt: timer.sessionStartAt === undefined ? null : timer.sessionStartAt,
+    awaitingConfirmation: timer.awaitingConfirmation === true,
+    pendingPhaseEndedAt: timer.pendingPhaseEndedAt === undefined ? null : timer.pendingPhaseEndedAt,
+    clockAdjusted: timer.clockAdjusted === true,
+    nativeSessionToken: timer.nativeSessionToken || null,
+    handledNotificationActionIds: Array.isArray(timer.handledNotificationActionIds)
+      ? timer.handledNotificationActionIds.slice(-10) : [],
+    pendingNotificationFinish: timer.pendingNotificationFinish
+      ? JSON.parse(JSON.stringify(timer.pendingNotificationFinish)) : null
+  };
+  return _validatePendingFocusTimerProjection(projection) ? projection : null;
+}
+
+function _capturePendingFocusTimerProjection() {
+  return _pendingFocusTimerProjectionFromTimer(_focusTimer, _focusElapsedRemainderMs);
+}
+
+function _pendingFocusTimerAfterProjection(before) {
+  if (!_validatePendingFocusTimerProjection(before)) return null;
+  var after = JSON.parse(JSON.stringify(before));
+  after.phase = "work";
+  after.running = false;
+  after.baseElapsed = 0;
+  after.elapsedRemainderMs = 0;
+  after.cyclePosition = 0;
+  after.sessionStartAt = null;
+  after.awaitingConfirmation = false;
+  after.pendingPhaseEndedAt = null;
+  after.clockAdjusted = false;
+  after.nativeSessionToken = null;
+  after.pendingNotificationFinish = null;
+  return _validatePendingFocusTimerProjection(after) ? after : null;
+}
+
+function _capturePendingFocusCreditSnapshot(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return null;
+  var keys = ["actualSeconds", "actual", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"];
+  if (!keys.every(function(key) { return Object.prototype.hasOwnProperty.call(task, key); })
+      || !_validateTaskCreditFields(task)) return null;
+  var snapshot = {
+    actualSeconds: task.actualSeconds,
+    actual: task.actual,
+    creditRevision: task.creditRevision,
+    creditSchemaVersion: task.creditSchemaVersion,
+    lastCreditOperationId: task.lastCreditOperationId
+  };
+  return _validatePendingFocusCreditSnapshot(snapshot) ? snapshot : null;
+}
+
+function _pendingFocusTaskMatchesCreditSnapshot(task, snapshot) {
+  if (!_capturePendingFocusCreditSnapshot(task) || !_validatePendingFocusCreditSnapshot(snapshot)) return false;
+  var current = _capturePendingFocusCreditSnapshot(task);
+  return current.actualSeconds === snapshot.actualSeconds
+    && current.actual === snapshot.actual
+    && current.creditRevision === snapshot.creditRevision
+    && current.creditSchemaVersion === snapshot.creditSchemaVersion
+    && current.lastCreditOperationId === snapshot.lastCreditOperationId;
+}
+
+function _readPendingFocusSessions() {
+  try {
+    var raw = localStorage.getItem(FOCUS_SESSIONS_KEY);
+    if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_SESSIONS_KEY))
+      _trackSecondaryStorageRead(FOCUS_SESSIONS_KEY, raw);
+    if (_secondaryStorageConflicts[FOCUS_SESSIONS_KEY]
+        || raw !== _secondaryStorageBaselines[FOCUS_SESSIONS_KEY])
+      return { ok: false, reason: "sessions_baseline_conflict", rows: [], raw: raw };
+    var rows = raw === null ? [] : JSON.parse(raw);
+    if (!Array.isArray(rows) || rows.length > FOCUS_MAX_SESSIONS)
+      return { ok: false, reason: "sessions_record_invalid", rows: [], raw: raw };
+    var ids = new Set(), sessionIds = new Set(), transactionIds = new Set();
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!_validateFocusSessionRecord(row)) return { ok: false, reason: "session_invalid", rows: [], raw: raw };
+      if (row.id !== undefined) {
+        if (ids.has(row.id)) return { ok: false, reason: "session_id_duplicate", rows: [], raw: raw };
+        ids.add(row.id);
+      }
+      if (row.transactionId !== undefined) {
+        if (transactionIds.has(row.transactionId))
+          return { ok: false, reason: "session_transaction_duplicate", rows: [], raw: raw };
+        transactionIds.add(row.transactionId);
+      }
+      if (row.recordVersion === 2) {
+        if (sessionIds.has(row.sessionId))
+          return { ok: false, reason: "session_identity_duplicate", rows: [], raw: raw };
+        sessionIds.add(row.sessionId);
+      }
+    }
+    return { ok: true, reason: null, rows: rows, raw: raw };
+  } catch (e) {
+    return { ok: false, reason: "sessions_read_failed", rows: [], raw: null };
+  }
+}
+
+function _writePendingFocusCommitCredit(journal) {
+  if (!_isTaskStorageLockHeld() || !_storageWriteAllowed()
+      || !_validatePendingFocusCommit(journal)) return false;
+  try {
+    var mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null) return false;
+    if (!_mainStorageBaselineReady) {
+      if (!_setMainStorageBaseline(mainRaw)) return false;
+    }
+    if (_mainStorageExternalChangeObserved || mainRaw !== _mainStorageBaselineRaw) return false;
+    var mainData = JSON.parse(mainRaw);
+    if (!validateV2(mainData) || !Array.isArray(mainData.tasks)) return false;
+    var records = Array.isArray(mainData.creditOperations) ? mainData.creditOperations : [];
+    var attempt = _classifyCreditOperationAttempt(records, journal.operation);
+    var task = mainData.tasks.find(function(row) { return row && row.id === journal.taskId; });
+    if (!task) return false;
+    if (attempt.status === "duplicate") {
+      if (!_focusCommitDeepEqual(attempt.record, journal.operation)
+          || !_pendingFocusTaskMatchesCreditSnapshot(task, journal.creditAfter)) return false;
+      tasks = mainData.tasks;
+      _setMainStorageBaseline(mainRaw);
+      return true;
+    }
+    if (attempt.status !== "new"
+        || !_pendingFocusTaskMatchesCreditSnapshot(task, journal.creditBefore)) return false;
+    task.actualSeconds = journal.creditAfter.actualSeconds;
+    task.actual = journal.creditAfter.actual;
+    task.creditRevision = journal.creditAfter.creditRevision;
+    task.creditSchemaVersion = journal.creditAfter.creditSchemaVersion;
+    task.lastCreditOperationId = journal.creditAfter.lastCreditOperationId;
+    mainData.creditOperations = records.slice();
+    mainData.creditOperations.push(journal.operation);
+    if (!_creditOperationLedgerPreservesHistory(records, mainData.creditOperations)
+        || !validateV2(mainData)) return false;
+    var nextRaw = JSON.stringify(mainData);
+    if (localStorage.getItem(STORAGE_KEY) !== mainRaw) return false;
+    localStorage.setItem(STORAGE_KEY, nextRaw);
+    if (localStorage.getItem(STORAGE_KEY) !== nextRaw) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    tasks = mainData.tasks;
+    if (typeof _loadAppSettings === "function") _loadAppSettings(mainData.settings || {});
+    _setMainStorageBaseline(nextRaw);
+    if (typeof _queueAllTaskReminderSync === "function") _queueAllTaskReminderSync();
+    return true;
+  } catch (e) {
+    storageRecoveryRequired = true;
+    console.error("Pending focus credit write failed:", e);
+    return false;
+  }
+}
+
+function _ensurePendingFocusCommitSession(journal) {
+  if (!_isTaskStorageLockHeld() || !_storageWriteAllowed()
+      || !_validatePendingFocusCommit(journal)) return false;
+  var read = _readPendingFocusSessions();
+  if (!read.ok) return false;
+  var found = read.rows.find(function(row) {
+    return row && row.recordVersion === 2 && row.sessionId === journal.operationId;
+  });
+  if (found) return _focusCommitDeepEqual(found, journal.session);
+  if (read.rows.some(function(row) { return row && row.id === journal.session.id; })) return false;
+  var rows = read.rows.slice();
+  if (rows.length >= FOCUS_MAX_SESSIONS) rows = rows.slice(-(FOCUS_MAX_SESSIONS - 1));
+  rows.push(JSON.parse(JSON.stringify(journal.session)));
+  if (!_saveSessions(rows)) return false;
+  var savedRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
+  var savedRows = savedRaw === null ? [] : JSON.parse(savedRaw);
+  var saved = Array.isArray(savedRows) ? savedRows.find(function(row) {
+    return row && row.recordVersion === 2 && row.sessionId === journal.operationId;
+  }) : null;
+  return !!saved && _focusCommitDeepEqual(saved, journal.session);
+}
+
+function _applyPendingFocusTimerProjection(projection) {
+  if (!_validatePendingFocusTimerProjection(projection)) return false;
+  _focusTimer.mode = projection.mode;
+  _focusTimer.phase = projection.phase;
+  _focusTimer.running = false;
+  _focusTimer.baseElapsed = projection.baseElapsed;
+  _focusTimer.startedAt = null;
+  _focusTimer.cyclePosition = projection.cyclePosition;
+  _focusTimer.taskId = projection.taskId;
+  _focusTimer.sessionStartAt = projection.sessionStartAt;
+  _focusTimer.awaitingConfirmation = projection.awaitingConfirmation;
+  _focusTimer.pendingPhaseEndedAt = projection.pendingPhaseEndedAt;
+  _focusTimer.clockAdjusted = projection.clockAdjusted;
+  _focusTimer.nativeSessionToken = projection.nativeSessionToken;
+  _focusTimer.handledNotificationActionIds = projection.handledNotificationActionIds.slice();
+  _focusTimer.pendingNotificationFinish = projection.pendingNotificationFinish
+    ? JSON.parse(JSON.stringify(projection.pendingNotificationFinish)) : null;
+  _focusTimer.nativeClockActive = false;
+  _focusTimer.nativeRestorePending = false;
+  _focusTimer.nativeBootMismatch = false;
+  _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+  _focusTimer.nativeAnchorBootCount = null;
+  _focusTimer.nativeAnchorBaseMs = null;
+  _focusTimer.nativeAnchorWallMs = null;
+  _focusElapsedRemainderMs = projection.elapsedRemainderMs;
+  if (typeof _clearFocusTimerClock === "function") _clearFocusTimerClock();
+  return _focusCommitDeepEqual(_capturePendingFocusTimerProjection(), projection);
+}
+
+function _persistPendingFocusCommitStage(journal, stage) {
+  var next = JSON.parse(JSON.stringify(journal));
+  next.stage = stage;
+  next.updatedAt = new Date().toISOString();
+  if (!_validatePendingFocusCommit(next)) return false;
+  var previous = _focusTimer.pendingFocusCommit;
+  _focusTimer.pendingFocusCommit = next;
+  if (!_saveFocusTimer()) {
+    _focusTimer.pendingFocusCommit = previous;
+    return false;
+  }
+  return true;
+}
+
+function _verifyPendingFocusCommitStorage(journal, requirePendingJournal, allowLaterCredits) {
+  try {
+    var mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null) return false;
+    var mainData = JSON.parse(mainRaw);
+    if (!validateV2(mainData) || !Array.isArray(mainData.tasks)) return false;
+    var records = Array.isArray(mainData.creditOperations) ? mainData.creditOperations : [];
+    var attempt = _classifyCreditOperationAttempt(records, journal.operation);
+    if (attempt.status !== "duplicate" || !_focusCommitDeepEqual(attempt.record, journal.operation)) return false;
+    var task = mainData.tasks.find(function(row) { return row && row.id === journal.taskId; });
+    if (!task) return false;
+    if (allowLaterCredits) {
+      if (!_validateTaskCreditFields(task) || task.creditRevision < journal.creditAfter.creditRevision) return false;
+    } else if (!_pendingFocusTaskMatchesCreditSnapshot(task, journal.creditAfter)) return false;
+
+    var sessions = _readPendingFocusSessions();
+    if (!sessions.ok) return false;
+    var savedSession = sessions.rows.find(function(row) {
+      return row && row.recordVersion === 2 && row.sessionId === journal.operationId;
+    });
+    if (savedSession) {
+      if (!_focusCommitDeepEqual(savedSession, journal.session)) return false;
+    } else if (!allowLaterCredits || sessions.rows.length < FOCUS_MAX_SESSIONS) {
+      return false;
+    }
+
+    var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (timerRaw === null) return false;
+    var timerObj = JSON.parse(timerRaw);
+    if (!timerObj || typeof timerObj !== "object" || Array.isArray(timerObj)
+        || timerObj.pendingStopwatchTransaction) return false;
+    if (requirePendingJournal) {
+      if (!_focusCommitDeepEqual(timerObj.pendingFocusCommit, journal)) return false;
+      var normalized = _normalizeFocusTimerRecord(timerObj, mainData.tasks, true);
+      if (!normalized.valid) return false;
+      var projection = _pendingFocusTimerProjectionFromTimer(normalized.timer, normalized.remainderMs);
+      return !!projection && _focusCommitDeepEqual(projection, journal.timerAfter);
+    }
+    if (timerObj.pendingFocusCommit !== null && timerObj.pendingFocusCommit !== undefined) return false;
+    var finalTimer = _normalizeFocusTimerRecord(timerObj, mainData.tasks, true);
+    if (!finalTimer.valid) return false;
+    if (allowLaterCredits) return true;
+    var finalProjection = _pendingFocusTimerProjectionFromTimer(finalTimer.timer, finalTimer.remainderMs);
+    return !!finalProjection && _focusCommitDeepEqual(finalProjection, journal.timerAfter);
+  } catch (e) {
+    return false;
+  }
+}
+
+function _recoverPendingFocusCommitLocked() {
+  if (!_isTaskStorageLockHeld()) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  var timerRaw, timerObj, journal;
+  try {
+    timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    timerObj = timerRaw === null ? null : JSON.parse(timerRaw);
+    journal = timerObj && timerObj.pendingFocusCommit;
+  } catch (e) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  if (!journal || !_validatePendingFocusCommit(journal)
+      || (timerObj && timerObj.pendingStopwatchTransaction)) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  return _withPendingFocusCommitWrite(journal.operationId, function() {
+    try {
+      if (!_focusCommitDeepEqual(_focusTimer.pendingFocusCommit, journal)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_writePendingFocusCommitCredit(journal)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_persistPendingFocusCommitStage(journal, "credit_applied")) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      journal = _focusTimer.pendingFocusCommit;
+      if (!_ensurePendingFocusCommitSession(journal)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_persistPendingFocusCommitStage(journal, "session_applied")) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      journal = _focusTimer.pendingFocusCommit;
+      var currentProjection = _capturePendingFocusTimerProjection();
+      if (_focusCommitDeepEqual(currentProjection, journal.timerBefore)) {
+        if (!_applyPendingFocusTimerProjection(journal.timerAfter) || !_saveFocusTimer()) {
+          storageRecoveryRequired = true;
+          return false;
+        }
+      } else if (!_focusCommitDeepEqual(currentProjection, journal.timerAfter)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_persistPendingFocusCommitStage(_focusTimer.pendingFocusCommit, "timer_applied")) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      journal = _focusTimer.pendingFocusCommit;
+      if (!_verifyPendingFocusCommitStorage(journal, true, false)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+
+      _focusTimer.pendingFocusCommit = null;
+      if (!_saveFocusTimer()) {
+        _focusTimer.pendingFocusCommit = journal;
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_verifyPendingFocusCommitStorage(journal, false, false)) {
+        _focusTimer.pendingFocusCommit = journal;
+        _withPendingFocusCommitWrite(journal.operationId, function() {
+          _focusTimer.pendingFocusCommit = journal;
+          return _saveFocusTimer();
+        }, true);
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (typeof _storeRollingRecoveryBackup === "function")
+        _storeRollingRecoveryBackup("focus-commit", 0);
+      return true;
+    } catch (e) {
+      _focusTimer.pendingFocusCommit = journal;
+      storageRecoveryRequired = true;
+      console.error("Pending focus commit recovery failed:", e);
+      return false;
+    }
+  });
+}
+
+function _verifyPendingFocusCommitSiblingOutcome(journal, bundle) {
+  if (!_validatePendingFocusCommit(journal) || !bundle
+      || !bundle.mainData || !Array.isArray(bundle.mainData.tasks)
+      || !bundle.timerObj || bundle.timerObj.pendingFocusCommit
+      || bundle.timerObj.pendingStopwatchTransaction) return false;
+  return _verifyPendingFocusCommitStorage(journal, false, true);
+}
+
+function _recoverPendingFocusCommitFromStartup(expectedJournal, lockedProbe, initialProbe) {
+  if (!_isTaskStorageLockHeld()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "lock_not_held" };
+  }
+  var currentProbe = lockedProbe || _probeStartupStopwatchRecovery();
+  var firstProbe = initialProbe || currentProbe;
+  if (!expectedJournal || !_validatePendingFocusCommit(expectedJournal)
+      || !currentProbe || currentProbe.error) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_probe_invalid" };
+  }
+  var markers = currentProbe.blockingMarkers || {};
+  if (Object.keys(markers).some(function(key) { return markers[key] === true; })) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_marker_overlap" };
+  }
+  var activeJournal = currentProbe.expectedFocusCommit || null;
+  if (activeJournal && !_focusCommitDeepEqual(activeJournal, expectedJournal)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_identity_changed" };
+  }
+
+  var bundle = _readAndValidateResyncBundle();
+  if (!bundle || !_applyValidatedResyncBundle(bundle)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_resync_bundle_invalid" };
+  }
+
+  var previousRecoveryFlag = storageRecoveryRequired;
+  storageRecoveryRequired = false;
+  var recovered;
+  if (activeJournal) {
+    var previousWriteDepth = typeof _startupStopwatchRecoveryWriteDepth === "number"
+      ? _startupStopwatchRecoveryWriteDepth : 0;
+    _startupStopwatchRecoveryWriteDepth = previousWriteDepth + 1;
+    try { recovered = _recoverPendingFocusCommitLocked(); }
+    finally { _startupStopwatchRecoveryWriteDepth = previousWriteDepth; }
+  } else {
+    recovered = _verifyPendingFocusCommitSiblingOutcome(expectedJournal, bundle);
+  }
+  if (!recovered) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    return { ok: false, reason: activeJournal
+      ? "focus_commit_recovery_failed" : "focus_commit_sibling_outcome_unproven" };
+  }
+
+  storageRecoveryRequired = false;
+  if (typeof _flushPendingCorruptStorageSnapshotsInsideLock === "function"
+      && !_flushPendingCorruptStorageSnapshotsInsideLock()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "corrupt_snapshot_preservation_failed" };
+  }
+  var postInit = _runPostRecoveryPersistedInitInsideLock();
+  if (!postInit.ok) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_post_init_failed", detail: postInit.reason };
+  }
+  if (!_finishStartupInitializationInsideLock()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_startup_finalize_failed" };
+  }
+  return { ok: true, recovered: activeJournal ? "replayed" : "sibling_commit_verified" };
+}
+
+function _newPendingFocusCommitUuid() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+      return crypto.randomUUID();
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      var bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      var hex = Array.from(bytes).map(function(byte) {
+        return byte.toString(16).padStart(2, "0");
+      }).join("");
+      return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-"
+        + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+    }
+  } catch (e) {}
+  return null;
+}
+
+// V2-only commit entry point. It requires an already-migrated task credit
+// snapshot; the legacy Stopwatch writer remains unchanged and separate.
+function _commitFocusSessionV2Locked(sessionFields) {
+  if (!_isTaskStorageLockHeld() || !sessionFields
+      || typeof sessionFields !== "object" || Array.isArray(sessionFields)
+      || _focusTimer.running !== false || _focusTimer.pendingStopwatchTransaction
+      || _focusTimer.pendingFocusCommit
+      || _hasPersistedPendingFocusCommit()) return false;
+  var sessionId = _newPendingFocusCommitUuid();
+  if (!sessionId) return false;
+  var timerBefore = _capturePendingFocusTimerProjection();
+  if (!timerBefore || timerBefore.taskId === null
+      || timerBefore.mode !== sessionFields.mode || timerBefore.phase !== "work") return false;
+  var task = tasks.find(function(row) { return row && row.id === timerBefore.taskId; });
+  var creditBefore = _capturePendingFocusCreditSnapshot(task);
+  if (!creditBefore || creditBefore.creditRevision >= Number.MAX_SAFE_INTEGER) return false;
+  var measured = sessionFields.durationSec;
+  var credited = sessionFields.creditedSeconds;
+  if (!Number.isSafeInteger(measured) || measured < 0
+      || !Number.isSafeInteger(credited) || credited < 0
+      || (sessionFields.creditSource !== "measured"
+        && sessionFields.creditSource !== "user_adjusted")) return false;
+  if (sessionFields.activeDurationMs !== timerBefore.baseElapsed * 1000
+      + timerBefore.elapsedRemainderMs
+      || measured !== Math.floor(sessionFields.activeDurationMs / 1000)
+      || sessionFields.taskId !== timerBefore.taskId
+      || !Number.isFinite(timerBefore.sessionStartAt)
+      || new Date(timerBefore.sessionStartAt).toISOString() !== sessionFields.startedAt) return false;
+
+  var sessions = _readPendingFocusSessions();
+  if (!sessions.ok) return false;
+  var nextNumericId = sessions.rows.reduce(function(max, row) {
+    return Math.max(max, Number.isSafeInteger(row && row.id) ? row.id : 0);
+  }, 0) + 1;
+  if (!Number.isSafeInteger(nextNumericId) || nextNumericId <= 0) return false;
+  var session = Object.assign({}, sessionFields, {
+    id: nextNumericId,
+    recordVersion: 2,
+    sessionId: sessionId
+  });
+  if (!_validateFocusSessionRecordV2(session)) return false;
+
+  var previousSeconds = creditBefore.actualSeconds;
+  var baseSeconds = previousSeconds === null ? 0 : previousSeconds;
+  var targetSeconds = credited === 0 && previousSeconds === null
+    ? null : baseSeconds + credited;
+  if (!Number.isSafeInteger(baseSeconds + credited)) return false;
+  var operation = {
+    recordVersion: 1,
+    operationId: sessionId,
+    kind: "session",
+    taskId: timerBefore.taskId,
+    revision: creditBefore.creditRevision + 1,
+    previousSeconds: previousSeconds,
+    targetSeconds: targetSeconds,
+    source: session.creditSource,
+    sessionId: sessionId,
+    createdAt: session.endedAt,
+    measuredSeconds: measured,
+    creditedSeconds: credited
+  };
+  var creditAfter = {
+    actualSeconds: targetSeconds,
+    actual: targetSeconds === null ? null : Math.floor(targetSeconds / 60),
+    creditRevision: creditBefore.creditRevision + 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: sessionId
+  };
+  var timerAfter = _pendingFocusTimerAfterProjection(timerBefore);
+  var nowIso = new Date().toISOString();
+  var journal = {
+    protocolVersion: 1,
+    operationId: sessionId,
+    taskId: timerBefore.taskId,
+    operation: operation,
+    session: session,
+    creditBefore: creditBefore,
+    creditAfter: creditAfter,
+    timerBefore: timerBefore,
+    timerAfter: timerAfter,
+    stage: "prepared",
+    createdAt: nowIso,
+    updatedAt: nowIso
+  };
+  if (!_validatePendingFocusCommit(journal)) return false;
+  _focusTimer.pendingFocusCommit = journal;
+  var persisted = _withPendingFocusCommitWrite(sessionId, function() {
+    if (!_saveFocusTimer()) return false;
+    return _recoverPendingFocusCommitLocked();
+  }, true);
+  if (!persisted) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  return true;
+}
+
+function _commitFocusSessionV2(sessionFields) {
+  if (_isTaskStorageLockHeld()) return _commitFocusSessionV2Locked(sessionFields);
+  return _withStopwatchTransactionLock(function() {
+    return _commitFocusSessionV2Locked(sessionFields);
+  });
+}
+
 function _verifySiblingTransactionOutcome(bundle, expectedTx, bootPersistedGeneration) {
   if (!bundle || !expectedTx) return { proven: false };
 
