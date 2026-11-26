@@ -2446,6 +2446,33 @@ function _validateLastRecurringDates(value) {
   return true;
 }
 
+function _validateTaskCreditFields(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+  var fields = ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"];
+  var hasAny = fields.some(function(key) {
+    return Object.prototype.hasOwnProperty.call(task, key);
+  });
+  if (!hasAny) return true; // Legacy task: retain V1/V2-without-credit-fields compatibility.
+
+  for (var i = 0; i < fields.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(task, fields[i])) return false;
+  }
+  if (task.actualSeconds === null) {
+    if (task.actual !== null) return false;
+  } else {
+    if (!Number.isSafeInteger(task.actualSeconds) || task.actualSeconds < 0) return false;
+    if (task.actual === null || task.actual === undefined
+        || typeof task.actual !== "number" || !Number.isFinite(task.actual) || task.actual < 0
+        || Math.floor(task.actualSeconds / 60) !== task.actual) return false;
+  }
+  if (!Number.isSafeInteger(task.creditRevision) || task.creditRevision < 0) return false;
+  if (task.creditSchemaVersion !== 1) return false;
+  if (task.lastCreditOperationId !== null
+      && (typeof task.lastCreditOperationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.lastCreditOperationId))) return false;
+  return true;
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -2480,6 +2507,7 @@ function validateV2(data) {
     if (typeof t.type !== "string" || !VALID_TYPES.includes(t.type)) return false;
     if (typeof t.expected !== "number" || !Number.isFinite(t.expected) || t.expected < 0) return false;
     if (t.actual !== null && (typeof t.actual !== "number" || !Number.isFinite(t.actual) || t.actual < 0)) return false;
+    if (!_validateTaskCreditFields(t)) return false;
     if (typeof t.plannedDate !== "string" || !isValidCalendarDate(t.plannedDate)) return false;
     if (typeof t.plannedTime !== "string" || !isValidLocalTime(t.plannedTime)) return false;
     if (t.completedAt !== null && !isValidLocalDateTime(t.completedAt)) return false;
@@ -7005,6 +7033,8 @@ function validateBackup(obj) {
       return { valid: false, reason: "الزمن المتوقع غير صالح (" + (i+1) + ")." };
     if (t.actual !== null && (typeof t.actual !== "number" || !Number.isFinite(t.actual) || t.actual < 0))
       return { valid: false, reason: "المدة الفعلية غير صالحة (" + (i+1) + ")." };
+    if (!_validateTaskCreditFields(t))
+      return { valid: false, reason: "رصيد الثواني أو إصدار اعتماد المهمة غير صالح (" + (i+1) + ")." };
     if (typeof t.plannedDate !== "string" || !isValidCalendarDate(t.plannedDate))
       return { valid: false, reason: "التاريخ غير صالح (" + (i+1) + ")." };
     if (typeof t.plannedTime !== "string" || !isValidLocalTime(t.plannedTime))
