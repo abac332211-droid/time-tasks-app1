@@ -529,3 +529,204 @@ test('startup probe fails closed on corrupt or overlapping focus journals', () =
   assert.equal(overlapResult.pending, true);
   assert.match(overlapResult.error, /متداخلتان/);
 });
+
+
+function creditWriterTask(overrides = {}) {
+  return {
+    id: 7,
+    name: 'Credit writer task',
+    status: 'pending',
+    type: 'معرفية',
+    expected: 30,
+    actual: null,
+    plannedDate: '2026-11-26',
+    plannedTime: '',
+    completedAt: null,
+    createdAt: startedAtMs,
+    ...overrides
+  };
+}
+
+function creditWriterContext(task, operations, journal) {
+  const main = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: {
+      operationalDayStart: 4,
+      firstUseDate: '2026-01-01',
+      darkMode: false,
+      themeMode: 'system',
+      lastRecurringDates: {}
+    },
+    tasks: [JSON.parse(JSON.stringify(task))],
+    dailyLogs: [],
+    creditOperations: JSON.parse(JSON.stringify(operations))
+  };
+  const initialRaw = JSON.stringify(main);
+  const values = new Map([['main', initialRaw]]);
+  const writes = [];
+  const sandbox = {
+    CURRENT_SCHEMA_VERSION: 2,
+    VALID_STATUS: ['pending', 'done', 'cancelled'],
+    VALID_TYPES: ['معرفية', 'بدنية', 'إدارية'],
+    STORAGE_KEY: 'main',
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: initialRaw,
+    _focusTimer: { pendingFocusCommit: journal },
+    _stopwatchTransactionLockDepth: 1,
+    _pendingFocusCommitWriteDepth: 1,
+    _pendingFocusCommitOwnerId: operationId,
+    storageRecoveryRequired: false,
+    tasks: JSON.parse(JSON.stringify(main.tasks)),
+    console: { error() {}, warn() {}, log() {} },
+    isValidCalendarDate: value => /^\\d{4}-\\d{2}-\\d{2}$/.test(value),
+    isValidLocalTime: value => value === '' || /^\\d{2}:\\d{2}$/.test(value),
+    isValidLocalDateTime: value => typeof value === 'string' && Number.isFinite(Date.parse(value)),
+    validateDailyLog: () => true,
+    _isTaskStorageLockHeld: () => true,
+    _storageWriteAllowed: () => true,
+    _validatePendingFocusCommit: value => value === journal,
+    _setMainStorageBaseline(raw) {
+      sandbox._mainStorageBaselineRaw = raw;
+      sandbox._mainStorageBaselineReady = true;
+      sandbox._mainStorageExternalChangeObserved = false;
+    },
+    _loadAppSettings() {},
+    _queueAllTaskReminderSync() {},
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) {
+        writes.push([key, String(value)]);
+        values.set(String(key), String(value));
+      },
+      removeItem(key) { values.delete(String(key)); }
+    }
+  };
+  const source = [
+    extractFunction('_validateTaskCreditFields'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_validateCreditOperationLedger'),
+    extractFunction('_classifyCreditOperationAttempt'),
+    extractFunction('_creditOperationLedgerPreservesHistory'),
+    extractFunction('_validateLastRecurringDates'),
+    extractFunction('validateV2'),
+    extractFunction('_validatePendingFocusCreditSnapshot'),
+    extractFunction('_capturePendingFocusCreditSnapshot'),
+    extractFunction('_pendingFocusTaskMatchesCreditSnapshot'),
+    extractFunction('_focusCommitDeepEqual'),
+    extractFunction('_writePendingFocusCommitCredit')
+  ].join('\\n');
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  return {
+    app: sandbox,
+    values,
+    writes,
+    readMain() { return JSON.parse(values.get('main')); },
+    get originalRaw() { return initialRaw; }
+  };
+}
+
+test('V2 credit writer rejects reuse of an existing operation identity with different content', () => {
+  const journal = validPendingFocusCommit();
+  const conflictingOperation = {
+    ...journal.operation,
+    source: 'user_adjusted',
+    creditedSeconds: 66,
+    targetSeconds: 66
+  };
+  const task = creditWriterTask({
+    actual: 1,
+    actualSeconds: 66,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operationId
+  });
+  const runtime = creditWriterContext(task, [conflictingOperation], journal);
+  assert.equal(runtime.app._writePendingFocusCommitCredit(journal), false);
+  assert.equal(runtime.values.get('main'), runtime.originalRaw,
+    'an identity collision with different ledger content must preserve exact main bytes');
+  assert.equal(runtime.writes.length, 0,
+    'an identity collision must be detected before the first durable write');
+});
+
+test('V2 credit writer rejects a changed balance even when the current task record is otherwise valid', () => {
+  const journal = validPendingFocusCommit();
+  const task = creditWriterTask({
+    actual: 0,
+    actualSeconds: 0,
+    creditRevision: 0,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: null
+  });
+  const runtime = creditWriterContext(task, [], journal);
+  assert.equal(runtime.app._writePendingFocusCommitCredit(journal), false);
+  assert.equal(runtime.values.get('main'), runtime.originalRaw,
+    'a zero balance is not interchangeable with the journal null baseline');
+  assert.equal(runtime.writes.length, 0,
+    'an unexpected but schema-valid balance must fail before writing');
+});
+
+test('V2 credit writer refuses a new operation when the append-only ledger is full', () => {
+  const records = [];
+  let previousSeconds = null;
+  let finalTarget = null;
+  for (let i = 0; i < 10000; i++) {
+    let targetSeconds;
+    if (i === 9999) targetSeconds = 720;
+    else targetSeconds = i % 2 === 0 ? 1 : 2;
+    if (i > 0 && targetSeconds === previousSeconds)
+      targetSeconds = targetSeconds === 1 ? 2 : 1;
+    const operation = {
+      recordVersion: 1,
+      operationId: '00000000-0000-4000-8000-' + String(i + 1).padStart(12, '0'),
+      kind: 'manual_adjustment',
+      taskId: 7,
+      revision: i + 1,
+      previousSeconds,
+      targetSeconds,
+      source: 'manual_adjustment',
+      sessionId: null,
+      createdAt: '2026-11-26T10:00:00.000Z'
+    };
+    records.push(operation);
+    previousSeconds = targetSeconds;
+    finalTarget = targetSeconds;
+  }
+  assert.equal(records.length, 10000);
+  assert.equal(finalTarget, 720);
+
+  const journal = validPendingFocusCommit();
+  journal.creditBefore = creditSnapshot({
+    actualSeconds: 720,
+    actual: 12,
+    creditRevision: 10000,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: records[records.length - 1].operationId
+  });
+  journal.creditAfter = creditSnapshot({
+    actualSeconds: 785,
+    actual: 13,
+    creditRevision: 10001,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operationId
+  });
+  journal.operation.previousSeconds = 720;
+  journal.operation.targetSeconds = 785;
+  journal.operation.revision = 10001;
+  const task = creditWriterTask({
+    actual: 12,
+    actualSeconds: 720,
+    creditRevision: 10000,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: records[records.length - 1].operationId
+  });
+  const runtime = creditWriterContext(task, records, journal);
+  assert.equal(runtime.app._writePendingFocusCommitCredit(journal), false);
+  assert.equal(runtime.values.get('main'), runtime.originalRaw,
+    'the full append-only ledger must be retained byte-for-byte');
+  assert.equal(runtime.readMain().creditOperations.length, 10000);
+  assert.equal(runtime.writes.length, 0,
+    'the 10,001st identity must be refused without truncating history');
+});
