@@ -13646,7 +13646,10 @@ function _pausePwaFocusTimerAtLastCheckpoint(source) {
   _stopDisplayTick();
   function pauseLocked() {
     if (!_focusTimer.running) return true;
-    if (_focusTimer.nativeClockActive || _focusTimer.nativeRestorePending) return false;
+    if (_focusTimer.nativeClockActive || _focusTimer.nativeRestorePending) {
+      _startDisplayTick();
+      return false;
+    }
 
     _focusTimer.running = false;
     _focusTimer.startedAt = null;
