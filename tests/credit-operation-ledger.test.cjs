@@ -187,11 +187,11 @@ test('historical retry after newer approvals is classified as duplicate', () => 
 
   assert.equal(app._classifyCreditOperationAttempt(ledger, first).status, 'duplicate');
   assert.equal(app._classifyCreditOperationAttempt(ledger, {
-    ...first, creditedSeconds: 41, targetSeconds: 41
+    ...first, source: 'user_adjusted', creditedSeconds: 41, targetSeconds: 41
   }).status, 'conflict');
   assert.equal(app._classifyCreditOperationAttempt(ledger, {
-    ...second, operationId: ids.fourth, sessionId: ids.fourth
-  }).status, 'conflict', 'a session identity cannot be rebound to another operation');
+    ...second, taskId: 2
+  }).status, 'conflict', 'an existing identity cannot be rebound to another task');
   const newOperation = sessionOperation({
     operationId: ids.fourth,
     sessionId: ids.fourth,
