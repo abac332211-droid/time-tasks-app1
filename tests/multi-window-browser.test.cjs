@@ -2578,3 +2578,172 @@ test('closing a real Chromium page never resumes or credits a PWA timer on the n
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+test('credit migration readiness gate is checked under the real shared Web Lock and after cross-page contention', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 60000
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browser;
+  let context;
+  let ownerPage;
+  try {
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 9910,
+      name: 'Credit migration lock baseline',
+      type: 'معرفية',
+      status: 'pending',
+      expected: 30,
+      actual: 7,
+      plannedDate: '2026-11-26',
+      plannedTime: '',
+      completedAt: null,
+      createdAt: Date.now(),
+      projectId: null,
+      priority: null,
+      recurrence: null,
+      checklist: null
+    }];
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+
+    ownerPage = await context.newPage();
+    const waitingPage = await context.newPage();
+    await Promise.all([
+      ownerPage.goto(appUrl, { waitUntil: 'domcontentloaded' }),
+      waitingPage.goto(appUrl, { waitUntil: 'domcontentloaded' })
+    ]);
+    await Promise.all([
+      waitForSafeStartup(ownerPage, 'migration lock owner page'),
+      waitForSafeStartup(waitingPage, 'migration lock waiting page')
+    ]);
+
+    const outsideLock = await ownerPage.evaluate(() => _assertCreditMigrationReady());
+    assert.deepEqual(JSON.parse(JSON.stringify(outsideLock)),
+      { ok: false, reason: 'lock_required' },
+      'the readiness gate must reject a call that does not own the real shared lock');
+
+    const insideLock = await ownerPage.evaluate(async () => {
+      const result = await _withStopwatchTransactionLock(() => ({
+        readiness: _assertCreditMigrationReady(),
+        lockDepth: _stopwatchTransactionLockDepth
+      }));
+      return {
+        result,
+        lockDepthAfterRelease: _stopwatchTransactionLockDepth
+      };
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(insideLock.result.readiness)),
+      { ok: true, reason: null },
+      'the same readiness gate must accept a clean baseline while holding the real Web Lock');
+    assert.equal(insideLock.result.lockDepth, 1,
+      'the gate must execute while the shared-lock ownership depth is active');
+    assert.equal(insideLock.lockDepthAfterRelease, 0,
+      'the page-local ownership depth must return to zero after the lock is released');
+
+    // Hold the lock in one real page while the second page queues its own
+    // readiness check. The second page must not evaluate the gate before grant.
+    await ownerPage.evaluate(() => {
+      window.__migrationLockAcquired = false;
+      window.__migrationLockReleased = false;
+      window.__migrationLockError = null;
+      window.__migrationLockPromise = _withStopwatchTransactionLock(async () => {
+        window.__migrationLockAcquired = true;
+        await new Promise(resolve => { window.__releaseMigrationLock = resolve; });
+      }).then(() => {
+        window.__migrationLockReleased = true;
+      }, error => {
+        window.__migrationLockError = String(error);
+      });
+      return true;
+    });
+    await ownerPage.waitForFunction(() =>
+      window.__migrationLockAcquired === true
+      && _stopwatchTransactionLockDepth === 1,
+    null, { timeout: 10000 });
+
+    await waitingPage.evaluate(() => {
+      window.__migrationGateSettled = false;
+      window.__migrationGateOutcome = null;
+      window.__migrationGatePromise = _withStopwatchTransactionLock(() => ({
+        readiness: _assertCreditMigrationReady(),
+        lockDepth: _stopwatchTransactionLockDepth
+      })).then(value => {
+        window.__migrationGateOutcome = { status: 'resolved', value };
+        window.__migrationGateSettled = true;
+      }, error => {
+        window.__migrationGateOutcome = { status: 'rejected', error: String(error) };
+        window.__migrationGateSettled = true;
+      });
+      return true;
+    });
+
+    await waitingPage.waitForFunction(async () => {
+      const state = await navigator.locks.query();
+      return state.pending.some(request =>
+        request.name === 'timeTasksApp-stopwatch-transaction');
+    }, null, { timeout: 10000 });
+
+    // Simulate a stale/legacy writer changing the task record while the second
+    // page is waiting. Its storage event must invalidate the queued page baseline.
+    const changedRaw = await ownerPage.evaluate(() => {
+      const key = 'timeTasksApp_v1';
+      const record = JSON.parse(localStorage.getItem(key));
+      record.tasks[0].actual = 8;
+      const raw = JSON.stringify(record);
+      localStorage.setItem(key, raw);
+      return raw;
+    });
+    await waitingPage.waitForFunction(() =>
+      _mainStorageExternalChangeObserved === true,
+    null, { timeout: 10000 });
+
+    await ownerPage.evaluate(() => window.__releaseMigrationLock());
+    await ownerPage.waitForFunction(() => window.__migrationLockReleased === true,
+      null, { timeout: 10000 });
+    await waitingPage.waitForFunction(() => window.__migrationGateSettled === true,
+      null, { timeout: 10000 });
+
+    const finalState = await waitingPage.evaluate(() => ({
+      outcome: window.__migrationGateOutcome,
+      lockDepth: _stopwatchTransactionLockDepth,
+      mainRaw: localStorage.getItem('timeTasksApp_v1'),
+      sessionsRaw: localStorage.getItem('timeTasksApp_focusSessions')
+    }));
+    assert.equal(finalState.outcome.status, 'resolved');
+    assert.deepEqual(JSON.parse(JSON.stringify(finalState.outcome.value.readiness)),
+      { ok: false, reason: 'main_baseline_conflict' },
+      'a queued gate must reject the changed task baseline after it finally acquires the lock');
+    assert.equal(finalState.outcome.value.lockDepth, 1,
+      'the queued readiness gate must run only after the lock is granted');
+    assert.equal(finalState.lockDepth, 0,
+      'the queued page must release its lock after the readiness check');
+    assert.equal(finalState.mainRaw, changedRaw,
+      'the rejected readiness check must not overwrite or repair the changed task record');
+    assert.equal(JSON.parse(finalState.mainRaw).tasks[0].actual, 8);
+    assert.equal(JSON.parse(finalState.sessionsRaw || '[]').length, 0,
+      'the readiness gate must not create or credit a focus session');
+
+    await context.close();
+    context = null;
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
