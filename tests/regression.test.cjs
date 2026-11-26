@@ -185,6 +185,32 @@ test('resume keeps the original sessionStartAt instead of drifting it forward', 
   assert.equal(typeof sandbox._focusTimer.startedAt, 'number');
 });
 
+test('task storage wrapper executes its mutation only while the shared Web Lock is held', async () => {
+  const events = [];
+  const sandbox = {
+    _stopwatchTransactionLockDepth: 0,
+    _taskStorageWriteInFlight: false,
+    _withStopwatchTransactionLock(callback) {
+      this._stopwatchTransactionLockDepth++;
+      return Promise.resolve().then(callback).finally(() => { this._stopwatchTransactionLockDepth--; });
+    },
+    showToast() {}, showAlertModal() {}, console
+  };
+  vm.runInNewContext(
+    extractFunction('_isTaskStorageLockHeld') + '\\n' + extractFunction('_withTaskStorageLock'),
+    sandbox
+  );
+  const result = await sandbox._withTaskStorageLock(() => {
+    events.push(sandbox._stopwatchTransactionLockDepth);
+    assert.equal(sandbox._isTaskStorageLockHeld(), true);
+    return true;
+  });
+  assert.equal(result, true);
+  assert.deepEqual(events, [1]);
+  assert.equal(sandbox._stopwatchTransactionLockDepth, 0);
+  assert.equal(sandbox._taskStorageWriteInFlight, false);
+});
+
 test('focus commit guard blocks saveData and side-storage writes before reading storage', () => {
   let reads = 0, writes = 0;
   const sandbox = {
@@ -192,7 +218,6 @@ test('focus commit guard blocks saveData and side-storage writes before reading 
     _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
-    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -212,6 +237,28 @@ test('focus commit guard blocks saveData and side-storage writes before reading 
   assert.equal(sandbox.persistDailyLog({ date: '2026-11-23' }), false);
   assert.equal(reads, 0, 'daily log persistence must stop before reading main storage');
   assert.equal(writes, 0);
+});
+
+test('saveData refuses writes before storage access when the shared Web Lock is not held', () => {
+  let reads = 0, writes = 0;
+  const alerts = [];
+  const sandbox = {
+    storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 0,
+    STORAGE_KEY: 'main',
+    showAlertModal: (...args) => alerts.push(args),
+    showToast() {},
+    localStorage: { getItem() { reads++; return null; }, setItem() { writes++; } },
+    console
+  };
+  vm.runInNewContext(
+    extractFunction('_isTaskStorageLockHeld') + '\\n' + extractFunction('saveData'),
+    sandbox
+  );
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(reads, 0);
+  assert.equal(writes, 0);
+  assert.equal(alerts.length, 1);
 });
 
 test('saveData refuses to overwrite a malformed main record', () => {
@@ -253,7 +300,6 @@ test('saveData refuses writes while an import recovery marker remains', () => {
     _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
-    _stopwatchTransactionLockDepth: 1,
     localStorage: {
       getItem: (key) => key === 'import-in-progress' ? '1' : original,
       setItem: () => { writes++; }
