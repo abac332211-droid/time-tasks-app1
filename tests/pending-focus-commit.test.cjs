@@ -873,3 +873,53 @@ test('focus session duration formatter retains seconds across minute and hour bo
   assert.equal(sandbox._formatFocusSessionDuration(120), '2 د');
   assert.equal(sandbox._formatFocusSessionDuration(3665), '1س 1 د 5 ث');
 });
+
+
+test('default Pomodoro approval credits measured seconds rather than rounding each session to minutes', async () => {
+  const snapshot = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 72,
+    elapsedRemainderMs: 0, taskId: 7, sessionStartAt: startedAtMs,
+    pendingPhaseEndedAt: null, clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  await runtime.app._applyTimerFinish(72, { id: 7, name: 'Task' }, 1, 'work', snapshot, true);
+  assert.equal(runtime.calls[0].writer, 'v2');
+  assert.equal(runtime.calls[0].request.useMeasuredCredit, true);
+  const measured = runtime.app._buildPendingFocusSessionFields(snapshot, { id: 7, name: 'Task' }, 1, true);
+  assert.equal(measured.durationSec, 72);
+  assert.equal(measured.creditedSeconds, 72);
+  assert.equal(measured.creditSource, 'measured');
+  const manuallyAdjusted = runtime.app._buildPendingFocusSessionFields(snapshot, { id: 7, name: 'Task' }, 3, false);
+  assert.equal(manuallyAdjusted.creditedSeconds, 180);
+  assert.equal(manuallyAdjusted.creditSource, 'user_adjusted');
+});
+
+test('task credit retains seconds across multiple short Pomodoro sessions', () => {
+  const snapshotA = {
+    mode: 'pomodoro', phase: 'work', running: false, baseElapsed: 72,
+    elapsedRemainderMs: 0, taskId: 7, sessionStartAt: startedAtMs,
+    pendingPhaseEndedAt: null, clockAdjusted: false, nativeSessionToken: null
+  };
+  const snapshotB = { ...snapshotA, baseElapsed: 82, sessionStartAt: startedAtMs + 600000 };
+  const sandbox = {};
+  vm.runInNewContext(extractFunction('_buildPendingFocusSessionFields'), sandbox);
+  const a = sandbox._buildPendingFocusSessionFields(snapshotA, { id: 7, name: 'Task' }, 1, true);
+  const b = sandbox._buildPendingFocusSessionFields(snapshotB, { id: 7, name: 'Task' }, 1, true);
+  assert.equal(a.creditedSeconds + b.creditedSeconds, 154);
+  assert.equal(Math.floor((a.creditedSeconds + b.creditedSeconds) / 60), 2);
+});
+
+test('focus session summary totals display seconds instead of truncating the aggregate to whole minutes', () => {
+  const container = { innerHTML: '' };
+  const sandbox = {
+    document: { getElementById() { return container; } },
+    _todaySessionsStats: () => ({ count: 2, totalSec: 154 }),
+    _weeklySessionsStats: () => ({ count: 2, totalSec: 154 }),
+    _loadSessions: () => [],
+    _formatFocusSessionDuration: sec => sec === 154 ? '2 د 34 ث' : String(sec),
+    _formatDuration: () => '2 د'
+  };
+  vm.runInNewContext(extractFunction('renderFocusSessionsCard'), sandbox);
+  sandbox.renderFocusSessionsCard();
+  assert.equal((container.innerHTML.match(/2 د 34 ث/g) || []).length, 2);
+});
