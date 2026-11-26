@@ -5076,9 +5076,10 @@ function _executeResetAllTransaction() {
     var resetMarkerCount = Object.keys(resetMarkers).filter(function(key) {
       return resetMarkers[key] === true;
     }).length;
-    if (!resetProbe || resetProbe.error || resetProbe.expectedTx || resetMarkerCount > 0) {
+    if (!resetProbe || resetProbe.error || resetProbe.expectedTx
+        || resetProbe.expectedFocusCommit || resetMarkerCount > 0) {
       storageRecoveryRequired = true;
-      throw new Error("Reset refused because another recovery marker or Stopwatch journal is present.");
+      throw new Error("Reset refused because another recovery marker or focus transaction journal is present.");
     }
     fresh = buildEmptyV2();
     fresh.settings.darkMode = appSettings.darkMode;
