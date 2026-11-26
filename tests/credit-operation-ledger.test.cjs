@@ -423,7 +423,7 @@ function primaryWriterContext(initialData) {
   vm.runInNewContext([
     extractFunction('saveData'),
     extractFunction('persistDailyLog')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
 
   return { sandbox, storage };
 }
