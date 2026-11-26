@@ -2747,3 +2747,373 @@ test('credit migration readiness gate is checked under the real shared Web Lock 
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+function pendingFocusBrowserInitialState() {
+  const now = Date.now();
+  return {
+    main: {
+      schemaVersion: 2,
+      createdByVersion: '2.9.0',
+      settings: {
+        operationalDayStart: 4,
+        firstUseDate: new Date(now).toISOString().slice(0, 10),
+        darkMode: false,
+        themeMode: 'system',
+        lastRecurringDates: {}
+      },
+      tasks: [{
+        id: 1,
+        name: 'V2 integration task',
+        status: 'pending',
+        type: 'معرفية',
+        expected: 30,
+        actual: 12,
+        plannedDate: new Date(now).toISOString().slice(0, 10),
+        plannedTime: '',
+        completedAt: null,
+        createdAt: now
+      }],
+      dailyLogs: []
+    },
+    timer: {
+      mode: 'pomodoro',
+      phase: 'work',
+      running: false,
+      baseElapsed: 300,
+      elapsedRemainderMs: 0,
+      startedAt: null,
+      cyclePosition: 0,
+      taskId: 1,
+      sessionStartAt: now - 300000,
+      awaitingConfirmation: false,
+      pendingPhaseEndedAt: null,
+      clockAdjusted: false,
+      pendingStopwatchTransaction: null,
+      pendingFocusCommit: null,
+      nativeClockActive: false,
+      nativeSessionToken: null,
+      handledNotificationActionIds: [],
+      pendingNotificationFinish: null,
+      savedAt: now
+    }
+  };
+}
+
+async function openPendingFocusBrowserContext(server, initial) {
+  const address = server.address();
+  const appUrl = 'http://127.0.0.1:' + address.port + '/';
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  await context.addInitScript((value) => {
+    if (localStorage.getItem('timeTasksApp_v1') === null)
+      localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+    if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+      localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+    if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+      localStorage.setItem('timeTasksApp_focusSessions', '[]');
+  }, initial);
+  return { browser, context, appUrl };
+}
+
+test('real finishTimer saves one V2 Pomodoro credit operation and survives reload without duplication', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await openPendingFocusBrowserContext(server, pendingFocusBrowserInitialState());
+    browser = opened.browser;
+    context = opened.context;
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await Promise.all([
+      pageA.goto(opened.appUrl, { waitUntil: 'domcontentloaded' }),
+      pageB.goto(opened.appUrl, { waitUntil: 'domcontentloaded' })
+    ]);
+    await Promise.all([
+      waitForSafeStartup(pageA, 'V2 real finish page'),
+      waitForSafeStartup(pageB, 'V2 second window before finish')
+    ]);
+
+    await pageA.evaluate(async () => {
+      await finishTimer();
+    });
+    await pageA.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      const footer = document.getElementById('modalFooter');
+      return !!overlay && !overlay.classList.contains('hidden') && !!footer
+        && Array.from(footer.querySelectorAll('button')).some(button =>
+          button.textContent.indexOf('+ 5') >= 0);
+    }, null, { timeout: 10000 });
+
+    await pageA.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('#modalFooter button'))
+        .find(item => item.textContent.indexOf('+ 5') >= 0);
+      if (!button) throw new Error('The real Pomodoro finish confirmation button was not found.');
+      button.click();
+    });
+
+    await pageA.waitForFunction(() => {
+      try {
+        const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+        return Array.isArray(main.creditOperations) && main.creditOperations.length === 1
+          && main.tasks[0].actualSeconds === 1020
+          && main.tasks[0].actual === 17
+          && main.tasks[0].creditRevision === 1
+          && timer.pendingFocusCommit == null && timer.baseElapsed === 0
+          && sessions.filter(row => row && row.recordVersion === 2).length === 1;
+      } catch (_error) { return false; }
+    }, null, { timeout: 20000 });
+
+    const committed = await pageA.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const operation = main.creditOperations[0];
+      const session = sessions.find(row => row && row.recordVersion === 2);
+      return {
+        task: main.tasks[0],
+        operations: main.creditOperations,
+        operation,
+        session,
+        timer
+      };
+    });
+    assert.equal(committed.task.actualSeconds, 1020,
+      'legacy 12 minutes must migrate to 720 seconds, then the confirmed 5-minute session adds 300 seconds');
+    assert.equal(committed.task.actual, 17);
+    assert.equal(committed.task.creditRevision, 1);
+    assert.equal(committed.task.lastCreditOperationId, committed.operation.operationId);
+    assert.equal(committed.operations.length, 1);
+    assert.equal(committed.operation.kind, 'session');
+    assert.equal(committed.operation.previousSeconds, 720);
+    assert.equal(committed.operation.targetSeconds, 1020);
+    assert.equal(committed.operation.sessionId, committed.operation.operationId);
+    assert.equal(committed.session.sessionId, committed.operation.operationId);
+    assert.equal(committed.session.recordVersion, 2);
+    assert.equal(committed.session.taskId, 1);
+    assert.equal(committed.session.phase, 'work');
+    assert.equal(committed.session.creditedSeconds, 300);
+    assert.equal(committed.session.creditSource, 'measured');
+    assert.equal(committed.timer.pendingFocusCommit, null);
+    assert.equal(committed.timer.baseElapsed, 0);
+
+    // Reload a different same-origin window that held the pre-commit snapshot.
+    await pageB.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(pageB, 'V2 committed task after second-window reload');
+    const afterReload = await pageB.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        actualSeconds: main.tasks[0].actualSeconds,
+        actual: main.tasks[0].actual,
+        revision: main.tasks[0].creditRevision,
+        operationCount: main.creditOperations.length,
+        sessionCount: sessions.filter(row => row && row.recordVersion === 2).length,
+        pending: timer.pendingFocusCommit
+      };
+    });
+    assert.deepEqual(afterReload, {
+      actualSeconds: 1020,
+      actual: 17,
+      revision: 1,
+      operationCount: 1,
+      sessionCount: 1,
+      pending: null
+    }, 'cold reload must not replay a completed operation or duplicate its V2 session');
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('a real second Chromium window waits for a pending V2 journal and recovers it once after owner release', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await openPendingFocusBrowserContext(server, pendingFocusBrowserInitialState());
+    browser = opened.browser;
+    context = opened.context;
+    const ownerPage = await context.newPage();
+    const waitingPage = await context.newPage();
+    await Promise.all([
+      ownerPage.goto(opened.appUrl, { waitUntil: 'domcontentloaded' }),
+      waitingPage.goto(opened.appUrl, { waitUntil: 'domcontentloaded' })
+    ]);
+    await Promise.all([
+      waitForSafeStartup(ownerPage, 'V2 recovery lock owner'),
+      waitForSafeStartup(waitingPage, 'V2 recovery waiting page')
+    ]);
+
+    await ownerPage.evaluate(() => {
+      window.__pendingFocusOwnerPromise = _withStopwatchTransactionLock(async () => {
+        const migration = _migrateLegacyTaskCreditMetadataLocked();
+        if (!migration || migration.ok !== true)
+          throw new Error('Legacy credit migration failed: ' + JSON.stringify(migration));
+        const snapshot = _captureFocusTimerSnapshot();
+        const task = tasks.find(row => row && row.id === snapshot.taskId);
+        const fields = _buildPendingFocusSessionFields(snapshot, task, 5);
+        if (!fields) throw new Error('Could not build a valid V2 session payload.');
+        const originalRecovery = _recoverPendingFocusCommitLocked;
+        _recoverPendingFocusCommitLocked = function() { return false; };
+        try {
+          window.__pendingFocusCommitStarted = _commitFocusSessionV2Locked(fields);
+        } finally {
+          _recoverPendingFocusCommitLocked = originalRecovery;
+        }
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        window.__pendingFocusJournal = timer.pendingFocusCommit;
+        if (!window.__pendingFocusCommitStarted || !window.__pendingFocusJournal)
+          throw new Error('The pending V2 journal was not durably written.');
+        return await new Promise(resolve => { window.__releasePendingFocusOwner = resolve; });
+      }).catch(error => {
+        window.__pendingFocusOwnerError = String(error && error.stack || error);
+      });
+      return true;
+    });
+
+    await ownerPage.waitForFunction(() =>
+      !!window.__pendingFocusJournal
+      && _stopwatchTransactionLockDepth === 1
+      && window.__pendingFocusOwnerError == null,
+    null, { timeout: 10000 });
+
+    const exportAttempt = await waitingPage.evaluate(() => {
+      const before = localStorage.getItem('timeTasksApp_focusTimer');
+      let exported = false, error = null;
+      try {
+        buildBackupObject();
+        exported = true;
+      } catch (caught) {
+        error = String(caught && caught.message || caught);
+      }
+      const after = localStorage.getItem('timeTasksApp_focusTimer');
+      return { exported, error, before, after };
+    });
+    assert.equal(exportAttempt.exported, false,
+      'a window with a stale in-memory timer must not export while a V2 journal exists durably');
+    assert.ok(exportAttempt.error);
+    assert.equal(exportAttempt.after, exportAttempt.before,
+      'the refused export must not modify the pending journal');
+
+    const preRecoveryGuards = await ownerPage.evaluate(async () => {
+      const rb = {
+        main: localStorage.getItem('timeTasksApp_v1'),
+        focusSessions: localStorage.getItem('timeTasksApp_focusSessions'),
+        focusTimer: localStorage.getItem('timeTasksApp_focusTimer'),
+        mentalInbox: null, thoughts: null, projects: null,
+        focusSettings: null, notifications: null
+      };
+      const restore = _restoreStorageSnapshot(rb);
+      const rollback = _rollbackRestore(rb);
+
+      localStorage.setItem('timeTasksApp_importInProgress', '1');
+      const importRecovery = _recoverInterruptedImport();
+      const importMarkerAfter = localStorage.getItem('timeTasksApp_importInProgress');
+      localStorage.removeItem('timeTasksApp_importInProgress');
+
+      localStorage.setItem('timeTasksApp_resetInProgress', '{"version":1}');
+      const resetRecovery = _recoverInterruptedReset();
+      const resetMarkerAfter = localStorage.getItem('timeTasksApp_resetInProgress');
+      localStorage.removeItem('timeTasksApp_resetInProgress');
+
+      const manualRollingRestore = _restoreLatestRollingRecoveryBackup();
+      const resetBeforeMarker = await _executeResetAllTransaction();
+      const resetMarkerAfterTransaction = localStorage.getItem('timeTasksApp_resetInProgress');
+      const timerAfter = localStorage.getItem('timeTasksApp_focusTimer');
+      return {
+        restore, rollback, importRecovery, importMarkerAfter,
+        resetRecovery, resetMarkerAfter, manualRollingRestore,
+        resetBeforeMarker, resetMarkerAfterTransaction, timerAfter
+      };
+    });
+    assert.equal(preRecoveryGuards.restore, false);
+    assert.equal(preRecoveryGuards.rollback, false);
+    assert.equal(preRecoveryGuards.importRecovery, false);
+    assert.equal(preRecoveryGuards.importMarkerAfter, '1',
+      'interrupted import marker must be retained while the V2 transaction is pending');
+    assert.equal(preRecoveryGuards.resetRecovery, false);
+    assert.equal(preRecoveryGuards.resetMarkerAfter, '{"version":1}',
+      'interrupted Reset marker must be retained while the V2 transaction is pending');
+    assert.equal(preRecoveryGuards.manualRollingRestore, false);
+    assert.equal(preRecoveryGuards.resetBeforeMarker, false,
+      'normal Reset must reject the V2 journal before writing its reset marker');
+    assert.equal(preRecoveryGuards.resetMarkerAfterTransaction, null,
+      'blocked Reset must not create an overlapping recovery marker');
+    assert.ok(JSON.parse(preRecoveryGuards.timerAfter).pendingFocusCommit,
+      'all rejected backup/restore/import/reset paths must leave the durable journal intact');
+
+    await waitingPage.reload({ waitUntil: 'domcontentloaded' });
+    await waitingPage.waitForFunction(() =>
+      _startupStopwatchRecoveryInFlight === true
+      || _appInitCompleted === true
+      || _startupStopwatchRecoveryFailed === true,
+    null, { timeout: 10000 });
+    const waitingState = await waitingPage.evaluate(async () => {
+      const locks = await navigator.locks.query();
+      return {
+        initialized: _appInitCompleted === true,
+        startupInFlight: _startupStopwatchRecoveryInFlight === true,
+        startupFailed: _startupStopwatchRecoveryFailed === true,
+        waitingForSharedLock: locks.pending.some(request =>
+          request.name === 'timeTasksApp-stopwatch-transaction')
+      };
+    });
+    assert.equal(waitingState.startupFailed, false);
+    assert.equal(waitingState.initialized, false,
+      'the reloading window must not initialize past a journal while another window owns the shared lock');
+    assert.equal(waitingState.waitingForSharedLock, true,
+      'the second window must be queued on the same Web Lock');
+
+    await ownerPage.evaluate(() => window.__releasePendingFocusOwner());
+    await waitForSafeStartup(waitingPage, 'V2 real cross-window journal recovery', 20000);
+
+    const recovered = await waitingPage.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks[0],
+        operations: main.creditOperations,
+        v2Sessions: sessions.filter(row => row && row.recordVersion === 2),
+        timer
+      };
+    });
+    assert.equal(recovered.task.actualSeconds, 1020);
+    assert.equal(recovered.task.actual, 17);
+    assert.equal(recovered.task.creditRevision, 1);
+    assert.equal(recovered.operations.length, 1);
+    assert.equal(recovered.v2Sessions.length, 1);
+    assert.equal(recovered.v2Sessions[0].sessionId, recovered.operations[0].operationId);
+    assert.equal(recovered.timer.pendingFocusCommit, null);
+    assert.equal(recovered.timer.baseElapsed, 0);
+
+    await waitingPage.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(waitingPage, 'V2 transaction after a second reload');
+    const finalCounts = await waitingPage.evaluate(() => ({
+      operations: JSON.parse(localStorage.getItem('timeTasksApp_v1')).creditOperations.length,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+        .filter(row => row && row.recordVersion === 2).length
+    }));
+    assert.deepEqual(finalCounts, { operations: 1, sessions: 1 });
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
