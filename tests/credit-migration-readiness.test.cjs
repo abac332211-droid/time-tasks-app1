@@ -157,12 +157,38 @@ test('credit migration gate rejects an observed main-storage conflict', () => {
 });
 
 test('credit migration gate rejects corrupt or unsupported main task data without repair', () => {
-  const app = runtime();
-  app.storage.setItem('main', '{broken');
-  app._mainStorageBaselineRaw = '{broken';
-  assert.equal(app._assertCreditMigrationReady().reason, 'invalid_main_record');
-  assert.equal(app.storage.getItem('main'), '{broken');
+  const corrupt = runtime();
+  corrupt.storage.setItem('main', '{broken');
+  corrupt._mainStorageBaselineRaw = '{broken';
+  assert.equal(corrupt._assertCreditMigrationReady().reason, 'invalid_main_record');
+  assert.equal(corrupt.storage.getItem('main'), '{broken');
+
+  const unsupported = runtime();
+  const unsupportedRecord = JSON.parse(unsupported.storage.getItem('main'));
+  unsupportedRecord.schemaVersion = 999;
+  const unsupportedRaw = JSON.stringify(unsupportedRecord);
+  unsupported.storage.setItem('main', unsupportedRaw);
+  unsupported._mainStorageBaselineRaw = unsupportedRaw;
+  assert.equal(unsupported._assertCreditMigrationReady().reason, 'invalid_main_record');
+  assert.equal(unsupported.storage.getItem('main'), unsupportedRaw,
+    'an unsupported schema must be rejected without rewriting the original record');
 });
+ 
+test('credit migration gate fails closed when reading the persisted main record throws', () => {
+  const app = runtime();
+  const originalGetItem = app.storage.getItem.bind(app.storage);
+  const timerBefore = originalGetItem('timer');
+  app.storage.getItem = key => {
+    if (String(key) === 'main')
+      throw new Error('injected main storage read failure');
+    return originalGetItem(key);
+  };
+
+  assert.equal(app._assertCreditMigrationReady().reason, 'storage_read_failed');
+  assert.equal(originalGetItem('timer'), timerBefore,
+    'a failed main-record read must not mutate the timer or start recovery writes');
+});
+
 
 test('credit migration gate rejects task objects changed in memory but not persisted', () => {
   const app = runtime();
