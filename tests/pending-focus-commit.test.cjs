@@ -403,7 +403,8 @@ test('pending focus commit replays safely after interruption at every durable bo
 function pendingFocusOwnerContext(options = {}) {
   const journal = validPendingFocusCommit();
   const persisted = options.persisted === false
-    ? null : { pendingFocusCommit: journal };
+    ? null : (options.persisted === 'malformed'
+      ? { pendingFocusCommit: false } : { pendingFocusCommit: journal });
   const sandbox = {
     FOCUS_TIMER_KEY: 'timer',
     localStorage: {
@@ -414,7 +415,8 @@ function pendingFocusOwnerContext(options = {}) {
     },
     _focusTimer: { pendingFocusCommit: journal },
     _isTaskStorageLockHeld: () => options.lockHeld !== false,
-    _validatePendingFocusCommit: () => options.valid !== false,
+    _validatePendingFocusCommit: record =>
+      options.valid !== false && !!record && typeof record === 'object',
     _pendingFocusCommitWriteDepth: 0,
     _pendingFocusCommitOwnerId: null
   };
@@ -440,6 +442,11 @@ test('pending focus writes require the shared lock and the exact durable operati
 
   const noLock = pendingFocusOwnerContext({ lockHeld: false });
   assert.equal(noLock._withPendingFocusCommitWrite(operationId, () => true), false);
+});
+
+test('a malformed persisted journal cannot be overwritten as an empty slot', () => {
+  const app = pendingFocusOwnerContext({ persisted: 'malformed' });
+  assert.equal(app._withPendingFocusCommitWrite(operationId, () => true, true), false);
 });
 
 test('the first pending focus journal write requires a validated in-memory intent', () => {
