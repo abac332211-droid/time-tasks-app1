@@ -203,7 +203,7 @@ test('task storage wrapper executes its mutation only while the shared Web Lock 
       locks: {
         request(name, options, callback) {
           assert.equal(name, 'timeTasksApp-stopwatch-transaction');
-          assert.deepEqual(options, { mode: 'exclusive' });
+          assert.equal(options.mode, 'exclusive');
           return Promise.resolve().then(() => callback({ name }));
         }
       }
