@@ -67,6 +67,7 @@ function context() {
     extractFunction('_validateCreditOperationRecord'),
     extractFunction('_validateCreditOperationLedger'),
     extractFunction('_classifyCreditOperationAttempt'),
+    extractFunction('_getHighestCreditOperationTaskId'),
     extractFunction('_creditOperationLedgerPreservesHistory')
   ].join('\n'), sandbox);
   return sandbox;
@@ -346,4 +347,19 @@ test('durable operation identity survives eviction from the 500-row session disp
   }).status, 'conflict', 'the evicted identity cannot be reused with a different payload');
   assert.equal(app._creditOperationLedgerPreservesHistory(ledger, ledger.slice(0, 500)), false,
     'a backup that predates the latest accepted operation cannot roll the ledger back');
+});
+
+
+test('deleted task IDs remain reserved while their credit-operation history is retained', () => {
+  const app = context();
+  const operations = [
+    { taskId: 17 },
+    { taskId: 904 },
+    { taskId: 3 }
+  ];
+
+  assert.equal(app._getHighestCreditOperationTaskId(operations), 904);
+  assert.equal(app._getHighestCreditOperationTaskId([]), 0);
+  assert.equal(app._getHighestCreditOperationTaskId(null), 0);
+  assert.equal(app._getHighestCreditOperationTaskId([{ taskId: -1 }, { taskId: 1.5 }]), 0);
 });
