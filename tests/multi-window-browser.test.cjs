@@ -310,18 +310,21 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       });
       if (!saved) throw new Error('Could not seed the task record');
 
-      _focusTimer.mode = 'stopwatch';
-      _focusTimer.phase = 'work';
-      _focusTimer.running = false;
-      _focusTimer.baseElapsed = 125;
-      _focusElapsedRemainderMs = 0;
-      _focusTimer.startedAt = null;
-      _focusTimer.taskId = task.id;
-      _focusTimer.sessionStartAt = Date.now() - 125_000;
-      _focusTimer.awaitingConfirmation = false;
-      _focusTimer.pendingPhaseEndedAt = null;
-      _focusTimer.clockAdjusted = false;
-      if (!_saveFocusTimer()) throw new Error('Could not seed the paused Stopwatch');
+      const timerSeeded = await _withTaskStorageLock(function() {
+        _focusTimer.mode = 'stopwatch';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 125;
+        _focusElapsedRemainderMs = 0;
+        _focusTimer.startedAt = null;
+        _focusTimer.taskId = task.id;
+        _focusTimer.sessionStartAt = Date.now() - 125_000;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        return _saveFocusTimer();
+      });
+      if (!timerSeeded) throw new Error('Could not seed the paused Stopwatch');
 
       // Simulate a process death at the exact boundary under review:
       // task.actual is committed, but the focus-session row is not yet saved.
@@ -1757,7 +1760,7 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
       projectDesc.value = 'تحقق الكتابة في الصفحة نفسها دون إعادة تحميل';
       projectTarget.value = '';
       saveProject();
-      toggleTimer();
+      await toggleTimer();
 
       const thoughtsRaw = localStorage.getItem(THOUGHTS_KEY);
       const projectsRaw = localStorage.getItem(PROJECTS_KEY);
