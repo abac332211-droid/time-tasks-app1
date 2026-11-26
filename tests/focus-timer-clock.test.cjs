@@ -311,6 +311,40 @@ test('failed checkpoint does not reset the clock anchor or consume elapsed time'
   assert.equal(h.sandbox._getElapsedSec(), 5);
 });
 
+test('native-anchor checkpoint preserves live elapsed time after a native clock refresh', () => {
+  const h = createClockHarness();
+  h.timer.mode = 'stopwatch';
+  h.timer.nativeClockActive = true;
+  h.timer.nativeAnchorElapsedRealtimeMs = 1_000;
+  h.timer.nativeAnchorBootCount = 17;
+  h.timer.nativeAnchorBaseMs = 0;
+  h.timer.nativeAnchorWallMs = h.clock.wall;
+
+  // Simulate a foreground-return/native refresh after one minute. The native
+  // anchor intentionally remains fixed while the display clock is re-anchored.
+  h.clock.mono = 60_000;
+  h.clock.wall += 60_000;
+  h.timer.baseElapsed = 60;
+  h.timer.startedAt = h.clock.wall;
+  h.sandbox._anchorFocusTimerClock(h.clock.wall, 0);
+
+  assert.equal(h.sandbox._saveFocusTimer(), true);
+
+  const persisted = JSON.parse(h.clock.writes.at(-1).raw);
+  assert.equal(persisted.baseElapsed, 0,
+    'cold-start storage must retain the original base paired with the fixed native anchor');
+  assert.equal(persisted.nativeAnchorBaseMs, 0);
+  assert.equal(h.timer.baseElapsed, 60,
+    'the in-memory timer must keep the fresh elapsed total instead of rewinding to the native base');
+  assert.equal(h.timer.startedAt, h.clock.wall,
+    'the live performance clock must keep its new foreground anchor');
+
+  h.clock.mono += 1_000;
+  h.clock.wall += 1_000;
+  assert.equal(h.sandbox._getElapsedSec(), 61,
+    'elapsed time must continue from the synchronized total after the checkpoint');
+});
+
 test('checkpoint stores a bounded millisecond remainder for cold-start restoration', () => {
   const h = createClockHarness();
   h.clock.mono = 7_650;
