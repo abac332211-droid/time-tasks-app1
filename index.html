@@ -13634,17 +13634,66 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
   return Promise.resolve(_beginNewSession());
 }
 
+// PWA lifecycle policy: close the active segment at the last durable checkpoint.
+// Never sample elapsed time after the page becomes hidden, because that sample may
+// include device sleep or a suspended JavaScript interval.
+function _pausePwaFocusTimerAtLastCheckpoint(source) {
+  if (typeof _isCapacitor === "function" && _isCapacitor()) return Promise.resolve(false);
+  if (!_focusTimer.running) return Promise.resolve(true);
+  if (_focusTimer.nativeClockActive || _focusTimer.nativeRestorePending) return Promise.resolve(false);
+
+  // Stop local sampling immediately. The values in baseElapsed/remainder are the
+  // last values confirmed by _saveFocusTimer; do not replace them with Date.now().
+  _stopDisplayTick();
+  function pauseLocked() {
+    if (!_focusTimer.running) return true;
+    if (_focusTimer.nativeClockActive || _focusTimer.nativeRestorePending) return false;
+
+    _focusTimer.running = false;
+    _focusTimer.startedAt = null;
+    _focusTimer.clockAdjusted = true;
+    _focusTimer.nativeClockActive = false;
+    _focusTimer.nativeRestorePending = false;
+    _clearFocusTimerClock();
+
+    if (!_saveFocusTimer()) {
+      storageRecoveryRequired = true;
+      console.error("PWA timer interruption could not persist its last trusted checkpoint:", source || "lifecycle");
+      showAlertModal("تعذر تثبيت آخر وقت موثوق",
+        "أوقفنا عدّاد هذه الصفحة عند آخر نقطة حفظ معروفة، لكن تعذر تأكيد كتابة حالة التوقف. أبقينا التخزين محمياً؛ لا تُعد تشغيل المؤقت حتى تُراجع حالة الحفظ.");
+      _renderFocusTimer();
+      return false;
+    }
+    _focusTimerCheckpointAt = 0;
+    _renderFocusTimer();
+    return true;
+  }
+
+  return _withStopwatchTransactionLock(pauseLocked).catch(function(error) {
+    // Do not write without the lock. Keep this page paused in memory and block
+    // further writes; a cold start will also discard the uncheckpointed interval.
+    _focusTimer.running = false;
+    _focusTimer.startedAt = null;
+    _focusTimer.clockAdjusted = true;
+    _focusTimer.nativeClockActive = false;
+    _focusTimer.nativeRestorePending = false;
+    _clearFocusTimerClock();
+    _stopDisplayTick();
+    storageRecoveryRequired = true;
+    console.error("PWA lifecycle pause could not acquire the shared lock:", error);
+    showAlertModal("تعذر تأمين توقف المؤقت",
+      "لم نكتب خارج القفل المشترك. أوقفنا هذه الصفحة عند آخر نقطة حفظ موثوقة ومنعنا الكتابات اللاحقة حتى تُراجع الحالة.");
+    _renderFocusTimer();
+    return false;
+  });
+}
+
 function _setupVisibilityListener() {
   function _onFocusTimerForegroundReturn() {
     if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight
         || _startupResetRecoveryInFlight || !_appInitCompleted) return;
     if (document.visibilityState !== "visible") {
-      if (_focusTimer.running) {
-        _withTaskStorageLock(function() {
-          if (_focusTimer.running) return _saveFocusTimer();
-          return false;
-        });
-      }
+      if (_focusTimer.running) _pausePwaFocusTimerAtLastCheckpoint("foreground-handler-hidden");
       return;
     }
     function syncClockAfterQueue() {
@@ -13679,12 +13728,15 @@ function _setupVisibilityListener() {
   }
   document.addEventListener('visibilitychange', function() {
     if (document.visibilityState === 'visible') _onFocusTimerForegroundReturn();
-    else if (_focusTimer.running && !storageRecoveryRequired) {
-      _withTaskStorageLock(function() {
-        if (_focusTimer.running && !storageRecoveryRequired) return _saveFocusTimer();
-        return false;
-      });
-    }
+    else if (_focusTimer.running && !storageRecoveryRequired)
+      _pausePwaFocusTimerAtLastCheckpoint("visibilitychange-hidden");
+  });
+  window.addEventListener('pagehide', function() {
+    if (!storageRecoveryRequired && _appInitCompleted && _focusTimer.running)
+      _pausePwaFocusTimerAtLastCheckpoint("pagehide");
+  });
+  window.addEventListener('pageshow', function() {
+    if (document.visibilityState === 'visible') _onFocusTimerForegroundReturn();
   });
   window.addEventListener('focus', function() {
     if (document.visibilityState === 'visible') _consumeNativeStopwatchNotificationAction();
