@@ -46,7 +46,6 @@ function createHarness({ saveOk = true, nativeClock = false, lockAvailable = tru
     _focusElapsedRemainderMs: 650,
     _focusTimerCheckpointAt: 25_000,
     storageRecoveryRequired: false,
-    _isCapacitor: () => native,
     _stopDisplayTick() { events.push('stop-tick'); },
     _clearFocusTimerClock() { events.push('clear-clock'); },
     _renderFocusTimer() { events.push('render'); },
