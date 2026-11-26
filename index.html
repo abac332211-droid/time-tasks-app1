@@ -10099,9 +10099,15 @@ function _saveFocusTimer() {
       savedAt: now
     });
     if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, focusTimerRaw)) return false;
-    _focusTimer.baseElapsed = checkpointElapsed;
-    _focusElapsedRemainderMs = checkpointRemainderMs;
-    _focusTimer.startedAt = running ? checkpointWallAnchor : null;
+    // With a native anchor, checkpoint the original Android anchor to storage,
+    // but keep the freshly sampled live elapsed value and display-clock anchor
+    // in memory. Replacing the live base with nativeAnchorBaseMs here rewinds
+    // the UI after every native refresh/foreground return.
+    if (!useNativeAnchor || !running) {
+      _focusTimer.baseElapsed = checkpointElapsed;
+      _focusElapsedRemainderMs = checkpointRemainderMs;
+      _focusTimer.startedAt = running ? checkpointWallAnchor : null;
+    }
     if (running && !useNativeAnchor) {
       _anchorFocusTimerClock(
         checkpointWallAnchor,
