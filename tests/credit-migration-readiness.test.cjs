@@ -165,3 +165,20 @@ test('credit migration gate rejects task objects changed in memory but not persi
   app.tasks.push({ id: 9, name: 'unpersisted task' });
   assert.equal(app._assertCreditMigrationReady().reason, 'task_memory_not_persisted');
 });
+
+test('credit migration gate refuses each in-memory reset operation independently', () => {
+  for (const flag of ['_startupResetRecoveryInFlight', '_resetRecoveryInFlight', '_resetInFlight']) {
+    const app = runtime({ [flag]: true });
+    assert.equal(app._assertCreditMigrationReady().reason, 'recovery_or_commit_in_flight', flag);
+  }
+});
+
+test('credit migration gate refuses while a focus commit is in flight', () => {
+  const app = runtime({ _focusCommitInFlight: true });
+  assert.equal(app._assertCreditMigrationReady().reason, 'recovery_or_commit_in_flight');
+});
+
+test('credit migration gate refuses when the focus commit guard reports blocked', () => {
+  const app = runtime({ _isFocusCommitBlocked() { return true; } });
+  assert.equal(app._assertCreditMigrationReady().reason, 'recovery_or_commit_in_flight');
+});
