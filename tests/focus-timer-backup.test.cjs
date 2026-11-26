@@ -555,7 +555,7 @@ function restoreContext(storage) {
     extractTopLevelSource('_validateCreditOperationLedger'),
     extractTopLevelSource('_creditOperationLedgerPreservesHistory'),
     extractTopLevelSource('_creditOperationSnapshotPreservesHistory')
-  ].join('\\n'), context);
+  ].join('\n'), context);
   return {
     context,
     invalidationCount: () => invalidations
