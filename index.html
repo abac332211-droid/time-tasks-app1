@@ -2585,6 +2585,142 @@ function _validateCreditOperationRecord(record) {
   return false;
 }
 
+function _validatePendingFocusTimerProjection(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  var keys = ["mode", "phase", "running", "baseElapsed", "elapsedRemainderMs",
+    "cyclePosition", "taskId", "sessionStartAt", "awaitingConfirmation",
+    "pendingPhaseEndedAt", "clockAdjusted", "nativeSessionToken",
+    "handledNotificationActionIds", "pendingNotificationFinish"];
+  var ownKeys = Object.keys(snapshot);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  if ((snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+      || !["work", "short-break", "long-break"].includes(snapshot.phase)
+      || snapshot.running !== false
+      || !Number.isSafeInteger(snapshot.baseElapsed) || snapshot.baseElapsed < 0
+      || !Number.isInteger(snapshot.elapsedRemainderMs)
+      || snapshot.elapsedRemainderMs < 0 || snapshot.elapsedRemainderMs >= 1000
+      || !Number.isInteger(snapshot.cyclePosition)
+      || snapshot.cyclePosition < 0 || snapshot.cyclePosition > 3
+      || (snapshot.taskId !== null
+        && (!Number.isSafeInteger(snapshot.taskId) || snapshot.taskId <= 0))
+      || (snapshot.sessionStartAt !== null
+        && (!Number.isFinite(snapshot.sessionStartAt) || snapshot.sessionStartAt < 0))
+      || typeof snapshot.awaitingConfirmation !== "boolean"
+      || (snapshot.pendingPhaseEndedAt !== null
+        && (!Number.isFinite(snapshot.pendingPhaseEndedAt) || snapshot.pendingPhaseEndedAt < 0))
+      || typeof snapshot.clockAdjusted !== "boolean"
+      || (snapshot.nativeSessionToken !== null && typeof snapshot.nativeSessionToken !== "string")
+      || !Array.isArray(snapshot.handledNotificationActionIds)
+      || snapshot.handledNotificationActionIds.length > 10
+      || (snapshot.pendingNotificationFinish !== null
+        && (!snapshot.pendingNotificationFinish
+          || typeof snapshot.pendingNotificationFinish !== "object"
+          || Array.isArray(snapshot.pendingNotificationFinish)))) return false;
+  var seen = new Set();
+  for (var i = 0; i < snapshot.handledNotificationActionIds.length; i++) {
+    var id = snapshot.handledNotificationActionIds[i];
+    if (typeof id !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+        || seen.has(id)) return false;
+    seen.add(id);
+  }
+  if (snapshot.awaitingConfirmation) {
+    if (snapshot.mode !== "pomodoro" || snapshot.sessionStartAt === null
+        || snapshot.pendingPhaseEndedAt === null
+        || snapshot.pendingPhaseEndedAt < snapshot.sessionStartAt) return false;
+  } else if (snapshot.pendingPhaseEndedAt !== null) return false;
+  return true;
+}
+
+function _validatePendingFocusCreditSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  var keys = ["actualSeconds", "actual", "creditRevision",
+    "creditSchemaVersion", "lastCreditOperationId"];
+  var ownKeys = Object.keys(snapshot);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  if (snapshot.actualSeconds === null) {
+    if (snapshot.actual !== null) return false;
+  } else if (!Number.isSafeInteger(snapshot.actualSeconds) || snapshot.actualSeconds < 0
+      || !Number.isSafeInteger(snapshot.actual)
+      || snapshot.actual !== Math.floor(snapshot.actualSeconds / 60)) return false;
+  if (!Number.isSafeInteger(snapshot.creditRevision) || snapshot.creditRevision < 0
+      || snapshot.creditSchemaVersion !== 1) return false;
+  if (snapshot.lastCreditOperationId !== null
+      && (typeof snapshot.lastCreditOperationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(snapshot.lastCreditOperationId))) return false;
+  return (snapshot.creditRevision === 0) === (snapshot.lastCreditOperationId === null);
+}
+
+// The recovery record binds the V2 session, append-only ledger operation,
+// task credit revision, and the two timer projections into one immutable intent.
+function _validatePendingFocusCommit(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  var keys = ["protocolVersion", "operationId", "taskId", "operation", "session",
+    "creditBefore", "creditAfter", "timerBefore", "timerAfter", "stage",
+    "createdAt", "updatedAt"];
+  var ownKeys = Object.keys(record);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  var uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (record.protocolVersion !== 1
+      || typeof record.operationId !== "string" || !uuidPattern.test(record.operationId)
+      || !Number.isSafeInteger(record.taskId) || record.taskId <= 0
+      || !["prepared", "credit_applied", "session_applied", "timer_applied"].includes(record.stage)) return false;
+  function validIso(value) {
+    if (typeof value !== "string") return false;
+    var parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+  }
+  if (!validIso(record.createdAt) || !validIso(record.updatedAt)) return false;
+  if (!_validateCreditOperationRecord(record.operation)
+      || record.operation.kind !== "session"
+      || record.operation.operationId !== record.operationId
+      || record.operation.sessionId !== record.operationId
+      || record.operation.taskId !== record.taskId
+      || !_validateFocusSessionRecordV2(record.session)
+      || record.session.sessionId !== record.operationId
+      || record.session.taskId !== record.taskId
+      || record.session.phase !== "work"
+      || record.session.creditSource !== record.operation.source
+      || record.session.creditedSeconds !== record.operation.creditedSeconds
+      || record.session.durationSec !== record.operation.measuredSeconds
+      || record.operation.measuredSeconds !== Math.floor(record.session.activeDurationMs / 1000)) return false;
+  if (!_validatePendingFocusCreditSnapshot(record.creditBefore)
+      || !_validatePendingFocusCreditSnapshot(record.creditAfter)
+      || !_validatePendingFocusTimerProjection(record.timerBefore)
+      || !_validatePendingFocusTimerProjection(record.timerAfter)) return false;
+  var before = record.creditBefore, after = record.creditAfter, operation = record.operation;
+  if (before.creditRevision >= Number.MAX_SAFE_INTEGER
+      || after.creditRevision !== before.creditRevision + 1
+      || operation.revision !== after.creditRevision
+      || operation.previousSeconds !== before.actualSeconds
+      || operation.targetSeconds !== after.actualSeconds
+      || after.lastCreditOperationId !== record.operationId
+      || (before.lastCreditOperationId === record.operationId)
+      || after.creditSchemaVersion !== before.creditSchemaVersion) return false;
+  if (record.timerBefore.mode !== record.session.mode
+      || record.timerBefore.phase !== record.session.phase
+      || record.timerBefore.taskId !== record.taskId
+      || record.timerBefore.baseElapsed * 1000 + record.timerBefore.elapsedRemainderMs
+        !== record.session.activeDurationMs) return false;
+  var timerAfter = record.timerAfter;
+  if (timerAfter.mode !== record.timerBefore.mode
+      || timerAfter.phase !== "work"
+      || timerAfter.running !== false
+      || timerAfter.baseElapsed !== 0
+      || timerAfter.elapsedRemainderMs !== 0
+      || timerAfter.cyclePosition !== 0
+      || timerAfter.taskId !== record.taskId
+      || timerAfter.sessionStartAt !== null
+      || timerAfter.awaitingConfirmation
+      || timerAfter.pendingPhaseEndedAt !== null
+      || timerAfter.nativeSessionToken !== null
+      || timerAfter.pendingNotificationFinish !== null) return false;
+  return true;
+}
+
 function _validateCreditOperationLedger(records, taskRecords) {
   // Never trim this registry: dropping old IDs would make historical retries
   // indistinguishable from new operations. At the cap, new credits must stop.
