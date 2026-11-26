@@ -363,3 +363,138 @@ test('deleted task IDs remain reserved while their credit-operation history is r
   assert.equal(app._getHighestCreditOperationTaskId(null), 0);
   assert.equal(app._getHighestCreditOperationTaskId([{ taskId: -1 }, { taskId: 1.5 }]), 0);
 });
+
+
+function primaryWriterContext(initialData) {
+  const storage = new Map([['main', JSON.stringify(initialData)]]);
+  const raw = storage.get('main');
+  const sandbox = {
+    STORAGE_KEY: 'main',
+    CURRENT_SCHEMA_VERSION: 2,
+    APP_VERSION: '2.9.0',
+    _isTaskStorageLockHeld: () => true,
+    _isFocusCommitBlocked: () => false,
+    _isTaskWriteBlocked: () => false,
+    _storageWriteAllowed: () => true,
+    _pendingStopwatchWriteAllowed: () => true,
+    _startupStopwatchRecoveryWriteDepth: 0,
+    _stopwatchTransactionLockDepth: 0,
+    _startupStopwatchRecoveryInFlight: false,
+    _startupStopwatchRecoveryFailed: false,
+    storageRecoveryRequired: false,
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: raw,
+    appSettings: {
+      firstUseDate: '2026-11-26',
+      operationalDayStart: 4,
+      darkMode: false,
+      themeMode: 'light',
+      lastTaskId: 1,
+      lastRecurringDates: {}
+    },
+    tasks: JSON.parse(JSON.stringify(initialData.tasks)),
+    localStorage: {
+      getItem(key) {
+        return storage.has(key) ? storage.get(key) : null;
+      },
+      setItem(key, value) {
+        storage.set(key, String(value));
+      },
+      removeItem(key) {
+        storage.delete(key);
+      }
+    },
+    validateV2: () => true,
+    todayStr: () => '2026-11-26',
+    _pruneLastRecurringDates() {},
+    _setMainStorageBaseline(value) {
+      sandbox._mainStorageBaselineRaw = value;
+      sandbox._mainStorageBaselineReady = true;
+    },
+    _queueAllTaskReminderSync() {},
+    _storeRollingRecoveryBackup: () => true,
+    _isOptionalRollingRecoveryBackupFailure: () => true,
+    showAlertModal() {},
+    showToast() {},
+    console: { error() {}, warn() {}, log() {} }
+  };
+
+  vm.runInNewContext([
+    extractFunction('saveData'),
+    extractFunction('persistDailyLog')
+  ].join('\\n'), sandbox);
+
+  return { sandbox, storage };
+}
+
+function primaryWriterFixture() {
+  const operation = sessionOperation({
+    previousSeconds: null,
+    targetSeconds: 40,
+    measuredSeconds: 40,
+    creditedSeconds: 40
+  });
+  const task = {
+    id: 1,
+    name: 'مهمة ببيانات رصيد',
+    status: 'pending',
+    type: 'معرفية',
+    expected: 30,
+    actual: 0,
+    actualSeconds: 40,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operation.operationId,
+    plannedDate: '2026-11-26',
+    plannedTime: '',
+    completedAt: null,
+    createdAt: 1
+  };
+  return {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: {},
+    tasks: [task],
+    dailyLogs: [],
+    creditOperations: [operation]
+  };
+}
+
+
+test('saveData preserves the durable credit operation ledger when task data is saved', () => {
+  const fixture = primaryWriterFixture();
+  const { sandbox, storage } = primaryWriterContext(fixture);
+  sandbox.tasks[0].name = 'اسم مهمة محدث';
+
+  assert.equal(sandbox.saveData(), true);
+  const persisted = JSON.parse(storage.get('main'));
+  assert.deepEqual(persisted.creditOperations, fixture.creditOperations);
+  assert.equal(persisted.tasks[0].name, 'اسم مهمة محدث');
+  assert.equal(persisted.tasks[0].actualSeconds, 40);
+  assert.equal(persisted.tasks[0].lastCreditOperationId, fixture.creditOperations[0].operationId);
+});
+
+test('persistDailyLog preserves the durable credit operation ledger', () => {
+  const fixture = primaryWriterFixture();
+  const { sandbox, storage } = primaryWriterContext(fixture);
+  const log = {
+    date: '2026-11-26',
+    control: 4,
+    execution: 3,
+    wellbeing: 4,
+    energy: 3,
+    distractions: 1,
+    bufferUsed: 0,
+    mentalTask: '',
+    mentalNext: '',
+    createdAt: 1,
+    updatedAt: 2
+  };
+
+  assert.equal(sandbox.persistDailyLog(log), true);
+  const persisted = JSON.parse(storage.get('main'));
+  assert.deepEqual(persisted.creditOperations, fixture.creditOperations);
+  assert.equal(persisted.dailyLogs.length, 1);
+  assert.equal(persisted.dailyLogs[0].date, '2026-11-26');
+});
