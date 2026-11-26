@@ -2659,6 +2659,9 @@ function _classifyCreditOperationAttempt(records, candidate) {
     if (candidate.revision !== expectedRevision) return { status: "conflict" };
     if (latestForTask && candidate.previousSeconds !== latestForTask.targetSeconds)
       return { status: "conflict" };
+    // Keep historical retries recognizable at capacity, but never classify a
+    // previously unseen operation as appendable once the durable ledger is full.
+    if (records.length >= 10000) return { status: "ledger_full" };
     return { status: "new" };
   }
   var keys = Object.keys(candidate);

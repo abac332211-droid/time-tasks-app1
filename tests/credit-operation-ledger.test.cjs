@@ -300,8 +300,26 @@ test('ledger enforces its documented hard limit without trimming historical iden
     createdAt: '2026-11-26T10:00:00.000Z'
   }));
 
-  assert.equal(app._validateCreditOperationLedger(makeRows(10000)), true);
+  const fullLedger = makeRows(10000);
+  assert.equal(app._validateCreditOperationLedger(fullLedger), true);
   assert.equal(app._validateCreditOperationLedger(makeRows(10001)), false);
+
+  assert.equal(app._classifyCreditOperationAttempt(fullLedger, fullLedger[0]).status, 'duplicate',
+    'an exact historical retry remains idempotent even when the ledger is full');
+  const unseenOperation = {
+    recordVersion: 1,
+    operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    kind: 'manual_adjustment',
+    taskId: 10001,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 0,
+    source: 'manual_adjustment',
+    sessionId: null,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  assert.equal(app._classifyCreditOperationAttempt(fullLedger, unseenOperation).status, 'ledger_full',
+    'a new identity must not be classified as appendable at the hard capacity');
 });
 
 
