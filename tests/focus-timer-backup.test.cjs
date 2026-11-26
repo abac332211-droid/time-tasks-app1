@@ -874,6 +874,7 @@ test('focus timer display tick checkpoints even while hidden and skips UI work',
     _focusTimer: { running: true, mode: 'stopwatch' },
     document: { visibilityState: 'hidden' },
     Date: { now: () => 5_000 },
+    _withTaskStorageLock(callback) { return callback(); },
     setInterval(callback, interval) {
       assert.equal(interval, 1_000);
       tick = callback;
