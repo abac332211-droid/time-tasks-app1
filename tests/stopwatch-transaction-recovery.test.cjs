@@ -193,6 +193,7 @@ function createRuntime(storage, options = {}) {
     '_matchingFocusSessionRecords',
     '_hasAmbiguousLegacyFocusSession',
     '_pendingStopwatchWriteAllowed',
+    '_isTaskStorageLockHeld',
     '_withStopwatchTransactionLock',
     '_secondaryStorageWriteAllowed',
     '_writeSecondaryStorageVerified',
