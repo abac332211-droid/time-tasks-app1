@@ -414,9 +414,9 @@ test('session saver rejects duplicate V2 session IDs even when numeric row IDs d
     _storeRollingRecoveryBackup: () => true
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\\n' +
-    extractFunction('_validateFocusSessionRecordV2') + '\\n' +
-    extractFunction('_validateFocusSessionRecord') + '\\n' +
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' +
+    extractFunction('_validateFocusSessionRecordV2') + '\n' +
+    extractFunction('_validateFocusSessionRecord') + '\n' +
     extractFunction('_saveSessions'),
     sandbox
   );
@@ -448,9 +448,9 @@ test('session loader preserves duplicate V2 session IDs as corrupt source instea
     Date, console
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\\n' +
-    extractFunction('_validateFocusSessionRecordV2') + '\\n' +
-    extractFunction('_validateFocusSessionRecord') + '\\n' +
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' +
+    extractFunction('_validateFocusSessionRecordV2') + '\n' +
+    extractFunction('_validateFocusSessionRecord') + '\n' +
     extractFunction('_loadSessions'),
     sandbox
   );
