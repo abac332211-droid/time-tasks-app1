@@ -13768,15 +13768,8 @@ function _setupRecurringTaskRefresh() {
   }, 60 * 1000);
 }
 
-window.addEventListener('pagehide', function() {
-  if (storageRecoveryRequired || _startupStopwatchRecoveryInFlight || !_appInitCompleted) return;
-  if (_focusTimer.running) {
-    _withTaskStorageLock(function() {
-      if (_focusTimer.running && !storageRecoveryRequired) return _saveFocusTimer();
-      return false;
-    });
-  }
-});
+// Focus timer pagehide handling is installed by _setupVisibilityListener() so
+// it uses the same conservative checkpoint-close policy as visibilitychange.
 
 /* ============ Notebook (الخواطر والمشاريع) ============ */
 
