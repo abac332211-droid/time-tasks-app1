@@ -360,6 +360,10 @@ test('pending focus commit replays safely after interruption at every durable bo
       'injected interruption at ' + failAt);
     assert.ok(state.journal,
       'the recovery journal must survive interruption at ' + failAt);
+    if (failAt === 'timer-save') {
+      assert.deepEqual(first.memoryProjection, journal.timerBefore,
+        'failed timer checkpoint must restore the last proven in-memory state');
+    }
     assert.equal(state.creditWrites <= 1, true);
     assert.equal(state.sessionWrites <= 1, true);
 
