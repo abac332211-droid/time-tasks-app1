@@ -325,7 +325,8 @@ test('backup validator is wired to focus-timer validation', () => {
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true,
-    _validateFocusTimerBackupSnapshot: validateSnapshot
+    _validateFocusTimerBackupSnapshot: validateSnapshot,
+    _validateTaskCreditFields: vm.runInNewContext('(' + extractTopLevelSource('_validateTaskCreditFields') + ')')
   };
   const validateBackup = vm.runInNewContext(`(${html.slice(sourceStart, sourceEnd + 2)})`, context);
   const paused = buildSnapshot(timer(), 9_000, 300, 1_500, new Set([10]));
@@ -1202,7 +1203,8 @@ function backupValidationContext() {
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true,
-    _validateFocusTimerBackupSnapshot: () => ({ valid: true })
+    _validateFocusTimerBackupSnapshot: () => ({ valid: true }),
+    _validateTaskCreditFields: vm.runInNewContext('(' + extractTopLevelSource('_validateTaskCreditFields') + ')')
   };
 }
 
