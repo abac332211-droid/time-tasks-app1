@@ -1173,6 +1173,10 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
     escapeHTML: (value) => String(value)
   };
   const source = [
+    extractTopLevelSource('_validateTaskCreditFields'),
+    extractTopLevelSource('_validateCreditOperationRecord'),
+    extractTopLevelSource('_validateCreditOperationLedger'),
+    extractTopLevelSource('_creditOperationLedgerPreservesHistory'),
     extractTopLevelSource('_restoreFocusTimerSnapshot'),
     extractTopLevelSource('_restoreStorageSnapshot'),
     extractTopLevelSource('_rollbackRestore'),
