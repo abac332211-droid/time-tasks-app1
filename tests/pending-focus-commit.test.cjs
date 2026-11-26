@@ -163,6 +163,7 @@ test('pending focus commit preserves null-versus-zero and advances the credit re
   record.operation.measuredSeconds = 0;
   record.operation.creditedSeconds = 0;
   record.operation.targetSeconds = null;
+  record.operation.createdAt = '2026-11-26T10:01:05.500Z';
   record.creditAfter = creditSnapshot({
     actualSeconds: null,
     actual: null,
@@ -172,7 +173,7 @@ test('pending focus commit preserves null-versus-zero and advances the credit re
   record.timerBefore = timerProjection({
     baseElapsed: 0,
     elapsedRemainderMs: 0,
-    sessionStartAt: startedAtMs
+    sessionStartAt: Date.parse('2026-11-26T10:01:05.500Z')
   });
   assert.equal(app._validatePendingFocusCommit(record), true);
   assert.equal(record.creditAfter.actualSeconds, null);
