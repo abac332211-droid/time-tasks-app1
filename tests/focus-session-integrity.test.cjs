@@ -460,3 +460,32 @@ test('session loader preserves duplicate V2 session IDs as corrupt source instea
   assert.equal(sandbox.storageRecoveryRequired, true);
   assert.deepEqual(preserved, { key: 'focus-sessions', value: raw });
 });
+
+
+test('V2 measured credit must equal the floored active seconds', () => {
+  assert.equal(hValidate(validV2Session({
+    activeDurationMs: 1_540_900,
+    durationSec: 1_540,
+    creditedSeconds: 1_540
+  })), true);
+  assert.equal(hValidate(validV2Session({
+    activeDurationMs: 1_540_900,
+    durationSec: 1_540,
+    creditedSeconds: 1_560
+  })), false, 'a user-adjusted credit cannot be labelled measured');
+});
+
+test('V2 untrusted clock data cannot carry active or credited time', () => {
+  assert.equal(hValidate(validV2Session({
+    activeDurationMs: 0,
+    durationSec: 0,
+    creditedSeconds: 0,
+    creditSource: 'none',
+    outcome: 'interrupted',
+    clockTrust: 'untrusted'
+  })), true);
+  assert.equal(hValidate(validV2Session({
+    outcome: 'interrupted',
+    clockTrust: 'untrusted'
+  })), false);
+});
