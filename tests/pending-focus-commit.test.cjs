@@ -193,6 +193,25 @@ test('pending focus commit rejects a balance or revision that does not follow it
   assert.equal(app._validatePendingFocusCommit(skippedRevision), false);
 });
 
+test('pending focus commit binds operation time to session end and session start to frozen timer', () => {
+  const app = validatorContext();
+  const wrongOperationTime = validPendingFocusCommit();
+  wrongOperationTime.operation.createdAt = '2026-11-26T10:01:06.000Z';
+  assert.equal(app._validatePendingFocusCommit(wrongOperationTime), false);
+
+  const wrongSessionStart = validPendingFocusCommit();
+  wrongSessionStart.session.startedAt = '2026-11-26T09:59:59.000Z';
+  assert.equal(app._validatePendingFocusCommit(wrongSessionStart), false);
+});
+
+test('pending focus commit may not drop already handled native notification action IDs', () => {
+  const app = validatorContext();
+  const record = validPendingFocusCommit();
+  record.timerBefore.handledNotificationActionIds = [operationId];
+  record.timerAfter.handledNotificationActionIds = [];
+  assert.equal(app._validatePendingFocusCommit(record), false);
+});
+
 test('pending focus commit rejects a timer snapshot that does not represent the measured active duration', () => {
   const app = validatorContext();
   const record = validPendingFocusCommit();
