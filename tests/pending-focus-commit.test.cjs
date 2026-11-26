@@ -282,7 +282,7 @@ function recoveryHarness(state) {
       const isClearing = sandbox._focusTimer.pendingFocusCommit === null;
       const isTimerUpdate = !isClearing
         && sandbox._focusCommitDeepEqual(
-          sandbox.memoryProjection, state.journal.timerAfter
+          sandbox.memoryProjection, state.expectedTimerAfter
         );
       if (isClearing && failOnce('clear-save')) return false;
       if (isTimerUpdate && failOnce('timer-save')) return false;
@@ -345,6 +345,7 @@ test('pending focus commit replays safely after interruption at every durable bo
     const state = {
       journal: JSON.parse(JSON.stringify(journal)),
       durableProjection: JSON.parse(JSON.stringify(journal.timerBefore)),
+      expectedTimerAfter: JSON.parse(JSON.stringify(journal.timerAfter)),
       creditApplied: false,
       sessionApplied: false,
       creditWrites: 0,
