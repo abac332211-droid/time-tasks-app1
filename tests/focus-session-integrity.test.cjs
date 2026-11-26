@@ -395,6 +395,9 @@ test('V2 validation enforces outcome and task-credit semantics', () => {
     phase: 'short-break', taskId: null, creditedSeconds: 30, creditSource: 'measured'
   })), false, 'a break cannot credit task work');
   assert.equal(hValidate(validV2Session({
+    phase: 'short-break', taskId: null, creditedSeconds: 0, creditSource: 'measured'
+  })), false, 'a break must use the no-credit source even when its credit is zero');
+  assert.equal(hValidate(validV2Session({
     outcome: 'discarded', creditedSeconds: 0, creditSource: 'none'
   })), true);
   assert.equal(hValidate(validV2Session({
