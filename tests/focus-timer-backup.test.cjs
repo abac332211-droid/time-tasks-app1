@@ -2310,6 +2310,10 @@ test('backup export retains a valid durable credit ledger and only defaults when
     dailyLogs: []
   });
 
-  assert.deepEqual(withLedger.data.creditOperations, [operation]);
-  assert.deepEqual(legacyWithoutLedger.data.creditOperations, []);
+  assert.equal(
+    JSON.stringify(withLedger.data.creditOperations),
+    JSON.stringify([operation]),
+    'the exported ledger matches its original JSON data across the VM boundary'
+  );
+  assert.equal(JSON.stringify(legacyWithoutLedger.data.creditOperations), '[]');
 });
