@@ -7346,6 +7346,7 @@ function validateBackup(obj) {
       return { valid: false, reason: "عدد جلسات التركيز يتجاوز الحد الذي يمكن للتطبيق الاحتفاظ به." };
     const sessionIds = new Set();
     const sessionTransactionIds = new Set();
+    const focusSessionIdentityIds = new Set();
     for (let i = 0; i < d.focusSessions.length; i++) {
       const session = d.focusSessions[i];
       if (!_validateFocusSessionRecord(session))
@@ -7359,6 +7360,11 @@ function validateBackup(obj) {
         if (sessionTransactionIds.has(session.transactionId))
           return { valid: false, reason: "معرّف معاملة جلسة تركيز مكرر: " + session.transactionId };
         sessionTransactionIds.add(session.transactionId);
+      }
+      if (session.recordVersion === 2) {
+        if (focusSessionIdentityIds.has(session.sessionId))
+          return { valid: false, reason: "هوية جلسة تركيز V2 مكررة: " + session.sessionId };
+        focusSessionIdentityIds.add(session.sessionId);
       }
     }
   }
