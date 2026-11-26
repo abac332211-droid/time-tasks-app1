@@ -36,6 +36,32 @@ function validSession(overrides = {}) {
   };
 }
 
+
+function validV2Session(overrides = {}) {
+  return {
+    id: 20,
+    recordVersion: 2,
+    sessionId: '123e4567-e89b-42d3-a456-426614174000',
+    mode: 'pomodoro',
+    phase: 'work',
+    taskId: 2,
+    taskName: 'جلسة اختبار V2',
+    startedAt: new Date(baseStart).toISOString(),
+    endedAt: new Date(baseStart + 30 * 60_000).toISOString(),
+    activeDurationMs: 22 * 60_000,
+    durationSec: 22 * 60,
+    plannedDurationMs: 25 * 60_000,
+    creditedSeconds: 22 * 60,
+    creditSource: 'measured',
+    outcome: 'ended_early',
+    clockSource: 'performance_now',
+    clockTrust: 'trusted',
+    clockAdjusted: false,
+    completed: false,
+    ...overrides
+  };
+}
+
 function createLogHarness({
   sessionStartAt = baseStart,
   initial = [],
@@ -67,7 +93,7 @@ function createLogHarness({
     console
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' +
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecordV2') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' +
     extractFunction('_logSession') + '\n' +
     extractFunction('_matchingFocusSessionRecords') + '\n' +
     extractFunction('_sessionAlreadyLogged'),
@@ -107,7 +133,7 @@ test('session loader preserves the exact corrupt source and locks storage instea
     console
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_loadSessions'),
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecordV2') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_loadSessions'),
     sandbox
   );
 
@@ -132,7 +158,7 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
     _storeRollingRecoveryBackup: () => true
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecordV2') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
     sandbox
   );
 
@@ -322,8 +348,115 @@ function hValidate(session) {
   const sandbox = {};
   vm.runInNewContext(
     extractFunction('_parseStrictFocusSessionTimestamp') + '\n' +
-    extractFunction('_validateFocusSessionRecord'),
+    extractFunction('_validateFocusSessionRecordV2') + '\n' + extractFunction('_validateFocusSessionRecord'),
     sandbox
   );
   return sandbox._validateFocusSessionRecord(session);
 }
+
+
+test('V2 validation separates active work duration from the civil start/end interval', () => {
+  const record = validV2Session();
+  assert.equal(
+    Date.parse(record.endedAt) - Date.parse(record.startedAt),
+    30 * 60_000,
+    'the civil interval includes the paused portion'
+  );
+  assert.equal(record.activeDurationMs, 22 * 60_000);
+  assert.equal(hValidate(record), true,
+    'a 30-minute civil interval with 22 minutes active work is a valid V2 record');
+});
+
+test('V2 validation accepts a civil clock reversal only when it is explicitly marked', () => {
+  const reversed = validV2Session({
+    startedAt: new Date(baseStart + 120_000).toISOString(),
+    endedAt: new Date(baseStart).toISOString(),
+    clockAdjusted: true
+  });
+  assert.equal(hValidate(reversed), true);
+  assert.equal(hValidate({ ...reversed, clockAdjusted: false }), false);
+});
+
+test('V2 validation rejects unknown record versions and inconsistent active-duration mirrors', () => {
+  assert.equal(hValidate({ ...validV2Session(), recordVersion: 3 }), false);
+  assert.equal(hValidate({ ...validV2Session(), durationSec: 21 * 60 }), false);
+  assert.equal(hValidate({ ...validV2Session(), activeDurationMs: -1 }), false);
+  assert.equal(hValidate({ ...validV2Session(), sessionId: 'not-a-uuid' }), false);
+});
+
+test('V2 validation enforces outcome and task-credit semantics', () => {
+  assert.equal(hValidate(validV2Session({
+    outcome: 'completed', completed: true
+  })), false, 'the active duration is below the planned duration');
+  assert.equal(hValidate(validV2Session({
+    phase: 'short-break', taskId: null, creditedSeconds: 0, creditSource: 'none'
+  })), true);
+  assert.equal(hValidate(validV2Session({
+    phase: 'short-break', taskId: null, creditedSeconds: 30, creditSource: 'measured'
+  })), false, 'a break cannot credit task work');
+  assert.equal(hValidate(validV2Session({
+    outcome: 'discarded', creditedSeconds: 0, creditSource: 'none'
+  })), true);
+  assert.equal(hValidate(validV2Session({
+    outcome: 'discarded', creditedSeconds: 60, creditSource: 'user_adjusted'
+  })), false);
+});
+
+test('session saver rejects duplicate V2 session IDs even when numeric row IDs differ', () => {
+  let writes = 0;
+  const sandbox = {
+    FOCUS_MAX_SESSIONS: 500,
+    FOCUS_SESSIONS_KEY: 'focus-sessions',
+    storageRecoveryRequired: false,
+    _sessionsCache: [],
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified: () => { writes++; return true; },
+    _storeRollingRecoveryBackup: () => true
+  };
+  vm.runInNewContext(
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\\n' +
+    extractFunction('_validateFocusSessionRecordV2') + '\\n' +
+    extractFunction('_validateFocusSessionRecord') + '\\n' +
+    extractFunction('_saveSessions'),
+    sandbox
+  );
+  const first = validV2Session();
+  const duplicate = validV2Session({ id: 21 });
+  assert.equal(sandbox._saveSessions([first, duplicate]), false);
+  assert.equal(writes, 0);
+});
+
+test('session loader preserves duplicate V2 session IDs as corrupt source instead of accepting both', () => {
+  const first = validV2Session();
+  const duplicate = validV2Session({
+    id: 21,
+    startedAt: new Date(baseStart + 60_000).toISOString(),
+    endedAt: new Date(baseStart + 31 * 60_000).toISOString()
+  });
+  const raw = JSON.stringify([first, duplicate]);
+  let preserved = null;
+  const sandbox = {
+    FOCUS_SESSIONS_KEY: 'focus-sessions',
+    FOCUS_MAX_SESSIONS: 500,
+    _sessionsCache: null,
+    _invalidFocusSessionsNoticeShown: false,
+    storageRecoveryRequired: false,
+    _trackSecondaryStorageRead: (_key, value) => value,
+    localStorage: { getItem: () => raw },
+    _preserveCorruptStorageSnapshot: (key, value) => { preserved = { key, value }; return true; },
+    showAlertModal: () => {},
+    Date, console
+  };
+  vm.runInNewContext(
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\\n' +
+    extractFunction('_validateFocusSessionRecordV2') + '\\n' +
+    extractFunction('_validateFocusSessionRecord') + '\\n' +
+    extractFunction('_loadSessions'),
+    sandbox
+  );
+  const loaded = sandbox._loadSessions();
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].sessionId, first.sessionId);
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.deepEqual(preserved, { key: 'focus-sessions', value: raw });
+});
