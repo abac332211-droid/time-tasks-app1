@@ -12090,6 +12090,13 @@ function _isFocusCommitBlocked() {
 
 function _withFocusCommitWrite(callback) {
   if (typeof callback !== "function") return false;
+  // This helper temporarily bypasses the in-flight commit write guard. It is
+  // never an alternative to the shared transaction lock.
+  if (typeof _stopwatchTransactionLockDepth !== "number"
+      || _stopwatchTransactionLockDepth <= 0) {
+    console.error("Focus commit write refused without shared Stopwatch Web Lock ownership");
+    return false;
+  }
   _focusCommitWriteDepth++;
   try { return callback(); }
   finally { _focusCommitWriteDepth = Math.max(0, _focusCommitWriteDepth - 1); }
