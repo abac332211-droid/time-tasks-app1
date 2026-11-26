@@ -3117,3 +3117,99 @@ test('a real second Chromium window waits for a pending V2 journal and recovers 
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+test('real finishTimer commits an exact measured linked Stopwatch session through V2 and survives reload once', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const initial = pendingFocusBrowserInitialState();
+    initial.timer.mode = 'stopwatch';
+    initial.timer.baseElapsed = 120;
+    initial.timer.sessionStartAt = Date.now() - 120000;
+    const opened = await openPendingFocusBrowserContext(server, initial);
+    browser = opened.browser;
+    context = opened.context;
+    const page = await context.newPage();
+    await page.goto(opened.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'V2 real Stopwatch finish page');
+
+    await page.evaluate(() => finishTimer());
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      const footer = document.getElementById('modalFooter');
+      return !!overlay && !overlay.classList.contains('hidden') && !!footer
+        && Array.from(footer.querySelectorAll('button')).some(button =>
+          button.textContent.indexOf('+ 2') >= 0);
+    }, null, { timeout: 10000 });
+    await page.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('#modalFooter button'))
+        .find(item => item.textContent.indexOf('+ 2') >= 0);
+      if (!button) throw new Error('The measured Stopwatch confirmation button was not found.');
+      button.click();
+    });
+
+    await page.waitForFunction(() => {
+      try {
+        const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+        const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return Array.isArray(main.creditOperations) && main.creditOperations.length === 1
+          && main.tasks[0].actualSeconds === 840
+          && main.tasks[0].actual === 14
+          && main.tasks[0].creditRevision === 1
+          && sessions.filter(row => row && row.recordVersion === 2).length === 1
+          && timer.pendingFocusCommit == null;
+      } catch (_error) { return false; }
+    }, null, { timeout: 20000 });
+
+    const saved = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks[0],
+        operation: main.creditOperations[0],
+        session: sessions.find(row => row && row.recordVersion === 2),
+        timer
+      };
+    });
+    assert.equal(saved.task.actualSeconds, 840,
+      'legacy 12 minutes migrate to 720 seconds and the measured two-minute Stopwatch adds 120 seconds');
+    assert.equal(saved.task.actual, 14);
+    assert.equal(saved.task.creditRevision, 1);
+    assert.equal(saved.task.lastCreditOperationId, saved.operation.operationId);
+    assert.equal(saved.operation.previousSeconds, 720);
+    assert.equal(saved.operation.targetSeconds, 840);
+    assert.equal(saved.operation.kind, 'session');
+    assert.equal(saved.session.mode, 'stopwatch');
+    assert.equal(saved.session.phase, 'work');
+    assert.equal(saved.session.outcome, 'stopped');
+    assert.equal(saved.session.completed, false);
+    assert.equal(saved.session.plannedDurationMs, null);
+    assert.equal(saved.session.creditSource, 'measured');
+    assert.equal(saved.session.creditedSeconds, 120);
+    assert.equal(saved.session.sessionId, saved.operation.operationId);
+    assert.equal(saved.timer.pendingFocusCommit, null);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'V2 Stopwatch after reload');
+    const afterReload = await page.evaluate(() => ({
+      actualSeconds: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks[0].actualSeconds,
+      operationCount: JSON.parse(localStorage.getItem('timeTasksApp_v1')).creditOperations.length,
+      v2SessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+        .filter(row => row && row.recordVersion === 2).length
+    }));
+    assert.deepEqual(afterReload, { actualSeconds: 840, operationCount: 1, v2SessionCount: 1 });
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
