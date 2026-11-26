@@ -20,7 +20,16 @@ function extractFunction(name) {
 }
 
 function runtime(overrides = {}) {
+  const mainRecord = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { operationalDayStart: 4, firstUseDate: '2026-01-01', darkMode: false, themeMode: 'system', lastRecurringDates: {} },
+    tasks: [],
+    dailyLogs: []
+  };
+  const mainRaw = JSON.stringify(mainRecord);
   const values = new Map([
+    ['main', mainRaw],
     ['reset', null], ['rolling-restore', null], ['import', null],
     ['migration', null], ['timer', JSON.stringify({ mode: 'stopwatch', pendingStopwatchTransaction: null })]
   ]);
@@ -36,6 +45,8 @@ function runtime(overrides = {}) {
     IMPORT_IN_PROGRESS_KEY: 'import',
     MIGRATION_IN_PROGRESS_KEY: 'migration',
     FOCUS_TIMER_KEY: 'timer',
+    STORAGE_KEY: 'main',
+    CURRENT_SCHEMA_VERSION: 2,
     _stopwatchTransactionLockDepth: 1,
     storageRecoveryRequired: false,
     _startupStopwatchRecoveryInFlight: false,
@@ -44,6 +55,14 @@ function runtime(overrides = {}) {
     _focusTimer: { pendingStopwatchTransaction: null },
     _secondaryStorageBaselines: { timer: timerRaw },
     _secondaryStorageConflicts: {},
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: mainRaw,
+    tasks: [],
+    validateV2(record) {
+      return !!record && record.schemaVersion === 2
+        && Array.isArray(record.tasks) && Array.isArray(record.dailyLogs);
+    },
     localStorage: storage,
     console: { error() {} }
   };
