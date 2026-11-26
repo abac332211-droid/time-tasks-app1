@@ -21,12 +21,16 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return match[0];
-  return [
-    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }',
-    'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
-    match[0]
-  ].join('\n');
+  const source = match[0];
+  if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
+  const helpers = [];
+  if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
+    helpers.push('function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }');
+  }
+  if (/\b_withTaskStorageLock\s*\(/.test(source)) {
+    helpers.push('function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }');
+  }
+  return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
 test('inline application and service worker JavaScript parse', () => {
@@ -202,7 +206,7 @@ test('task storage wrapper executes its mutation only while the shared Web Lock 
     showToast() {}, showAlertModal() {}, console
   };
   vm.runInNewContext(
-    extractFunction('_isTaskStorageLockHeld') + '\\n' + extractFunction('_withTaskStorageLock'),
+    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('_withTaskStorageLock'),
     sandbox
   );
   const result = await sandbox._withTaskStorageLock(() => {
@@ -257,7 +261,7 @@ test('saveData refuses writes before storage access when the shared Web Lock is 
     console
   };
   vm.runInNewContext(
-    extractFunction('_isTaskStorageLockHeld') + '\\n' + extractFunction('saveData'),
+    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('saveData'),
     sandbox
   );
   assert.equal(sandbox.saveData(), false);
@@ -565,7 +569,7 @@ test('V2 and backup recurring-date metadata share strict bounds and key validati
   assert.equal(validate(tooMany), false);
 });
 
-test('recurring task refresh uses an app-lifetime interval independent of the focus timer', () => {
+test('recurring task refresh uses an app-lifetime interval independent of the focus timer', async () => {
   let callback = null, delay = null, generated = 0, rendered = 0, notified = 0;
   const sandbox = {
     _recurringTaskRefreshInterval: null,
@@ -582,6 +586,7 @@ test('recurring task refresh uses an app-lifetime interval independent of the fo
   assert.equal(delay, 60 * 1000);
   assert.equal(typeof callback, 'function');
   callback();
+  await Promise.resolve();
   assert.equal(generated, 1);
   assert.equal(rendered, 1);
   assert.equal(notified, 1);
@@ -3382,7 +3387,7 @@ test('failed timer start save restores the exact prior stopped state', () => {
   assert.match(alerts[0][0], /تشغيل المؤقت/);
 });
 
-test('recurring task refresh is page-lifetime, visible-only, minute-based, and idempotently installed', () => {
+test('recurring task refresh is page-lifetime, visible-only, minute-based, and idempotently installed', async () => {
   let tick = null, delay = null, intervalCreates = 0, generated = 0, rendered = 0, toasted = 0;
   const sandbox = {
     _recurringTaskRefreshInterval: null,
@@ -3403,6 +3408,7 @@ test('recurring task refresh is page-lifetime, visible-only, minute-based, and i
   assert.equal(generated, 0, 'hidden tabs do not run the periodic task generator');
   sandbox.document.visibilityState = 'visible';
   tick();
+  await Promise.resolve();
   assert.equal(generated, 1);
   assert.equal(rendered, 1);
   assert.equal(toasted, 1);
