@@ -14,7 +14,11 @@ function extractFunction(name) {
   assert.notEqual(start, -1, 'Missing app function: ' + name);
   const end = html.indexOf('\n}', start);
   assert.notEqual(end, -1, 'Could not find end of app function: ' + name);
-  return html.slice(start, end + 2);
+  return [
+    'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0; }',
+    'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
+    html.slice(start, end + 2)
+  ].join('\\n');
 }
 
 function installFocusTimerHydration(sandbox) {
