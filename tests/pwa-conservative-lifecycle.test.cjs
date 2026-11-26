@@ -164,8 +164,10 @@ test('the PWA pause helper uses the durable checkpoint and never computes fresh 
   const executableSource = source.split('\n')
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
-  assert.ok(executableSource.includes('_focusTimer.baseElapsed'));
-  assert.ok(executableSource.includes('_focusElapsedRemainderMs'));
+  assert.ok(executableSource.includes('_withStopwatchTransactionLock(pauseLocked)'));
+  assert.ok(executableSource.includes('_saveFocusTimer()'));
+  assert.equal(executableSource.includes('_focusTimer.baseElapsed ='), false);
+  assert.equal(executableSource.includes('_focusElapsedRemainderMs ='), false);
   assert.equal(executableSource.includes('_getElapsedSec('), false);
   assert.equal(executableSource.includes('_getFocusTimerElapsedParts('), false);
   assert.equal(executableSource.includes('Date.now('), false);
