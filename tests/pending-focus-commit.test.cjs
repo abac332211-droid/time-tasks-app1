@@ -730,3 +730,62 @@ test('V2 credit writer refuses a new operation when the append-only ledger is fu
   assert.equal(runtime.writes.length, 0,
     'the 10,001st identity must be refused without truncating history');
 });
+
+
+function sessionFinishRoutingContext(snapshot) {
+  const calls = [];
+  const sandbox = {
+    _captureFocusTimerSnapshot: () => snapshot,
+    _commitPendingFocusSessionV2: request => {
+      calls.push({ writer: 'v2', request });
+      return Promise.resolve('v2');
+    },
+    _commitFocusTaskSession: request => {
+      calls.push({ writer: 'legacy', request });
+      return Promise.resolve('legacy');
+    }
+  };
+  vm.runInNewContext([
+    extractFunction('_buildPendingFocusSessionFields'),
+    extractFunction('_applyTimerFinish')
+  ].join('\\n'), sandbox);
+  return { app: sandbox, calls };
+}
+
+test('linked Stopwatch work sessions use V2 only when the approved seconds exactly match measured time', async () => {
+  const exactSnapshot = {
+    mode: 'stopwatch',
+    phase: 'work',
+    running: false,
+    baseElapsed: 120,
+    elapsedRemainderMs: 0,
+    taskId: 7,
+    sessionStartAt: startedAtMs,
+    pendingPhaseEndedAt: null,
+    clockAdjusted: false,
+    nativeSessionToken: null
+  };
+  const exact = sessionFinishRoutingContext(exactSnapshot);
+  assert.equal(await exact.app._applyTimerFinish(120, { id: 7, name: 'Task' }, 2, 'work', exactSnapshot), 'v2');
+  assert.equal(exact.calls.length, 1);
+  assert.equal(exact.calls[0].writer, 'v2');
+  const fields = exact.app._buildPendingFocusSessionFields(exactSnapshot, { id: 7, name: 'Task' }, 2);
+  assert.equal(fields.mode, 'stopwatch');
+  assert.equal(fields.phase, 'work');
+  assert.equal(fields.plannedDurationMs, null);
+  assert.equal(fields.outcome, 'stopped');
+  assert.equal(fields.completed, false);
+  assert.equal(fields.creditedSeconds, 120);
+  assert.equal(fields.creditSource, 'measured');
+
+  const roundedButNotMeasured = { ...exactSnapshot, baseElapsed: 125 };
+  const adjusted = sessionFinishRoutingContext(roundedButNotMeasured);
+  assert.equal(await adjusted.app._applyTimerFinish(125, { id: 7, name: 'Task' }, 2, 'work', roundedButNotMeasured), 'legacy');
+  assert.equal(adjusted.calls.length, 1);
+  assert.equal(adjusted.calls[0].writer, 'legacy');
+
+  const clockAdjusted = { ...exactSnapshot, clockAdjusted: true };
+  const untrusted = sessionFinishRoutingContext(clockAdjusted);
+  assert.equal(await untrusted.app._applyTimerFinish(120, { id: 7, name: 'Task' }, 2, 'work', clockAdjusted), 'legacy');
+  assert.equal(untrusted.calls[0].writer, 'legacy');
+});

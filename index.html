@@ -14362,9 +14362,9 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd) {
   };
 }
 
-// The real finish path enters here only for linked, trusted Pomodoro work
-// sessions. Migration, baseline verification, and commit all occur under the
-// same Web Lock. The old Stopwatch writer remains available for legacy records.
+// The real finish path enters here for linked, trusted Pomodoro work sessions,
+// and for Stopwatch only when the approved seconds exactly match measurement.
+// User-adjusted Stopwatch minutes retain the legacy writer for compatibility.
 function _commitPendingFocusSessionV2(params) {
   if (!params || !params.snapshot) return Promise.resolve(false);
   if (_focusCommitPendingPromise) return _focusCommitPendingPromise;
