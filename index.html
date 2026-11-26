@@ -9800,6 +9800,21 @@ function _attachNativeStopwatchClockToRunningTimer() {
   return _nativeStopwatchSyncPromise;
 }
 
+var _nativeStopwatchClockAttachScheduled = false;
+
+function _scheduleNativeStopwatchClockAttach() {
+  if (_nativeStopwatchClockAttachScheduled) return false;
+  _nativeStopwatchClockAttachScheduled = true;
+  setTimeout(function() {
+    _nativeStopwatchClockAttachScheduled = false;
+    if (!_focusTimer.running) return;
+    Promise.resolve(_attachNativeStopwatchClockToRunningTimer()).catch(function(error) {
+      console.warn("Scheduled native Stopwatch attachment failed:", error);
+    });
+  }, 0);
+  return true;
+}
+
 function _refreshNativeStopwatchClock(requireBootIdentity) {
   var restoring = requireBootIdentity === true && _focusTimer.nativeRestorePending
     && _focusTimer.nativeClockActive;
@@ -10589,8 +10604,8 @@ function _catchUp(backgroundReturn) {
       return;
     }
     renderFocusSessionsCard();
-    if (_focusTimer.running && typeof _attachNativeStopwatchClockToRunningTimer === "function")
-      _attachNativeStopwatchClockToRunningTimer();
+    if (_focusTimer.running && typeof _scheduleNativeStopwatchClockAttach === "function")
+      _scheduleNativeStopwatchClockAttach();
     _notifyPhaseTransition();
   }
 }
@@ -11931,8 +11946,8 @@ function toggleTimer(_nativeClockSynchronized, _notificationQueueChecked) {
       );
     } else {
       _startDisplayTick();
-      if (typeof _attachNativeStopwatchClockToRunningTimer === "function")
-        _attachNativeStopwatchClockToRunningTimer();
+      if (typeof _scheduleNativeStopwatchClockAttach === "function")
+        _scheduleNativeStopwatchClockAttach();
     }
   }
   _renderFocusTimer();
@@ -13481,7 +13496,7 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
         _focusTimer.running=false;_focusTimer.startedAt=null;_clearFocusTimerClock();_renderFocusTimer();
         showAlertModal("تعذر استئناف المؤقت","تعذر حفظ الاستئناف؛ بقيت الجلسة متوقفة بالمدة المحفوظة.");return false;
       }
-      _startDisplayTick();if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();_renderFocusTimer();
+      _startDisplayTick();if (typeof _scheduleNativeStopwatchClockAttach === "function") _scheduleNativeStopwatchClockAttach();_renderFocusTimer();
       return true;
     });
   };
@@ -13568,7 +13583,7 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
       _clearFocusTimerClock();_stopDisplayTick();_renderFocusTimer();
       showAlertModal("تعذر بدء جلسة التركيز","لم يُحفظ بدء الجلسة؛ أُعيدت الحالة السابقة ولم يبدأ العد.");return false;
     }
-    _startDisplayTick();if (typeof _attachNativeStopwatchClockToRunningTimer === "function") _attachNativeStopwatchClockToRunningTimer();
+    _startDisplayTick();if (typeof _scheduleNativeStopwatchClockAttach === "function") _scheduleNativeStopwatchClockAttach();
     _renderFocusTimer();_scrollToTimer();return true;
   }
   function _scrollToTimer(){
