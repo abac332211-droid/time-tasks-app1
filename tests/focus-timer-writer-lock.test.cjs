@@ -162,3 +162,45 @@ test('linkTimerToTask rolls back its in-memory task ID when persistence fails', 
   assert.match(alerts[0][0], /تعذر تغيير ربط المهمة/);
   assert.equal(renders, 1);
 });
+
+
+test('_restoreFocusTimerSnapshot refuses a timer restore without the shared lock', () => {
+  const writes = [];
+  const storage = {
+    setItem(key, value) { writes.push([key, String(value)]); }
+  };
+  const sandbox = {
+    FOCUS_TIMER_KEY: 'focus-timer',
+    _isTaskStorageLockHeld: () => false
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction('_restoreFocusTimerSnapshot'), sandbox);
+
+  assert.throws(
+    () => sandbox._restoreFocusTimerSnapshot(
+      { focusTimer: { mode: 'pomodoro', running: false, baseElapsed: 30 } },
+      storage,
+      'focus-timer'
+    ),
+    /requires the shared Stopwatch Web Lock/
+  );
+  assert.deepEqual(writes, [], 'restore must not write any timer snapshot without lock ownership');
+});
+
+test('_restoreFocusTimerSnapshot restores the timer while the shared lock is held', () => {
+  const writes = [];
+  const storage = {
+    setItem(key, value) { writes.push([key, String(value)]); }
+  };
+  const sandbox = {
+    FOCUS_TIMER_KEY: 'focus-timer',
+    _isTaskStorageLockHeld: () => true
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction('_restoreFocusTimerSnapshot'), sandbox);
+  const record = { mode: 'pomodoro', running: false, baseElapsed: 30 };
+
+  sandbox._restoreFocusTimerSnapshot({ focusTimer: record }, storage, 'focus-timer');
+
+  assert.deepEqual(writes, [['focus-timer', JSON.stringify(record)]]);
+});
