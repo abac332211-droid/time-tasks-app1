@@ -97,6 +97,22 @@ test('partial or unsafe credit metadata is rejected instead of repaired or dropp
   assert.equal(app._validateTaskCreditFields(creditTask({ lastCreditOperationId: 'not-a-uuid' })), false);
 });
 
+test('credit revision zero has no operation ID and positive revisions require one', () => {
+  const app = context();
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    creditRevision: 0,
+    lastCreditOperationId: null
+  })), true);
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    creditRevision: 0,
+    lastCreditOperationId: uuid
+  })), false);
+  assert.equal(app._validateTaskCreditFields(creditTask({
+    creditRevision: 1,
+    lastCreditOperationId: null
+  })), false);
+});
+
 test('stored V2 validation and backup validation both enforce the same task-credit contract', () => {
   const app = context();
   const valid = creditTask();
