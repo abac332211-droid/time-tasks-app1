@@ -854,7 +854,7 @@ test('D-02 transition failure does not start the next task or report success', {
   }
 });
 
-test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry does not evict another row', {
+test('D-04 V2 Pomodoro credit commit at 500 sessions evicts once and startup retry does not evict another row', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
@@ -899,10 +899,10 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
           try {
             const next = JSON.parse(String(value));
             const durable = JSON.parse(nativeGetItem.call(localStorage, 'timeTasksApp_focusTimer') || '{}');
-            if (durable.pendingStopwatchTransaction
-                && !next.pendingStopwatchTransaction && next.baseElapsed === 0) {
+            if (durable.pendingFocusCommit
+                && !next.pendingFocusCommit && next.baseElapsed === 0) {
               window.__injectedJournalClearFailure = true;
-              throw new Error('injected Pomodoro journal-clear failure');
+              throw new Error('injected V2 Pomodoro journal-clear failure');
             }
           } catch (error) {
             if (window.__injectedJournalClearFailure) throw error;
@@ -925,7 +925,10 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
       return {
         commit,
         actual: task && task.actual,
-        taskTransactionId: task && task.lastStopwatchTransactionId,
+        actualSeconds: task && task.actualSeconds,
+        creditRevision: task && task.creditRevision,
+        lastCreditOperationId: task && task.lastCreditOperationId,
+        operations: main.creditOperations,
         timer,
         sessions,
         recoveryRequired: storageRecoveryRequired,
@@ -935,12 +938,19 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
     assert.equal(firstAttempt.commit, false);
     assert.equal(firstAttempt.injected, true);
     assert.equal(firstAttempt.actual, 8);
+    assert.equal(firstAttempt.actualSeconds, 480);
+    assert.equal(firstAttempt.creditRevision, 1);
+    assert.equal(firstAttempt.operations.length, 1);
+    assert.equal(firstAttempt.operations[0].operationId, firstAttempt.lastCreditOperationId);
+    assert.equal(firstAttempt.operations[0].kind, 'session');
     assert.equal(firstAttempt.sessions.length, 500);
     assert.equal(firstAttempt.sessions[0].id, 2);
     assert.equal(firstAttempt.sessions[499].id, 501);
     assert.equal(firstAttempt.sessions[499].mode, 'pomodoro');
-    assert.equal(firstAttempt.sessions[499].transactionId, firstAttempt.taskTransactionId);
-    assert.ok(firstAttempt.timer.pendingStopwatchTransaction);
+    assert.equal(firstAttempt.sessions[499].recordVersion, 2);
+    assert.equal(firstAttempt.sessions[499].sessionId, firstAttempt.lastCreditOperationId);
+    assert.ok(firstAttempt.timer.pendingFocusCommit);
+    assert.equal(firstAttempt.timer.pendingStopwatchTransaction, null);
     assert.equal(firstAttempt.recoveryRequired, true);
 
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -952,13 +962,20 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
       const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
       return {
         actual: task && task.actual,
-        taskTransactionId: task && task.lastStopwatchTransactionId,
+        actualSeconds: task && task.actualSeconds,
+        creditRevision: task && task.creditRevision,
+        lastCreditOperationId: task && task.lastCreditOperationId,
+        operations: main.creditOperations,
         timer,
         sessions,
         recoveryRequired: storageRecoveryRequired
       };
     });
     assert.equal(recovered.actual, 8);
+    assert.equal(recovered.actualSeconds, 480);
+    assert.equal(recovered.creditRevision, 1);
+    assert.equal(recovered.operations.length, 1);
+    assert.equal(recovered.operations[0].operationId, recovered.lastCreditOperationId);
     assert.equal(recovered.sessions.length, 500);
     const recoveredSessionIds = recovered.sessions.map(session => session.id);
     assert.deepEqual(recoveredSessionIds, Array.from({ length: 500 }, (_, index) => index + 2));
@@ -967,9 +984,11 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
     assert.equal(recovered.sessions[0].id, 2);
     assert.equal(recovered.sessions.filter(session => session.id === 1).length, 0);
     assert.equal(recovered.sessions.filter(session => session.id === 501).length, 1);
-    assert.equal(recovered.sessions.filter(session => session.transactionId === recovered.taskTransactionId).length, 1);
+    assert.equal(recovered.sessions.filter(session =>
+      session.recordVersion === 2 && session.sessionId === recovered.lastCreditOperationId).length, 1);
     assert.equal(recovered.sessions[499].id, 501);
     assert.equal(recovered.sessions[499].mode, 'pomodoro');
+    assert.equal(recovered.timer.pendingFocusCommit, null);
     assert.equal(recovered.timer.pendingStopwatchTransaction, null);
     assert.equal(recovered.timer.baseElapsed, 0);
     assert.equal(recovered.recoveryRequired, false);
