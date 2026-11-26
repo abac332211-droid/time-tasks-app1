@@ -199,16 +199,22 @@ test('task storage wrapper executes its mutation only while the shared Web Lock 
   const sandbox = {
     _stopwatchTransactionLockDepth: 0,
     _taskStorageWriteInFlight: false,
-    _withStopwatchTransactionLock(callback) {
-      this._stopwatchTransactionLockDepth++;
-      return Promise.resolve().then(callback).finally(() => { this._stopwatchTransactionLockDepth--; });
+    navigator: {
+      locks: {
+        request(name, options, callback) {
+          assert.equal(name, 'timeTasksApp-stopwatch-transaction');
+          assert.deepEqual(options, { mode: 'exclusive' });
+          return Promise.resolve().then(() => callback({ name }));
+        }
+      }
     },
     showToast() {}, showAlertModal() {}, console
   };
-  vm.runInNewContext(
-    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('_withTaskStorageLock'),
-    sandbox
-  );
+  vm.runInNewContext([
+    extractFunction('_isTaskStorageLockHeld'),
+    extractFunction('_withStopwatchTransactionLock'),
+    extractFunction('_withTaskStorageLock')
+  ].join('\n'), sandbox);
   const result = await sandbox._withTaskStorageLock(() => {
     events.push(sandbox._stopwatchTransactionLockDepth);
     assert.equal(sandbox._isTaskStorageLockHeld(), true);
