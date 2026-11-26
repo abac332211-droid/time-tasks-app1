@@ -657,7 +657,7 @@ test('backup validator accepts legacy partial for import healing', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateBackup'), sandbox);
   const backup = { backupFormatVersion: 1, schemaVersion: 2, data: {
     tasks: [{ id: 1, name: 'قديم', status: 'partial', type: 'معرفية', expected: 20, actual: null, plannedDate: '2026-11-04', plannedTime: '', completedAt: null, createdAt: 1 }],
     dailyLogs: []
@@ -1045,7 +1045,7 @@ test('stored schema rejects duplicate task IDs before normal app use', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateV2'), sandbox);
   const task = {
     id: 1, name: 'مهمة', status: 'pending', type: 'معرفية',
     expected: 30, actual: null, plannedDate: '2026-11-04',
