@@ -6537,7 +6537,73 @@ function _parseStrictFocusSessionTimestamp(value) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+function _validateFocusSessionRecordV2(session) {
+  if (!session || typeof session !== "object" || Array.isArray(session)) return false;
+  if (session.recordVersion !== 2) return false;
+  if (!Number.isSafeInteger(session.id) || session.id <= 0) return false;
+  if (typeof session.sessionId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.sessionId)) return false;
+  if (session.transactionId !== undefined && (typeof session.transactionId !== "string"
+      || session.transactionId.length < 8 || session.transactionId.length > 160)) return false;
+  if (session.mode !== "pomodoro" && session.mode !== "stopwatch") return false;
+  if (!["work", "short-break", "long-break"].includes(session.phase)) return false;
+  if (session.mode === "stopwatch" && session.phase !== "work") return false;
+  if (session.taskId !== undefined && session.taskId !== null
+      && (!Number.isSafeInteger(session.taskId) || session.taskId <= 0)) return false;
+  if (session.taskName !== undefined && session.taskName !== null && typeof session.taskName !== "string") return false;
+
+  if (!Number.isSafeInteger(session.activeDurationMs) || session.activeDurationMs < 0) return false;
+  if (session.plannedDurationMs !== null
+      && (!Number.isSafeInteger(session.plannedDurationMs) || session.plannedDurationMs <= 0)) return false;
+  if (session.mode === "pomodoro" && session.plannedDurationMs === null) return false;
+  if (session.mode === "stopwatch" && session.plannedDurationMs !== null) return false;
+  if (!Number.isSafeInteger(session.durationSec) || session.durationSec < 0
+      || session.durationSec !== Math.floor(session.activeDurationMs / 1000)) return false;
+
+  if (!Number.isSafeInteger(session.creditedSeconds) || session.creditedSeconds < 0) return false;
+  if (!["measured", "user_adjusted", "none"].includes(session.creditSource)) return false;
+  if (!["completed", "ended_early", "stopped", "skipped", "discarded", "interrupted"].includes(session.outcome)) return false;
+  if (!["android_elapsed_realtime", "performance_now", "mixed"].includes(session.clockSource)) return false;
+  if (!["trusted", "partial", "untrusted"].includes(session.clockTrust)) return false;
+  if (typeof session.clockAdjusted !== "boolean") return false;
+
+  if (session.startedAt !== null && _parseStrictFocusSessionTimestamp(session.startedAt) === null) return false;
+  if (session.endedAt !== null && _parseStrictFocusSessionTimestamp(session.endedAt) === null) return false;
+  if (session.startedAt === null && session.endedAt !== null && session.clockTrust === "trusted") return false;
+  if (session.startedAt !== null && session.endedAt !== null) {
+    var startMs = _parseStrictFocusSessionTimestamp(session.startedAt);
+    var endMs = _parseStrictFocusSessionTimestamp(session.endedAt);
+    if (endMs < startMs && !session.clockAdjusted) return false;
+  }
+
+  if (session.completed !== undefined && typeof session.completed !== "boolean") return false;
+  if (session.completed !== (session.outcome === "completed")) return false;
+
+  if (session.outcome === "completed") {
+    if (session.plannedDurationMs === null
+        || session.activeDurationMs < session.plannedDurationMs
+        || session.clockTrust !== "trusted") return false;
+  }
+  if (session.outcome === "ended_early") {
+    if (session.plannedDurationMs === null
+        || session.activeDurationMs >= session.plannedDurationMs) return false;
+  }
+  if (session.outcome === "stopped"
+      && (session.mode !== "stopwatch" || session.plannedDurationMs !== null)) return false;
+  if ((session.outcome === "skipped" || session.outcome === "discarded")
+      && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
+  if (session.creditSource === "none" && session.creditedSeconds !== 0) return false;
+  if ((session.phase !== "work" || session.taskId === null || session.taskId === undefined)
+      && session.creditedSeconds !== 0) return false;
+  return true;
+}
+
 function _validateFocusSessionRecord(session) {
+  if (session && session.recordVersion === 2) return _validateFocusSessionRecordV2(session);
+  if (session && session.recordVersion !== undefined) return false;
+  return _validateFocusSessionRecordV1(session);
+}
+function _validateFocusSessionRecordV1(session) {
   if (!session || typeof session !== "object" || Array.isArray(session)) return false;
   if (session.id !== undefined && (!Number.isSafeInteger(session.id) || session.id <= 0)) return false;
   if (session.transactionId !== undefined && (typeof session.transactionId !== "string"
@@ -6556,6 +6622,7 @@ function _validateFocusSessionRecord(session) {
   if (session.clockAdjusted !== undefined && typeof session.clockAdjusted !== "boolean") return false;
   return true;
 }
+
 
 function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, taskIds, elapsedRemainderMs, anchorRemainderMs) {
   if (!timer || typeof timer !== "object" || Array.isArray(timer)) return null;
@@ -11111,7 +11178,7 @@ function _loadSessions() {
     if (raw === null) { _sessionsCache = []; return []; }
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) throw new Error("focus sessions root is not an array");
-    var invalid = [], seenIds = new Set(), seenTransactionIds = new Set(), valid = [];
+    var invalid = [], seenIds = new Set(), seenTransactionIds = new Set(), seenSessionIds = new Set(), valid = [];
     for (var i = 0; i < arr.length; i++) {
       var session = arr[i], sessionValid = _validateFocusSessionRecord(session);
       if (sessionValid && session.id !== undefined) {
@@ -11121,6 +11188,10 @@ function _loadSessions() {
       if (sessionValid && session.transactionId !== undefined) {
         if (seenTransactionIds.has(session.transactionId)) sessionValid = false;
         else seenTransactionIds.add(session.transactionId);
+      }
+      if (sessionValid && session.recordVersion === 2) {
+        if (seenSessionIds.has(session.sessionId)) sessionValid = false;
+        else seenSessionIds.add(session.sessionId);
       }
       if (sessionValid) valid.push(session); else invalid.push(i + 1);
     }
@@ -11155,7 +11226,7 @@ function _saveSessions(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!Array.isArray(arr) || arr.length > FOCUS_MAX_SESSIONS) return false;
-    var ids = new Set(), transactionIds = new Set();
+    var ids = new Set(), transactionIds = new Set(), sessionIds = new Set();
     for (var i = 0; i < arr.length; i++) {
       if (!_validateFocusSessionRecord(arr[i])) return false;
       if (arr[i].id !== undefined) {
@@ -11165,6 +11236,10 @@ function _saveSessions(arr) {
       if (arr[i].transactionId !== undefined) {
         if (transactionIds.has(arr[i].transactionId)) return false;
         transactionIds.add(arr[i].transactionId);
+      }
+      if (arr[i].recordVersion === 2) {
+        if (sessionIds.has(arr[i].sessionId)) return false;
+        sessionIds.add(arr[i].sessionId);
       }
     }
     if (!_writeSecondaryStorageVerified(FOCUS_SESSIONS_KEY, JSON.stringify(arr))) return false;
