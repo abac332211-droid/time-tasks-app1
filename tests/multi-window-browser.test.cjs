@@ -1730,7 +1730,10 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
         updatedAt: null,
         completedAt: null
       }];
-      if (!_saveProjects(oldProjects)) throw new Error('Could not seed old project cache');
+      const oldProjectsSaved = await _withTaskStorageLock(function() {
+        return _saveProjects(oldProjects);
+      });
+      if (!oldProjectsSaved) throw new Error('Could not seed old project cache');
       _loadProjects();
       if (!_projectsCache || !_projectsCache.some(project => project.id === 404)) {
         throw new Error('The pre-reset project cache was not populated');
@@ -1755,11 +1758,11 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
         throw new Error('Notebook inputs were not present in the loaded application');
       }
       thoughtInput.value = 'خاطرة بعد إعادة الضبط';
-      addThought();
+      await addThought();
       projectName.value = 'مشروع بعد إعادة الضبط';
       projectDesc.value = 'تحقق الكتابة في الصفحة نفسها دون إعادة تحميل';
       projectTarget.value = '';
-      saveProject();
+      await saveProject();
       await toggleTimer();
 
       const thoughtsRaw = localStorage.getItem(THOUGHTS_KEY);
