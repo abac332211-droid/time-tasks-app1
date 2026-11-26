@@ -505,7 +505,7 @@ test('startup probe recognizes a valid pending focus commit before normal storag
   const result = app._probeStartupStopwatchRecovery();
   assert.equal(result.error, null);
   assert.equal(result.pending, true);
-  assert.deepEqual(result.expectedFocusCommit, journal);
+  assert.equal(JSON.stringify(result.expectedFocusCommit), JSON.stringify(journal));
   assert.equal(result.expectedTx, null);
   assert.equal(result.mainData.schemaVersion, 2);
 });
