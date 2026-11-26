@@ -152,18 +152,23 @@ test('native Android timer is not paused by the PWA lifecycle policy', async () 
 
 test('visibility, pagehide and pageshow listeners use the conservative lifecycle policy', () => {
   const source = extractFunction('_setupVisibilityListener');
-  assert.match(source, /visibilitychange/);
-  assert.match(source, /_pausePwaFocusTimerAtLastCheckpoint\\("visibilitychange-hidden"\\)/);
-  assert.match(source, /addEventListener\\(['"]pagehide['"]/);
-  assert.match(source, /_pausePwaFocusTimerAtLastCheckpoint\\("pagehide"\\)/);
-  assert.match(source, /addEventListener\\(['"]pageshow['"]/);
-  assert.match(source, /_onFocusTimerForegroundReturn\\(\\)/);
+  assert.ok(source.includes('visibilitychange'));
+  assert.ok(source.includes('_pausePwaFocusTimerAtLastCheckpoint("visibilitychange-hidden")'));
+  assert.ok(source.includes("addEventListener('pagehide'"));
+  assert.ok(source.includes('_pausePwaFocusTimerAtLastCheckpoint("pagehide")'));
+  assert.ok(source.includes("addEventListener('pageshow'"));
+  assert.ok(source.includes('_onFocusTimerForegroundReturn()'));
 });
 
-test('the PWA pause helper uses the durable baseElapsed checkpoint and never computes fresh elapsed time', () => {
+test('the PWA pause helper uses the durable checkpoint and never computes fresh elapsed time', () => {
   const source = extractFunction('_pausePwaFocusTimerAtLastCheckpoint');
-  const executableSource = source.replace(/\\/\\/.*$/gm, '');
-  assert.match(executableSource, /_focusTimer\\.baseElapsed/);
-  assert.match(executableSource, /_focusElapsedRemainderMs/);
-  assert.doesNotMatch(executableSource, /_getElapsedSec|_getFocusTimerElapsedParts|Date\\.now|performance\\.now/);
+  const executableSource = source.split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  assert.ok(executableSource.includes('_focusTimer.baseElapsed'));
+  assert.ok(executableSource.includes('_focusElapsedRemainderMs'));
+  assert.equal(executableSource.includes('_getElapsedSec('), false);
+  assert.equal(executableSource.includes('_getFocusTimerElapsedParts('), false);
+  assert.equal(executableSource.includes('Date.now('), false);
+  assert.equal(executableSource.includes('performance.now('), false);
 });
