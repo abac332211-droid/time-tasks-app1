@@ -2171,6 +2171,7 @@ function cancelRecurringOccurrence(taskId) {
     "🚫 إلغاء هذه المهمة فقط",
     "سيُلغى هذا الموعد وحده، مع الاحتفاظ بسلسلة التكرار حتى تستمر مواعيدها المستقبلية. لن تُحذف المهمة أو سجل وقتها الفعلي. لإيقاف السلسلة كلها استخدم الخيار الآخر. هل تريد المتابعة؟",
     function() {
+      _runWithTaskStorageWriteLock(function() {
       var task = tasks.find(function(item) { return item && item.id === taskId; });
       if (!task || task.status === "cancelled") return;
       var previous = { status: task.status, completedAt: task.completedAt };
@@ -2185,6 +2186,7 @@ function cancelRecurringOccurrence(taskId) {
       if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
       renderAll();
       showToast("🚫 أُلغيت هذه المهمة فقط؛ ستستمر السلسلة في مواعيدها القادمة");
+      });
     }
   );
   return true;
@@ -2215,6 +2217,7 @@ function stopRecurringSeries(taskId) {
     "⛔ إيقاف سلسلة التكرار",
     "سيوقف هذا الإجراء إنشاء المهام المستقبلية لهذه السلسلة بالكامل، بما فيها النسخ المرتبطة. لن تُحذف المهام السابقة أو سجلاتها. لإلغاء هذا الموعد وحده استخدم زر «إلغاء هذه المهمة فقط». هل تريد إيقاف السلسلة؟",
     function() {
+      _runWithTaskStorageWriteLock(function() {
       var currentSelected = tasks.find(function(task) { return task && task.id === taskId; });
       var currentRoot = currentSelected ? resolveRoot(currentSelected) : null;
       if (!currentRoot || !currentRoot.recurrence) {
@@ -2232,6 +2235,7 @@ function stopRecurringSeries(taskId) {
       if (typeof cancelEdit === "function" && editingId !== null) cancelEdit();
       renderAll();
       showToast("⛔ أُوقفت سلسلة التكرار بالكامل؛ لم تُحذف المهام السابقة");
+      });
     }
   );
   return true;
@@ -6218,6 +6222,7 @@ function deleteTask(id) {
   }
 
   showConfirmModal("حذف المهمة", "هل أنت متأكد من حذف هذه المهمة نهائيًا؟", function() {
+      _runWithTaskStorageWriteLock(function() {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
@@ -13988,6 +13993,7 @@ function deleteProject(id) {
   var message = "سيتم حذف المشروع " +
     (linkedTasks.length ? "وفصل " + linkedTasks.length + " مهمة عنه. " : "") + "متابعة؟";
   showConfirmModal("🗑️ حذف المشروع", message, function() {
+      _runWithTaskStorageWriteLock(function() {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
