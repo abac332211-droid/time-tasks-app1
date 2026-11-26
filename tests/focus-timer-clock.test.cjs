@@ -18,7 +18,7 @@ function extractFunction(name) {
     'function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" && _stopwatchTransactionLockDepth > 0; }',
     'function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }',
     html.slice(start, end + 2)
-  ].join('\\n');
+  ].join('\n');
 }
 
 function installFocusTimerHydration(sandbox) {
