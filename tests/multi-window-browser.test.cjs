@@ -2848,12 +2848,12 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
       const footer = document.getElementById('modalFooter');
       return !!overlay && !overlay.classList.contains('hidden') && !!footer
         && Array.from(footer.querySelectorAll('button')).some(button =>
-          button.textContent.indexOf('+ 5') >= 0);
+          button.textContent.indexOf('حفظ الوقت المقاس') >= 0);
     }, null, { timeout: 10000 });
 
     await pageA.evaluate(() => {
       const button = Array.from(document.querySelectorAll('#modalFooter button'))
-        .find(item => item.textContent.indexOf('+ 5') >= 0);
+        .find(item => item.textContent.indexOf('حفظ الوقت المقاس') >= 0);
       if (!button) throw new Error('The real Pomodoro finish confirmation button was not found.');
       button.click();
     });
