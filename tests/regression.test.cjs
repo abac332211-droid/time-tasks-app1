@@ -30,6 +30,13 @@ function extractFunction(name) {
   if (/\b_withTaskStorageLock\s*\(/.test(source)) {
     helpers.push('function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }');
   }
+  if (/\bcomputeGap\s*\(/.test(source)) {
+    const computeGapHelper = appScript.match(
+      /function\s+computeGap\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(computeGapHelper, 'computeGap helper exists in index.html');
+    helpers.push(computeGapHelper[0]);
+  }
   if (/\bgetTaskActualMinutes\s*\(/.test(source)) {
     const actualMinutesHelper = appScript.match(
       /function\s+getTaskActualMinutes\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
