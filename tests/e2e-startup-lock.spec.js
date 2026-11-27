@@ -2255,3 +2255,92 @@ test('V2 resetTimer UI reports failure without credit, session, timer reset, or 
     await closeBrowserContext(runtime);
   }
 });
+
+
+test('V2 save-and-switch failure keeps the old task paused and never starts the next task', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+    await addSecondTask(page);
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await page.evaluate(() => startTimerForTask(7012));
+    await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
+      .some(button => button.textContent.includes('حفظ والانتقال')),
+    null, { timeout: 5000 });
+
+    await page.evaluate(() => {
+      const nativeSetItem = Storage.prototype.setItem;
+      window.__v2TransitionNativeSetItem = nativeSetItem;
+      window.__v2TransitionInjectedFailure = false;
+      window.__v2TransitionToasts = [];
+      window.__v2TransitionOriginalToast = window.showToast;
+      window.showToast = function(message) {
+        window.__v2TransitionToasts.push(String(message));
+        return window.__v2TransitionOriginalToast.apply(this, arguments);
+      };
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_v1' && !window.__v2TransitionInjectedFailure) {
+          window.__v2TransitionInjectedFailure = true;
+          throw new Error('injected V2 transition main-record write failure');
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('حفظ والانتقال'));
+      if (!save) throw new Error('V2 transition save button was not rendered');
+      save.click();
+      window.__v2TransitionCommitPromise = window._focusCommitPendingPromise;
+      if (!window.__v2TransitionCommitPromise) {
+        throw new Error('V2 transition did not enter the shared commit promise');
+      }
+    });
+    const commitResult = await page.evaluate(async () => await window.__v2TransitionCommitPromise);
+    const result = await page.evaluate(() => {
+      Storage.prototype.setItem = window.__v2TransitionNativeSetItem;
+      window.showToast = window.__v2TransitionOriginalToast;
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const oldTask = main.tasks.find(row => row.id === 7011);
+      return {
+        injected: window.__v2TransitionInjectedFailure,
+        task: oldTask,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer,
+        inMemoryTimer: {
+          taskId: _focusTimer.taskId,
+          mode: _focusTimer.mode,
+          running: _focusTimer.running,
+          baseElapsed: _focusTimer.baseElapsed
+        },
+        successToastShown: window.__v2TransitionToasts.some(message =>
+          message.includes('حُفظت الجلسة وتم الانتقال')),
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    assert.equal(commitResult, false);
+    assert.equal(result.injected, true);
+    assert.equal(result.task.actualSeconds, 480);
+    assert.equal(result.task.creditRevision, 1);
+    assert.equal(result.operations.length, 1);
+    assert.equal(result.sessions.length, 1);
+    assert.ok(result.timer.pendingFocusCommit);
+    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.timer.running, false);
+    assert.equal(result.timer.taskId, 7011);
+    assert.equal(result.timer.baseElapsed, 180);
+    assert.equal(result.inMemoryTimer.taskId, 7011);
+    assert.equal(result.inMemoryTimer.running, false);
+    assert.equal(result.inMemoryTimer.baseElapsed, 180);
+    assert.equal(result.successToastShown, false);
+    assert.equal(result.recoveryRequired, true);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
