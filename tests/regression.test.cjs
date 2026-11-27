@@ -976,6 +976,7 @@ test('weekly and task-type gap metrics use measured seconds consistently', () =>
   vm.runInNewContext([
     extractFunction('renderWeeklyReport'),
     extractFunction('renderStats'),
+    extractFunction('_formatFocusSessionDuration'),
     extractFunction('renderTypeGapAnalysis')
   ].join('\n'), sandbox);
 
@@ -1021,7 +1022,7 @@ test('type gap analysis separates measured task totals from the standardized pro
     extractFunction('computeTypeAnalysis'),
     extractFunction('_formatFocusSessionDuration'),
     extractFunction('renderTypeGapAnalysis')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
 
   sandbox.renderTypeGapAnalysis();
 
