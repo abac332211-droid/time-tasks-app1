@@ -140,8 +140,8 @@ test('retryStorageRecovery waits for explicit confirmation before quarantining a
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-marker',
     _getLatestRollingRecoveryBackup: () => null,
     _resetSecondaryStorageTracking() {
-      this._secondaryStorageBaselines = Object.create(null);
-      this._secondaryStorageConflicts = Object.create(null);
+      h.sandbox._secondaryStorageBaselines = Object.create(null);
+      h.sandbox._secondaryStorageConflicts = Object.create(null);
     },
     _reloadAfterVerifiedOperation() { reloads++; },
     showConfirmModal(_title, _body, accept) { confirmation = accept; },
