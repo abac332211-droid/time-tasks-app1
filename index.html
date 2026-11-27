@@ -2291,6 +2291,130 @@ function computeTaskGapMetrics(taskList) {
   return { gapCount: gaps.length, avgGap, aggGap, medianGap };
 }
 
+// Explain the part of a task balance that predates the append-only credit ledger.
+// Legacy balances are preserved, but their original source cannot be reconstructed safely.
+function computeTaskCreditDisclosure(taskList, operationList) {
+  if (!Array.isArray(operationList)) {
+    return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+      sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+  }
+  var legacyOpeningSeconds = 0;
+  var legacyTaskCount = 0;
+  var sessionCreditedSeconds = 0;
+  var manualAdjustmentNetSeconds = 0;
+  var rowsForDisclosure = Array.isArray(taskList) ? taskList : [];
+
+  for (var i = 0; i < rowsForDisclosure.length; i++) {
+    var task = rowsForDisclosure[i];
+    if (!task || !_validateTaskCreditFields(task)) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+    var rows = operationList.filter(function(row) {
+      return row && row.taskId === task.id;
+    }).slice().sort(function(a, b) { return a.revision - b.revision; });
+
+    if (rows.length !== task.creditRevision) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+    if (rows.length === 0) {
+      if (task.creditRevision !== 0) {
+        return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+          sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+      }
+      if (task.actualSeconds !== null && task.actualSeconds > 0) {
+        legacyOpeningSeconds += task.actualSeconds;
+        legacyTaskCount++;
+      }
+      continue;
+    }
+
+    var expectedPrevious = rows[0].previousSeconds;
+    var openingSeconds = expectedPrevious === null ? 0 : expectedPrevious;
+    if (!Number.isSafeInteger(openingSeconds) || openingSeconds < 0) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+    if (openingSeconds > 0) {
+      legacyOpeningSeconds += openingSeconds;
+      legacyTaskCount++;
+    }
+
+    for (var j = 0; j < rows.length; j++) {
+      var operation = rows[j];
+      if (!_validateCreditOperationRecord(operation)
+          || operation.revision !== j + 1
+          || operation.previousSeconds !== expectedPrevious) {
+        return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+          sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+      }
+      if (operation.kind === "session") {
+        sessionCreditedSeconds += operation.creditedSeconds;
+      } else if (operation.kind === "manual_adjustment") {
+        manualAdjustmentNetSeconds += (operation.targetSeconds === null ? 0 : operation.targetSeconds)
+          - (operation.previousSeconds === null ? 0 : operation.previousSeconds);
+      } else {
+        return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+          sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+      }
+      expectedPrevious = operation.targetSeconds;
+    }
+    if (expectedPrevious !== task.actualSeconds) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+  }
+
+  return {
+    available:true,
+    legacyOpeningSeconds:legacyOpeningSeconds,
+    legacyTaskCount:legacyTaskCount,
+    sessionCreditedSeconds:sessionCreditedSeconds,
+    manualAdjustmentNetSeconds:manualAdjustmentNetSeconds
+  };
+}
+
+function _readPersistedCreditOperationsForAnalytics() {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (typeof raw !== "string") return null;
+    var data = JSON.parse(raw);
+    if (!data || data.schemaVersion !== CURRENT_SCHEMA_VERSION
+        || !Array.isArray(data.tasks) || !Array.isArray(data.creditOperations)
+        || JSON.stringify(data.tasks) !== JSON.stringify(tasks)
+        || !_validateCreditOperationLedger(data.creditOperations, data.tasks)) return null;
+    return data.creditOperations;
+  } catch (error) {
+    return null;
+  }
+}
+
+function _formatCreditDisclosureSeconds(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds < 0) return "—";
+  return Math.floor(seconds / 60) + " د " + (seconds % 60) + " ث";
+}
+
+function renderTaskCreditDisclosure(taskList) {
+  var operations = _readPersistedCreditOperationsForAnalytics();
+  var disclosure = computeTaskCreditDisclosure(taskList, operations);
+  if (!disclosure.available || disclosure.legacyOpeningSeconds <= 0) return "";
+  var html = '<div class="small" style="margin-top:8px;padding:8px 10px;border-inline-start:3px solid var(--muted);color:var(--muted);line-height:1.6;">';
+  html += 'ℹ️ يتضمن الرصيد <b>' + _formatCreditDisclosureSeconds(disclosure.legacyOpeningSeconds)
+    + '</b> كان موجودًا قبل بدء دفتر الاعتمادات الحالي؛ لا تتوفر في البيانات الحالية سجلات تحدد مصدره التاريخي.';
+  if (disclosure.sessionCreditedSeconds > 0) {
+    html += ' الاعتمادات المسجلة من الجلسات بعد ذلك: <b>'
+      + _formatCreditDisclosureSeconds(disclosure.sessionCreditedSeconds) + '</b>.';
+  }
+  if (disclosure.manualAdjustmentNetSeconds !== 0) {
+    var manualText = (disclosure.manualAdjustmentNetSeconds > 0 ? "+" : "")
+      + _formatCreditDisclosureSeconds(Math.abs(disclosure.manualAdjustmentNetSeconds));
+    html += ' صافي تعديلات الرصيد اليدوية اللاحقة: <b>' + manualText + '</b>.';
+  }
+  html += '</div>';
+  return html;
+}
+
 function isTaskDone(t) { return t.status === "done"; }
 function isTaskCancelled(t) { return t.status === "cancelled"; }
 
@@ -7217,6 +7341,11 @@ function renderWeeklyReport() {
     html += '<div class="weekly-metric"><span class="weekly-metric-label">وسيط الفجوة</span><span class="weekly-metric-value ' + gapMetricClass(report.medianGap) + '">' + gapText(report.medianGap) + '</span></div>';
     html += '</div>';
   }
+  var _weeklyDisclosureDays = new Set(getLast7OperationalDays());
+  var _weeklyDisclosureTasks = tasks.filter(function(t) {
+    return t && _weeklyDisclosureDays.has(t.plannedDate) && !isTaskCancelled(t);
+  });
+  html += renderTaskCreditDisclosure(_weeklyDisclosureTasks);
   if (report.recurringTotal > 0) {
     var rpct = Math.round(report.recurringDone / report.recurringTotal * 100);
     var rclass = rpct >= 80 ? 'high' : (rpct >= 50 ? 'mid' : 'low');
@@ -7277,6 +7406,9 @@ function renderTypeGapAnalysis() {
   let html = "";
   analyses.forEach(function(a) {
     const d = a.data;
+    const typeTasksForDisclosure = tasks.filter(function(t) {
+      return t && t.type === a.type && !isTaskCancelled(t);
+    });
     const warn = sampleWarning(d.gapCount);
     const mult = Math.max(0.25, 1 + d.aggGap);
     html += '<div class="type-gap-card">';
@@ -7290,6 +7422,7 @@ function renderTypeGapAnalysis() {
       html += '<div class="weekly-metric"><span class="weekly-metric-label">المعامل المقترح</span><span class="weekly-metric-value"><b>' + mult.toFixed(2) + '</b></span></div>';
       html += '<div class="weekly-metric"><span class="weekly-metric-label">60 دقيقة تقدير ←</span><span class="weekly-metric-value">' + Math.round(60 * mult) + ' دقيقة فعلية</span></div>';
     }
+    html += renderTaskCreditDisclosure(typeTasksForDisclosure);
     html += '<div class="type-sample-warning ' + warn.cls + '">' + warn.text + ' (' + d.gapCount + ' مهمة)</div>';
     html += '</div>';
   });
