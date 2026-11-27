@@ -13337,18 +13337,27 @@ function _commitFocusTaskSession(p) {
         "اكتشف التطبيق تغيرًا في ساعة المؤقت. لم نعتمد الثواني المقاسة ولم نمرر الجلسة إلى الكاتب القديم. بقيت الجلسة متوقفة ببياناتها دون تغيير؛ راجعها أو تجاهلها صراحةً.");
       return Promise.resolve(false);
     }
-    // Every task-linked work session now crosses the durable V2 transaction
-    // boundary. This migrates legacy task metadata when needed and prevents
-    // reset, finish, or task-switch flows from reaching the V1 minute writer.
-    return _commitPendingFocusSessionV2({
-      snapshot: snapshot,
-      taskId: taskId,
-      minutesToAdd: p.minutesToAdd,
-      useMeasuredCredit: p.useMeasuredCredit === true,
-      completed: true,
-      onCommitted: p.onCommitted,
-      successToast: p.successToast
-    });
+    var linkedTask = Array.isArray(tasks)
+      ? tasks.find(function(row) { return row && row.id === snapshot.taskId; })
+      : null;
+    var taskUsesV2CreditSchema = !!linkedTask
+      && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(linkedTask, key); });
+    if (taskUsesV2CreditSchema) {
+      // Once a task has entered V2, every finish/reset/task-switch save must
+      // use the same durable writer. Legacy tasks remain on their existing
+      // transaction contract until a V2-eligible Pomodoro or measured
+      // Stopwatch commit migrates them.
+      return _commitPendingFocusSessionV2({
+        snapshot: snapshot,
+        taskId: taskId,
+        minutesToAdd: p.minutesToAdd,
+        useMeasuredCredit: p.useMeasuredCredit === true,
+        completed: true,
+        onCommitted: p.onCommitted,
+        successToast: p.successToast
+      });
+    }
   }
   if(_focusCommitInFlight){showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");return Promise.resolve(false);}
   if(_startupResetRecoveryInFlight||_resetRecoveryInFlight||_resetInFlight){
@@ -15538,9 +15547,22 @@ function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnap
     useMeasuredCredit:useMeasuredCredit === true,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
-  // _commitFocusTaskSession is the single dispatch boundary: linked work
-  // sessions go to V2, clock-adjusted sessions fail closed, and only
-  // unlinked/break records retain the legacy non-credit path.
+  var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
+      && Number.isInteger(snapshot.elapsedRemainderMs)
+    ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
+  var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
+    ? Math.floor(measuredActiveDurationMs / 1000) : null;
+  var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
+    && Number.isSafeInteger(minutesToAdd) && minutesToAdd * 60 === measuredActiveSeconds;
+  if ((snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement)
+      && snapshot.phase === "work"
+      && snapshot.taskId !== null && snapshot.taskId !== undefined
+      && task && snapshot.clockAdjusted !== true) {
+    return _commitPendingFocusSessionV2(request);
+  }
+  // Rounded/manual Stopwatch and every alternate save entry point pass
+  // through the schema-aware dispatcher. It forwards already-migrated V2
+  // tasks to V2 and keeps truly legacy tasks on their compatible transaction.
   return _commitFocusTaskSession(request);
 }
 function _resetAfterSession() {
