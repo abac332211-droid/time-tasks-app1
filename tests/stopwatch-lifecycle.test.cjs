@@ -49,6 +49,8 @@ function createStopwatchSaveHarness(options = {}) {
     _focusTimer: timer,
     _focusElapsedRemainderMs: 250,
     _focusTimerExternalConflict: false,
+    _focusTaskCommitPendingCount: 0,
+    _focusTaskCommitExecuting: false,
     storageRecoveryRequired: false,
     tasks: task ? [task] : [],
     console: { error() {}, warn() {} },
