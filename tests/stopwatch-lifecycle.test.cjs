@@ -47,7 +47,7 @@ function createStopwatchSaveHarness(options = {}) {
     _focusElapsedRemainderMs: 250,
     tasks: task ? [task] : [],
     _captureFocusTimerSnapshot: () => snapshot,
-    _commitFocusTaskSession(params) {
+    _commitTaskLinkedFocusSessionV2(params) {
       calls.push(params);
       return Promise.resolve(options.commitResult !== false);
     },
