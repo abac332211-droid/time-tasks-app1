@@ -282,7 +282,7 @@ async function waitForStartupSuccess(page) {
 }
 
 async function primeLinkedWorkTimer(page, {
-  taskId = 7011, mode = 'stopwatch', durationSec = 180
+  taskId = 7011, mode = 'stopwatch', durationSec = 180, pauseAfterPrime = false
 } = {}) {
   await page.evaluate(async ({ taskId, mode, durationSec }) => {
     if (_focusTimer.running) await toggleTimer();
@@ -324,11 +324,25 @@ async function primeLinkedWorkTimer(page, {
     });
     if (!persisted) throw new Error('Could not persist the running timer fixture');
   }, { taskId, mode, durationSec });
+  if (pauseAfterPrime) {
+    // Exercise the real Stop control, then pin the stopped measurement to an
+    // exact second so the browser test is not sensitive to CI scheduling.
+    await page.locator('#timerStartBtn').click();
+    const normalized = await page.evaluate(async (seconds) => _withTaskStorageLock(function() {
+      _focusTimer.running = false;
+      _focusTimer.baseElapsed = seconds;
+      _focusElapsedRemainderMs = 0;
+      _focusTimer.startedAt = null;
+      _clearFocusTimerClock();
+      return _saveFocusTimer();
+    }), durationSec);
+    if (!normalized) throw new Error('Could not persist the exact stopped timer checkpoint');
+  }
 }
 
 
 async function migrateTaskToV2ThroughFinishButton(page, taskId = 7011) {
-  await primeLinkedWorkTimer(page, { taskId, mode: 'pomodoro', durationSec: 180 });
+  await primeLinkedWorkTimer(page, { taskId, mode: 'pomodoro', durationSec: 180, pauseAfterPrime: true });
   await page.locator('#timerFinishBtn').click();
   await page.waitForFunction(() => {
     const footer = document.getElementById('modalFooter');
@@ -668,7 +682,7 @@ test('D-02 task-linked save waits for real startup and records every persistence
   }
 });
 
-test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exactly once', {
+test('D-02 resetTimer save dialog commits linked exact Stopwatch credit through V2 exactly once', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
@@ -677,7 +691,7 @@ test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exact
     page = await runtime.context.newPage();
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
 
     await page.evaluate(() => resetTimer());
     await page.waitForFunction(() => {
@@ -703,6 +717,10 @@ test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exact
       return {
         commitResult,
         actual: savedTask && savedTask.actual,
+        actualSeconds: savedTask && savedTask.actualSeconds,
+        creditRevision: savedTask && savedTask.creditRevision,
+        lastCreditOperationId: savedTask && savedTask.lastCreditOperationId,
+        operations: main.creditOperations || [],
         taskTransactionId: savedTask && savedTask.lastStopwatchTransactionId,
         sessions,
         timer,
@@ -711,11 +729,20 @@ test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exact
     });
     assert.equal(result.commitResult, true);
     assert.equal(result.actual, 8);
+    assert.equal(result.actualSeconds, 480);
+    assert.equal(result.creditRevision, 1);
+    assert.equal(result.operations.length, 1);
     assert.equal(result.sessions.length, 1);
     assert.equal(result.sessions[0].taskId, 7011);
-    assert.equal(result.sessions[0].transactionId, result.taskTransactionId);
-    assert.ok(result.taskTransactionId);
+    assert.equal(result.operations[0].operationId, result.operations[0].sessionId);
+    assert.equal(result.sessions[0].sessionId, result.operations[0].operationId);
+    assert.equal(result.sessions[0].durationSec, 180);
+    assert.equal(result.sessions[0].creditedSeconds, 180);
+    assert.equal(result.sessions[0].creditSource, 'measured');
+    assert.equal(result.lastCreditOperationId, result.operations[0].operationId);
+    assert.equal(result.taskTransactionId, undefined);
     assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.timer.pendingFocusCommit, null);
     assert.equal(result.timer.running, false);
     assert.equal(result.timer.baseElapsed, 0);
     assert.equal(result.recoveryRequired, false);
@@ -734,7 +761,7 @@ test('D-02 transition commits the old task before starting the next task timer',
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await addSecondTask(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
 
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
@@ -817,7 +844,7 @@ test('D-02 transition failure does not start the next task or report success', {
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await addSecondTask(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
 
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
@@ -859,6 +886,7 @@ test('D-02 transition failure does not start the next task or report success', {
         injected: window.__injectedMainWriteFailure,
         actual: oldTask && oldTask.actual,
         sessions,
+        operations: main.creditOperations || [],
         timer,
         recoveryRequired: storageRecoveryRequired,
         inMemoryTimer: {
@@ -874,7 +902,9 @@ test('D-02 transition failure does not start the next task or report success', {
     assert.equal(result.injected, true);
     assert.equal(result.actual, 5);
     assert.equal(result.sessions.length, 0);
-    assert.ok(result.timer.pendingStopwatchTransaction);
+    assert.ok(result.timer.pendingFocusCommit);
+    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.operations.length, 0);
     assert.equal(result.timer.taskId, 7011);
     assert.equal(result.timer.running, false);
     assert.ok(result.timer.baseElapsed >= 180);
@@ -1202,6 +1232,7 @@ test('a user-adjusted Stopwatch V2 journal replays after interruption without du
         task,
         operations: main.creditOperations,
         sessions,
+        operations: main.creditOperations || [],
         timer,
         recoveryRequired: storageRecoveryRequired,
         operationId: main.creditOperations[1] && main.creditOperations[1].operationId,
@@ -1847,7 +1878,7 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
     await waitForStartupSuccess(page);
     await migrateTaskToV2ThroughFinishButton(page);
 
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
     await page.locator('button[onclick="resetTimer()"]').click();
     await page.waitForFunction(() =>
       Array.from(document.getElementById('modalFooter').children).some(button =>
@@ -1967,7 +1998,7 @@ test('V2 Stopwatch finish button records 125 measured seconds and 120 approved s
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await migrateTaskToV2ThroughFinishButton(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 125 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 125, pauseAfterPrime: true });
 
     await page.locator('#timerFinishBtn').click();
     await page.waitForFunction(() =>
@@ -2038,7 +2069,7 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
     await addSecondTask(page);
 
     async function startAdjustedStopwatch(durationSec = 45) {
-      await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec });
+      await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec, pauseAfterPrime: true });
       const saved = await page.evaluate(async () => _withTaskStorageLock(function() {
         _focusTimer.clockAdjusted = true;
         return _saveFocusTimer();
@@ -2191,7 +2222,7 @@ test('V2 resetTimer UI reports failure without credit, session, timer reset, or 
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await migrateTaskToV2ThroughFinishButton(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
     await page.locator('button[onclick="resetTimer()"]').click();
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
       .some(button => button.textContent.includes('حفظ وإضافة 3 د')),
