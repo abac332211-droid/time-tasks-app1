@@ -13079,9 +13079,14 @@ function _showStopwatchSaveDialog(elapsedSec) {
   var overlay=document.getElementById('customModalOverlay'),card=document.getElementById('modalCardElement');
   document.getElementById('modalTitle').textContent='💾 قرار جلسة Stopwatch';
   var body=document.getElementById('modalBody');
-  body.innerHTML='<p style="margin:0 0 10px;line-height:1.7;">المدة المقاسة: <b>'+_formatDuration(elapsedSec)+'</b></p>'+
+  body.innerHTML='<p style="margin:0 0 10px;line-height:1.7;">'
+    +(snapshot.clockAdjusted?'المدة المحفوظة عند آخر نقطة موثوقة: ':'المدة المقاسة: ')
+    +'<b>'+_formatDuration(elapsedSec)+'</b></p>'+
     '<p style="margin:0;line-height:1.7;">'+(task?'المهمة: <b>'+escapeHTML(task.name)+'</b>':'الجلسة غير مرتبطة بمهمة.')+
-    '</p><p style="margin:10px 0 0;line-height:1.7;">اختر صراحةً حفظ الجلسة أو تجاهلها. إلغاء النافذة يُبقي الجلسة متوقفة.</p>';
+    '</p>'+(snapshot.clockAdjusted
+      ?'<p style="margin:10px 0 0;line-height:1.7;">تنبيه: علامة الساعة تجعل القياس جزئي الثقة؛ الدقائق التي تعتمدها ستُسجّل يدويًا، وسيبقى الزمن المسجل منفصلًا عنها.</p>'
+      :'')+
+    '<p style="margin:10px 0 0;line-height:1.7;">اختر صراحةً حفظ الجلسة أو تجاهلها. إلغاء النافذة يُبقي الجلسة متوقفة.</p>';
   var footer=document.getElementById('modalFooter');footer.innerHTML='';
   var cancel=document.createElement('button');cancel.className='btn-ghost';cancel.textContent='إبقاء متوقفة';
   cancel.onclick=function(){closeModal();_renderFocusTimer();};
@@ -14742,9 +14747,9 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
   };
 }
 
-// The real finish path enters here for linked, trusted Pomodoro work sessions,
-// and for Stopwatch only when the approved seconds exactly match measurement.
-// User-adjusted Stopwatch minutes retain the legacy writer for compatibility.
+// Every task-linked work session enters the V2 writer, including
+// user-adjusted Stopwatch approvals and explicitly partial-trust clock events.
+// Legacy session commits remain limited to unlinked sessions and breaks.
 function _commitPendingFocusSessionV2(params) {
   if (!params || !params.snapshot) return Promise.resolve(false);
   if (_focusCommitPendingPromise) return _focusCommitPendingPromise;
