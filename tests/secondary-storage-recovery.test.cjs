@@ -125,3 +125,93 @@ test('secondary recovery readiness refuses to clear the guard while timer state 
   h.localStorage.setItem('timer', JSON.stringify({ running: false, pendingStopwatchTransaction: null }));
   assert.equal(h.sandbox._secondaryStorageRecoveryReady(), true);
 });
+
+
+test('retryStorageRecovery waits for explicit confirmation before quarantining a corrupt secondary root', () => {
+  const main = JSON.stringify({ schemaVersion: 2, tasks: [] });
+  const broken = '{broken-json';
+  const archiveKey = 'inbox_corrupt_1700000000000';
+  const h = storageHarness({ main, inbox: broken, [archiveKey]: broken,
+    timer: JSON.stringify({ running: false, pendingStopwatchTransaction: null }) });
+  let confirmation = null;
+  let reloads = 0;
+  Object.assign(h.sandbox, {
+    RESET_IN_PROGRESS_KEY: 'reset-marker',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-marker',
+    _getLatestRollingRecoveryBackup: () => null,
+    _resetSecondaryStorageTracking() {
+      this._secondaryStorageBaselines = Object.create(null);
+      this._secondaryStorageConflicts = Object.create(null);
+    },
+    _reloadAfterVerifiedOperation() { reloads++; },
+    showConfirmModal(_title, _body, accept) { confirmation = accept; },
+    showAlertModal() {},
+    showToast() {},
+    setTimeout(callback) { callback(); }
+  });
+  h.localStorage.values.delete('reset-marker');
+  h.localStorage.values.delete('rolling-restore-marker');
+  vm.runInNewContext(
+    extractFunction('_hasExactCorruptStorageSnapshot') + '\n' +
+    extractFunction('_findForensicallyPreservedSecondaryRoots') + '\n' +
+    extractFunction('_quarantineForensicallyPreservedSecondaryRoot') + '\n' +
+    extractFunction('_secondaryStorageRecoveryReady') + '\n' +
+    extractFunction('retryStorageRecovery'),
+    h.sandbox
+  );
+  h.sandbox.retryStorageRecovery();
+  assert.equal(h.localStorage.getItem('inbox'), broken, 'no key changes before explicit consent');
+  assert.equal(typeof confirmation, 'function');
+  confirmation();
+  assert.equal(h.localStorage.getItem('inbox'), '[]');
+  assert.equal(h.localStorage.getItem(archiveKey), broken);
+  assert.equal(h.localStorage.getItem('main'), main);
+  assert.equal(h.sandbox.storageRecoveryRequired, false);
+  assert.equal(reloads, 1);
+});
+
+test('each supported secondary collection root requires its own exact forensic archive', () => {
+  const defs = [
+    ['sessions', 'sessions_corrupt_1700000000000'],
+    ['inbox', 'inbox_corrupt_1700000000000'],
+    ['thoughts', 'thoughts_corrupt_1700000000000'],
+    ['projects', 'projects_corrupt_1700000000000']
+  ];
+  for (const [key, archiveKey] of defs) {
+    const broken = '{invalid-root-' + key;
+    const h = storageHarness({
+      main: JSON.stringify({ schemaVersion: 2, tasks: [] }),
+      [key]: broken, [archiveKey]: broken,
+      timer: JSON.stringify({ running: false, pendingStopwatchTransaction: null })
+    });
+    const scan = h.sandbox._findForensicallyPreservedSecondaryRoots();
+    assert.equal(scan.unsupported.length, 0, key);
+    assert.equal(scan.candidates.length, 1, key);
+    assert.equal(scan.candidates[0].key, key);
+  }
+});
+
+test('preserving a newer corrupt snapshot never deletes older forensic copies', () => {
+  const values = new Map([
+    ['sessions', '{new-corrupt-bytes'],
+    ['sessions_corrupt_1', 'old-1'],
+    ['sessions_corrupt_2', 'old-2'],
+    ['sessions_corrupt_3', 'old-3']
+  ]);
+  const removed = [];
+  const localStorage = {
+    get length() { return values.size; },
+    key(i) { return Array.from(values.keys())[i] ?? null; },
+    getItem(k) { return values.has(k) ? values.get(k) : null; },
+    setItem(k,v) { values.set(String(k), String(v)); },
+    removeItem(k) { removed.push(k); values.delete(k); }
+  };
+  const sandbox = { localStorage, Date, console };
+  vm.runInNewContext(extractFunction('_preserveCorruptStorageSnapshot'), sandbox);
+  assert.equal(sandbox._preserveCorruptStorageSnapshot('sessions', '{new-corrupt-bytes'), true);
+  assert.equal(values.get('sessions_corrupt_1'), 'old-1');
+  assert.equal(values.get('sessions_corrupt_2'), 'old-2');
+  assert.equal(values.get('sessions_corrupt_3'), 'old-3');
+  assert.ok(Array.from(values.keys()).some(k => k.startsWith('sessions_corrupt_') && values.get(k) === '{new-corrupt-bytes'));
+  assert.deepEqual(removed, []);
+});

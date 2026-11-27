@@ -334,7 +334,7 @@ test('recovery refuses to overwrite a task value that is neither the pre-commit 
   storage.setItem('main', JSON.stringify(externallyChanged));
 
   const restarted = createRuntime(storage);
-  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), false);
+  assert.equal(await restarted.sandbox._recoverPendingStopwatchSave(false), false);
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 17);
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
