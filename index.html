@@ -2267,6 +2267,30 @@ function getTaskActualMinutes(task) {
   return Number.isFinite(task.actual) && task.actual >= 0 ? task.actual : null;
 }
 
+// One canonical implementation for all task-gap views. Callers decide the
+// cohort (weekly tasks, one task type, or all tasks) before passing it here.
+function computeTaskGapMetrics(taskList) {
+  const withActual = (Array.isArray(taskList) ? taskList : []).filter(function(t) {
+    return getTaskActualMinutes(t) !== null && t.expected > 0;
+  });
+  const gaps = withActual.map(function(t) {
+    return computeGap(t.expected, getTaskActualMinutes(t));
+  });
+  const avgGap = gaps.length > 0
+    ? gaps.reduce(function(sum, gap) { return sum + gap; }, 0) / gaps.length : 0;
+  const sumExpected = withActual.reduce(function(sum, t) { return sum + t.expected; }, 0);
+  const sumActual = withActual.reduce(function(sum, t) {
+    return sum + getTaskActualMinutes(t);
+  }, 0);
+  const aggGap = sumExpected > 0 ? (sumActual - sumExpected) / sumExpected : 0;
+  const sorted = gaps.slice().sort(function(a, b) { return a - b; });
+  const middle = Math.floor(sorted.length / 2);
+  const medianGap = sorted.length === 0 ? 0
+    : (sorted.length % 2 === 1
+      ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2);
+  return { gapCount: gaps.length, avgGap, aggGap, medianGap };
+}
+
 function isTaskDone(t) { return t.status === "done"; }
 function isTaskCancelled(t) { return t.status === "cancelled"; }
 
@@ -7075,20 +7099,7 @@ function computeWeeklyReport() {
   const execution = avgOf(dailyLogs, "execution");
   const wellbeing = avgOf(dailyLogs, "wellbeing");
 
-  const tasksWithActual = weekTasks.filter(function(t) {
-    return getTaskActualMinutes(t) !== null && t.expected > 0;
-  });
-  const gaps = tasksWithActual.map(function(t) {
-    return computeGap(t.expected, getTaskActualMinutes(t));
-  });
-  const avgGap = gaps.length > 0 ? gaps.reduce(function(s, g) { return s + g; }, 0) / gaps.length : 0;
-  const sumExp = tasksWithActual.reduce(function(s, t) { return s + t.expected; }, 0);
-  const sumAct = tasksWithActual.reduce(function(s, t) { return s + getTaskActualMinutes(t); }, 0);
-  const aggGap = sumExp > 0 ? (sumAct - sumExp) / sumExp : 0;
-  const sorted = gaps.slice().sort(function(a, b) { return a - b; });
-  const mid = Math.floor(sorted.length / 2);
-  const medianGap = sorted.length === 0 ? 0
-    : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
+  const gapMetrics = computeTaskGapMetrics(weekTasks);
 
   // فصل مجموعة المهام المخطط لها عن الإنجازات حسب وقت الإنجاز الفعلي.
   const doneTasks = weekTasks.filter(isTaskDone).length;
@@ -7131,7 +7142,10 @@ function computeWeeklyReport() {
     control, execution, wellbeing,
     doneTasks, totalTasks: weekTasks.length,
     completedThisWeek,
-    avgGap, aggGap, medianGap, gapCount: tasksWithActual.length,
+    avgGap: gapMetrics.avgGap,
+    aggGap: gapMetrics.aggGap,
+    medianGap: gapMetrics.medianGap,
+    gapCount: gapMetrics.gapCount,
     totalDistractions,
     recurringTotal, recurringDone, recurringByKind
   };
@@ -7230,21 +7244,15 @@ function computeTypeAnalysis(tp) {
     return t.type === tp && !isTaskCancelled(t);
   });
   const done = all.filter(isTaskDone).length;
-  const withActual = all.filter(function(t) {
-    return getTaskActualMinutes(t) !== null && t.expected > 0;
-  });
-  const gaps = withActual.map(function(t) {
-    return computeGap(t.expected, getTaskActualMinutes(t));
-  });
-  const avgGap = gaps.length > 0 ? gaps.reduce(function(s, g) { return s + g; }, 0) / gaps.length : 0;
-  const sumExp = withActual.reduce(function(s, t) { return s + t.expected; }, 0);
-  const sumAct = withActual.reduce(function(s, t) { return s + getTaskActualMinutes(t); }, 0);
-  const aggGap = sumExp > 0 ? (sumAct - sumExp) / sumExp : 0;
-  const sorted = gaps.slice().sort(function(a, b) { return a - b; });
-  const mid = Math.floor(sorted.length / 2);
-  const medianGap = sorted.length === 0 ? 0
-    : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
-  return { count: all.length, done, gapCount: gaps.length, avgGap, aggGap, medianGap };
+  const gapMetrics = computeTaskGapMetrics(all);
+  return {
+    count: all.length,
+    done,
+    gapCount: gapMetrics.gapCount,
+    avgGap: gapMetrics.avgGap,
+    aggGap: gapMetrics.aggGap,
+    medianGap: gapMetrics.medianGap
+  };
 }
 
 function sampleWarning(count) {
@@ -9308,15 +9316,11 @@ function renderStats() {
     const d = subset.filter(isTaskDone).length;
     const pct2 = Math.round(d / subset.length * 100);
     // FIX W7/B9 (G5): توافق مع computeWeeklyReport — استثناء expected=0
-    const withActual = subset.filter(function(t) {
-      return getTaskActualMinutes(t) !== null && t.expected > 0;
-    });
+    const gapMetrics = computeTaskGapMetrics(subset);
     let gapLine = "";
-    if (withActual.length > 0) {
-      const avgGap = withActual.reduce(function(s, t) {
-        return s + computeGap(t.expected, getTaskActualMinutes(t));
-      }, 0) / withActual.length;
-      gapLine = ' | <span class="' + gapClass(avgGap) + '">فجوة ' + gapText(avgGap) + "</span>";
+    if (gapMetrics.gapCount > 0) {
+      gapLine = ' | <span class="' + gapClass(gapMetrics.avgGap) + '">فجوة '
+        + gapText(gapMetrics.avgGap) + "</span>";
     }
     return '' +
       '<div class="stat-box" style="margin-top:8px;text-align:right;">' +
@@ -14647,6 +14651,7 @@ function _commitPendingFocusSessionV2(params) {
     // analytics remain stale until the next full app load.
     try {
       if (typeof renderTasks === "function") renderTasks();
+      if (typeof renderWeeklyReport === "function") renderWeeklyReport();
       if (typeof renderStats === "function") renderStats();
       if (typeof renderTypeGapAnalysis === "function") renderTypeGapAnalysis();
       if (typeof renderFocusSessionsCard === "function") renderFocusSessionsCard();
