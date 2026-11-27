@@ -1065,9 +1065,9 @@ test('credit provenance disclosure separates migrated opening balance from later
   assert.equal(incomplete.available, false,
     'an incomplete history must suppress the disclosure instead of reporting a misleading breakdown');
 
-  assert.match(extractFunction('renderWeeklyReport'), /renderTaskCreditDisclosure\\(_weeklyDisclosureTasks\\)/,
+  assert.match(extractFunction('renderWeeklyReport'), /renderTaskCreditDisclosure\(_weeklyDisclosureTasks\)/,
     'the weekly report surfaces legacy opening-balance provenance');
-  assert.match(extractFunction('renderTypeGapAnalysis'), /renderTaskCreditDisclosure\\(typeTasksForDisclosure\\)/,
+  assert.match(extractFunction('renderTypeGapAnalysis'), /renderTaskCreditDisclosure\(typeTasksForDisclosure\)/,
     'the type report surfaces legacy opening-balance provenance');
 });
 
