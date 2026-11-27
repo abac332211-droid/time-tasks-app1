@@ -15801,7 +15801,8 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
     var isBreak=mode==='pomodoro'&&phase!=='work';
     _commitFocusTaskSession({snapshot:snapshot,taskId:taskLinked?currentId:null,
       allowUnlinkedTaskSnapshotLink:isBreak,minutesToAdd:taskLinked?Math.max(1,Math.round(elapsed/60)):0,
-      completed:true,onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
+      useMeasuredCredit:taskLinked&&mode==='pomodoro',completed:!isBreak,
+      onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
   };
   footer.appendChild(cancel);footer.appendChild(discard);footer.appendChild(save);
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
