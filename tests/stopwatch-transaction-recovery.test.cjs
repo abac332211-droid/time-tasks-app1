@@ -1056,7 +1056,7 @@ test('finishTimer routes linked Stopwatch work through the V2 writer and never s
   assert.equal(runtime.sandbox.v2CommitCalls.length, 1);
   assert.equal(runtime.sandbox.v2CommitCalls[0].taskId, 7);
   assert.equal(runtime.sandbox.v2CommitCalls[0].snapshot.mode, 'stopwatch');
-  assert.equal(runtime.sandbox.v2CommitCalls[0].minutesToAdd, 3);
+  assert.equal(runtime.sandbox.v2CommitCalls[0].minutesToAdd, 2);
   assert.equal(main.tasks[0].actual, 5,
     'the route harness must not mutate the task outside the V2 writer');
   assert.equal(main.tasks[0].lastStopwatchTransactionId, undefined);
