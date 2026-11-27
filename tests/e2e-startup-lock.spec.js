@@ -863,7 +863,7 @@ test('D-02 transition failure does not start the next task or report success', {
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await addSecondTask(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 181, pauseAfterPrime: true });
 
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
@@ -921,8 +921,12 @@ test('D-02 transition failure does not start the next task or report success', {
     assert.equal(result.injected, true);
     assert.equal(result.actual, 5);
     assert.equal(result.sessions.length, 0);
-    assert.ok(result.timer.pendingFocusCommit);
-    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.ok(result.timer.pendingStopwatchTransaction,
+      'the 181s V1 Stopwatch session must retain its legacy transaction journal');
+    assert.equal(result.timer.pendingStopwatchTransaction.taskId, 7011);
+    assert.equal(result.timer.pendingStopwatchTransaction.durationSec, result.timer.baseElapsed);
+    assert.equal(result.timer.pendingFocusCommit, null,
+      'an un-migrated V1 task must not create a V2 journal');
     assert.equal(result.operations.length, 0);
     assert.equal(result.timer.taskId, 7011);
     assert.equal(result.timer.running, false);
@@ -1943,6 +1947,10 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
     assert.equal(saved.timer.baseElapsed, 0);
     assert.equal(saved.timer.pendingFocusCommit, null);
     assert.equal(saved.timer.pendingStopwatchTransaction, null);
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      return !!overlay && overlay.classList.contains('hidden');
+    }, null, { timeout: 5000 });
 
     // Cancel/keep-paused: the elapsed Stopwatch remains available, with no new credit or session.
     await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 90 });
@@ -1958,6 +1966,10 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
       keep.click();
     });
     await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 90);
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      return !!overlay && overlay.classList.contains('hidden');
+    }, null, { timeout: 5000 });
     const afterKeep = await page.evaluate(() => {
       const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
       return {
@@ -2334,9 +2346,26 @@ test('V2 save-and-switch failure keeps the old task paused and never starts the 
         window.__v2TransitionToasts.push(String(message));
         return window.__v2TransitionOriginalToast.apply(this, arguments);
       };
+      const nativeGetItem = Storage.prototype.getItem;
       Storage.prototype.setItem = function(key, value) {
         if (String(key) === 'timeTasksApp_v1' && !window.__v2TransitionInjectedFailure) {
           window.__v2TransitionInjectedFailure = true;
+          let timerRecord = null;
+          try {
+            const rawTimer = nativeGetItem.call(localStorage, 'timeTasksApp_focusTimer');
+            timerRecord = rawTimer === null ? null : JSON.parse(rawTimer);
+          } catch (_error) {}
+          window.__v2TransitionFaultObservation = {
+            persistedPending: !!(timerRecord && timerRecord.pendingFocusCommit),
+            persistedStage: timerRecord && timerRecord.pendingFocusCommit
+              ? timerRecord.pendingFocusCommit.stage : null,
+            persistedOperationId: timerRecord && timerRecord.pendingFocusCommit
+              ? timerRecord.pendingFocusCommit.operationId : null,
+            memoryPending: !!_focusTimer.pendingFocusCommit,
+            memoryStage: _focusTimer.pendingFocusCommit ? _focusTimer.pendingFocusCommit.stage : null,
+            lockDepth: _stopwatchTransactionLockDepth,
+            stack: String(new Error('injected V2 main-record write').stack || '')
+          };
           throw new Error('injected V2 transition main-record write failure');
         }
         return nativeSetItem.call(this, key, value);
@@ -2359,6 +2388,7 @@ test('V2 save-and-switch failure keeps the old task paused and never starts the 
       const oldTask = main.tasks.find(row => row.id === 7011);
       return {
         injected: window.__v2TransitionInjectedFailure,
+        faultObservation: window.__v2TransitionFaultObservation || null,
         task: oldTask,
         operations: main.creditOperations || [],
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
