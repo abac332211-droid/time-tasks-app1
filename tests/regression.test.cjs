@@ -949,6 +949,45 @@ test('weekly and task-type gap metrics use measured seconds consistently', () =>
   assert.equal(Math.round(direct.avgGap * 100), -23);
   assert.equal(Math.round(((task.actual - task.expected) / task.expected) * 100), -33,
     'the regression fixture must distinguish stale legacy minutes from measured seconds');
+
+  const element = () => ({
+    innerHTML: '',
+    textContent: '',
+    style: {},
+    classList: { add: () => {}, remove: () => {} },
+    closest: () => ({ classList: { add: () => {}, remove: () => {} } })
+  });
+  const ids = [
+    'weeklyReport', 'statsTotal', 'statsDone', 'statsPending', 'statsLate',
+    'statsCancelled', 'homeTotal', 'homeDone', 'homePending', 'homeLate',
+    'homePercent', 'homeBar', 'typeStats', 'typeGapAnalysis'
+  ];
+  const elements = Object.fromEntries(ids.map(id => [id, element()]));
+  sandbox.document = { getElementById: id => elements[id] || null };
+  sandbox.lastPct = 0;
+  sandbox.todayStr = () => '2026-11-27';
+  sandbox.isLate = () => false;
+  sandbox.setTimeout = () => {};
+  sandbox.gapText = value => Math.round(value * 100) + '%';
+  sandbox.gapClass = () => '';
+  sandbox.gapMetricClass = () => '';
+  sandbox.sampleWarning = () => ({ cls: 'warn', text: 'sample' });
+  sandbox.computeRecommendation = () => ({ type: 'info', text: '' });
+  vm.runInNewContext([
+    extractFunction('renderWeeklyReport'),
+    extractFunction('renderStats'),
+    extractFunction('renderTypeGapAnalysis')
+  ].join('\n'), sandbox);
+
+  sandbox.renderWeeklyReport();
+  sandbox.renderStats();
+  sandbox.renderTypeGapAnalysis();
+  assert.equal((elements.weeklyReport.innerHTML.match(/-23%/g) || []).length, 3,
+    'weekly card average, aggregate, and median must render -23%');
+  assert.match(elements.typeStats.innerHTML, /-23%/,
+    'the type summary card must render -23%');
+  assert.equal((elements.typeGapAnalysis.innerHTML.match(/-23%/g) || []).length, 3,
+    'type-analysis average, aggregate, and median must render -23%');
 });
 
 test('focus-session commits refresh all task-gap views after the measured balance is saved', () => {
