@@ -986,6 +986,44 @@ test('all focus-session save entry points preserve the shared V2/V1 dispatch bou
 });
 
 
+test('break and unlinked finish paths request zero task credit through the shared dispatcher', async () => {
+  const calls = [];
+  const task = { id: 7, name: 'Task', actual: 5 };
+  const sandbox = {
+    tasks: [task],
+    _isClockAdjustedV2WorkSession: () => false,
+    _formatDuration: seconds => String(seconds) + 's',
+    _discardShortFocusSession: () => Promise.resolve(false),
+    _commitFocusTaskSession: request => {
+      calls.push(request);
+      return Promise.resolve(true);
+    }
+  };
+  vm.runInNewContext(extractFunction('_continueFocusTimerFinish'), sandbox);
+  const breakSnapshot = {
+    mode: 'pomodoro', phase: 'short_break', running: false,
+    baseElapsed: 300, elapsedRemainderMs: 0, taskId: 7,
+    clockAdjusted: false
+  };
+  const unlinkedSnapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: null,
+    clockAdjusted: false
+  };
+  assert.equal(await sandbox._continueFocusTimerFinish(breakSnapshot), true);
+  assert.equal(await sandbox._continueFocusTimerFinish(unlinkedSnapshot), true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].taskId, null);
+  assert.equal(calls[0].minutesToAdd, 0);
+  assert.equal(calls[0].allowUnlinkedTaskSnapshotLink, true);
+  assert.equal(calls[0].completed, false);
+  assert.equal(calls[1].taskId, null);
+  assert.equal(calls[1].minutesToAdd, 0);
+  assert.equal(calls[1].allowUnlinkedTaskSnapshotLink, undefined);
+  assert.equal(calls[1].completed, true);
+  assert.equal(task.actual, 5);
+});
+
 test('pending V2 journal accepts Stopwatch user-adjusted credit with distinct measured and credited seconds', () => {
   const app = validatorContext();
   const journal = validPendingFocusCommit();
