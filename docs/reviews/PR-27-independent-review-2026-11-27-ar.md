@@ -10,8 +10,8 @@
 
 ## 1. تثبيت مصدر المراجعة
 
-- **رأس PR #27 الحالي عند التحديث:** `cf22b2e5d5f55fe3d146bc23cf27bd0da72351`.
-- **آخر commit فعلي:** [cf22b2e](https://github.com/abac332211-droid/time-tasks-app1/commit/cf22b2e5d5f55fe3d146bc23cf27bd0da72351) — `test: wait for fresh Pomodoro finish dialog snapshot`.
+- **رأس PR #27 الحالي عند التحديث:** `cf22b2e2e5d5f55fe3d146bc23cf27bd0da72351`.
+- **آخر commit فعلي:** [cf22b2e](https://github.com/abac332211-droid/time-tasks-app1/commit/cf22b2e2e5d5f55fe3d146bc23cf27bd0da72351) — `test: wait for fresh Pomodoro finish dialog snapshot`.
 - **الرأس السابق محل التحقيق:** [180cc4d](https://github.com/abac332211-droid/time-tasks-app1/commit/180cc4d2971083b675c1de77d7c0b9dfbcd35cec)، أظهرت اختبارات 85 و86 فيه تعارض لقطة قديمة 180 ثانية مع مؤقت 72/83 ثانية.
 - **رأس سابق ذو صلة:** [ff8dd508](https://github.com/abac332211-droid/time-tasks-app1/commit/ff8dd5083aa614f72308e3187e46f2df49652a26) وما قبله، ضمن سلسلة تغييرات الاختبارات السابقة.
 - **قاعدة PR #27:** الفرع `codex/pending-focus-commit-integrated-fix-v1` عند `33b82f6560bb8d5269db7c1247eba614b2af4d55` (رأس PR #26)، وليس `main`.
