@@ -1851,6 +1851,7 @@ function resetAllHarness(faults = {}) {
   };
   vm.runInNewContext(
     extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_resetSecondaryStorageTracking') + '\n'
       + extractFunction('_recoverInterruptedReset') + '\n'
       + extractFunction('resetAll'),
     sandbox
@@ -1875,8 +1876,7 @@ test('resetAll clears stale secondary-storage conflict tracking after a successf
   harness.sandbox._focusTimerExternalConflict = true;
   harness.sandbox._focusTimerConflictNoticeShown = true;
   harness.sandbox._invalidFocusSessionsNoticeShown = true;
-  vm.runInNewContext(extractFunction('_resetSecondaryStorageTracking'), harness.sandbox);
-  harness.sandbox._resetSecondaryStorageTracking();
+  harness.run();
   assert.deepEqual(Object.keys(harness.sandbox._secondaryStorageBaselines), []);
   assert.deepEqual(Object.keys(harness.sandbox._secondaryStorageConflicts), []);
   assert.equal(harness.sandbox._focusTimerExternalConflict, false);
