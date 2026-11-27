@@ -3274,3 +3274,80 @@ test('real finishTimer commits an exact measured linked Stopwatch session throug
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+test('gap analytics use measured seconds consistently across weekly, type, and summary views', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await openPendingFocusBrowserContext(server, pendingFocusBrowserInitialState());
+    browser = opened.browser;
+    context = opened.context;
+    const page = await context.newPage();
+    await page.goto(opened.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'gap analytics precision page');
+
+    const rendered = await page.evaluate(() => {
+      // Reproduce the field values produced by a 139-second measured credit:
+      // actual is the legacy whole-minute projection (2), while actualSeconds
+      // retains the exact duration (139). The expected estimate is 3 minutes.
+      const task = {
+        id: 9901,
+        name: '139-second measured task',
+        status: 'pending',
+        type: 'معرفية',
+        expected: 3,
+        actual: 2,
+        actualSeconds: 139,
+        creditRevision: 1,
+        creditSchemaVersion: 1,
+        lastCreditOperationId: '550e8400-e29b-41d4-a716-446655440000',
+        plannedDate: getLast7OperationalDays()[0],
+        plannedTime: '',
+        completedAt: null,
+        createdAt: Date.now()
+      };
+      tasks.splice(0, tasks.length, task);
+      renderStats();
+      renderWeeklyReport();
+      renderTypeGapAnalysis();
+      return {
+        exactActualMinutes: getTaskActualMinutes(task),
+        taskLegacyActualMinutes: task.actual,
+        weekly: computeWeeklyReport(),
+        byType: computeTypeAnalysis('معرفية'),
+        statsText: document.getElementById('typeStats').innerText,
+        weeklyText: document.getElementById('weeklyReport').innerText,
+        typeText: document.getElementById('typeGapAnalysis').innerText
+      };
+    });
+
+    const expectedGap = (139 / 60 - 3) / 3;
+    assert.equal(rendered.exactActualMinutes, 139 / 60);
+    assert.equal(rendered.taskLegacyActualMinutes, 2);
+    assert.ok(Math.abs(rendered.weekly.avgGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.weekly.aggGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.weekly.medianGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.byType.avgGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.byType.aggGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.byType.medianGap - expectedGap) < 1e-12);
+    assert.match(rendered.statsText, /فجوة -23%/);
+    assert.match(rendered.weeklyText, /متوسط فجوة المهام[\s\S]*-23%/);
+    assert.match(rendered.weeklyText, /الفجوة المجمّعة[\s\S]*-23%/);
+    assert.match(rendered.weeklyText, /وسيط الفجوة[\s\S]*-23%/);
+    assert.match(rendered.typeText, /متوسط فجوة المهام[\s\S]*-23%/);
+    assert.match(rendered.typeText, /الفجوة المجمّعة[\s\S]*-23%/);
+    assert.match(rendered.typeText, /وسيط الفجوة[\s\S]*-23%/);
+    assert.match(rendered.typeText, /46 دقيقة فعلية/);
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
