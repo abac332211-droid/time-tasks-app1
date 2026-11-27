@@ -2465,15 +2465,40 @@ async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
     Array.from(document.getElementById('modalFooter').children).some(button =>
       button.textContent.includes('حفظ الوقت المقاس')),
   null, { timeout: 5000 });
-  const committed = await page.evaluate(async () => {
+  const diagnostic = await page.evaluate(async () => {
     const save = Array.from(document.getElementById('modalFooter').children)
       .find(button => button.textContent.includes('حفظ الوقت المقاس'));
     if (!save) throw new Error('measured Pomodoro save choice was not rendered');
     save.click();
     const pending = window._focusCommitPendingPromise;
-    return pending ? await pending : false;
+    const result = pending ? await pending : false;
+    const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+    const task = main.tasks.find(row => row && row.id === 7011);
+    const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+    return {
+      result,
+      recoveryRequired: storageRecoveryRequired,
+      memoryTimer: {
+        mode: _focusTimer.mode, phase: _focusTimer.phase, taskId: _focusTimer.taskId,
+        running: _focusTimer.running, baseElapsed: _focusTimer.baseElapsed,
+        remainderMs: _focusElapsedRemainderMs, sessionStartAt: _focusTimer.sessionStartAt,
+        pendingFocusCommit: !!_focusTimer.pendingFocusCommit
+      },
+      persistedTimer: {
+        mode: timer && timer.mode, phase: timer && timer.phase, taskId: timer && timer.taskId,
+        running: timer && timer.running, baseElapsed: timer && timer.baseElapsed,
+        pendingFocusCommit: !!(timer && timer.pendingFocusCommit)
+      },
+      task: task && {
+        actualSeconds: task.actualSeconds, creditRevision: task.creditRevision,
+        lastCreditOperationId: task.lastCreditOperationId
+      },
+      operationCount: (main.creditOperations || []).length,
+      sessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length
+    };
   });
-  assert.equal(committed, true, 'the measured Pomodoro UI action must commit');
+  assert.equal(diagnostic.result, true,
+    'the measured Pomodoro UI action must commit; diagnostic=' + JSON.stringify(diagnostic));
 }
 
 test('V2 Pomodoro save-and-switch commits all 83 measured seconds before starting the next task', {
@@ -2776,8 +2801,22 @@ test('V2 QuotaExceededError leaves a durable journal that recovers once after a 
         recoveryRequired: storageRecoveryRequired
       };
     });
-    assert.equal(failedCommit, false);
-    assert.equal(failedState.injected, true);
+    assert.equal(failedCommit, false,
+      'injected quota failure must not be reported as a successful commit; state=' + JSON.stringify(failedState));
+    assert.equal(failedState.injected, true,
+      'the intended main-record ledger write must reach the injected quota failure; state=' + JSON.stringify({
+        errorName: failedState.errorName,
+        taskActualSeconds: failedState.task.actualSeconds,
+        creditRevision: failedState.task.creditRevision,
+        operationCount: failedState.operations.length,
+        sessionCount: failedState.sessions.length,
+        timer: {
+          taskId: failedState.timer.taskId,
+          baseElapsed: failedState.timer.baseElapsed,
+          pendingFocusCommit: failedState.timer.pendingFocusCommit
+        },
+        recoveryRequired: failedState.recoveryRequired
+      }));
     assert.equal(failedState.errorName, 'QuotaExceededError');
     assert.equal(failedState.task.actualSeconds, baseline.actualSeconds);
     assert.equal(failedState.task.creditRevision, baseline.creditRevision);
