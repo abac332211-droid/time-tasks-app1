@@ -2257,6 +2257,16 @@ function computeGap(expected, actual) {
   return (actual - expected) / expected;
 }
 
+// Use the measured seconds as the analytics source whenever the V2 credit
+// record exists. task.actual is intentionally a floored legacy display value;
+// using it for gaps discards up to 59 seconds and skews short tasks.
+function getTaskActualMinutes(task) {
+  if (!task || task.actual === null || task.actual === undefined) return null;
+  if (Number.isSafeInteger(task.actualSeconds) && task.actualSeconds >= 0)
+    return task.actualSeconds / 60;
+  return Number.isFinite(task.actual) && task.actual >= 0 ? task.actual : null;
+}
+
 function isTaskDone(t) { return t.status === "done"; }
 function isTaskCancelled(t) { return t.status === "cancelled"; }
 
@@ -7066,12 +7076,14 @@ function computeWeeklyReport() {
   const wellbeing = avgOf(dailyLogs, "wellbeing");
 
   const tasksWithActual = weekTasks.filter(function(t) {
-    return t.actual !== null && t.actual !== undefined && t.expected > 0;
+    return getTaskActualMinutes(t) !== null && t.expected > 0;
   });
-  const gaps = tasksWithActual.map(function(t) { return (t.actual - t.expected) / t.expected; });
+  const gaps = tasksWithActual.map(function(t) {
+    return computeGap(t.expected, getTaskActualMinutes(t));
+  });
   const avgGap = gaps.length > 0 ? gaps.reduce(function(s, g) { return s + g; }, 0) / gaps.length : 0;
   const sumExp = tasksWithActual.reduce(function(s, t) { return s + t.expected; }, 0);
-  const sumAct = tasksWithActual.reduce(function(s, t) { return s + t.actual; }, 0);
+  const sumAct = tasksWithActual.reduce(function(s, t) { return s + getTaskActualMinutes(t); }, 0);
   const aggGap = sumExp > 0 ? (sumAct - sumExp) / sumExp : 0;
   const sorted = gaps.slice().sort(function(a, b) { return a - b; });
   const mid = Math.floor(sorted.length / 2);
@@ -7219,12 +7231,14 @@ function computeTypeAnalysis(tp) {
   });
   const done = all.filter(isTaskDone).length;
   const withActual = all.filter(function(t) {
-    return t.actual !== null && t.actual !== undefined && t.expected > 0;
+    return getTaskActualMinutes(t) !== null && t.expected > 0;
   });
-  const gaps = withActual.map(function(t) { return (t.actual - t.expected) / t.expected; });
+  const gaps = withActual.map(function(t) {
+    return computeGap(t.expected, getTaskActualMinutes(t));
+  });
   const avgGap = gaps.length > 0 ? gaps.reduce(function(s, g) { return s + g; }, 0) / gaps.length : 0;
   const sumExp = withActual.reduce(function(s, t) { return s + t.expected; }, 0);
-  const sumAct = withActual.reduce(function(s, t) { return s + t.actual; }, 0);
+  const sumAct = withActual.reduce(function(s, t) { return s + getTaskActualMinutes(t); }, 0);
   const aggGap = sumExp > 0 ? (sumAct - sumExp) / sumExp : 0;
   const sorted = gaps.slice().sort(function(a, b) { return a - b; });
   const mid = Math.floor(sorted.length / 2);
@@ -9157,7 +9171,7 @@ return da - db;
     const status = getStatus(t);
     const cls = isTaskDone(t) ? "done" : "";
     const safeName = escapeHTML(t.name);
-    const gap = computeGap(t.expected, Number.isSafeInteger(t.actualSeconds) ? t.actualSeconds / 60 : t.actual);
+    const gap = computeGap(t.expected, getTaskActualMinutes(t));
     let info = "🏷️ " + escapeHTML(t.type || "—") + " | ⏱️ متوقع: " + t.expected + " د";
     if (t.projectId && _projMap[t.projectId]) {
       info += " | 🎯 " + escapeHTML(_projMap[t.projectId].name);
@@ -9300,7 +9314,7 @@ function renderStats() {
     let gapLine = "";
     if (withActual.length > 0) {
       const avgGap = withActual.reduce(function(s, t) {
-        return s + computeGap(t.expected, Number.isSafeInteger(t.actualSeconds) ? t.actualSeconds / 60 : t.actual);
+        return s + computeGap(t.expected, getTaskActualMinutes(t));
       }, 0) / withActual.length;
       gapLine = ' | <span class="' + gapClass(avgGap) + '">فجوة ' + gapText(avgGap) + "</span>";
     }
@@ -9367,7 +9381,7 @@ function exportCSV() {
     "التاريخ_المخطط", "الوقت_المخطط", "أُنجزت_في", "أُنشئت_في"
   ];
   const rows = tasks.map(function(t) {
-    const gap = computeGap(t.expected, Number.isSafeInteger(t.actualSeconds) ? t.actualSeconds / 60 : t.actual);
+    const gap = computeGap(t.expected, getTaskActualMinutes(t));
     return [
       t.id, t.name, t.type, t.status, t.expected,
       (t.actual !== null && t.actual !== undefined) ? t.actual : "",
