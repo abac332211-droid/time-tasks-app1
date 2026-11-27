@@ -377,3 +377,38 @@
 
 **الحكم:** بوابتا PWA/Chromium وبناء APK ناجحتان على رأس المصدر المذكور. بوابة التحقق الميداني على Android ما زالت مفتوحة وغير منفذة، كما أن مراجعة الكود المستقلة لـPR #27 لم تُسجل بعد. يبقى PR في وضع Draft ولا يُدمج قبل إغلاق هاتين البوابتين.
 
+---
+
+## PR #27 — CI verification of V2 writer unification (27 November 2026)
+
+### Source and automated verification
+
+- PR: [#27 — fix: unify V2 task-linked focus session commits](https://github.com/abac332211-droid/time-tasks-app1/pull/27)
+- Branch: `codex/pending-focus-v2-writer-unification`
+- Tested branch HEAD: `c3b7d9404fa0912681b32627ea01258a513bde31`
+- The PR base remains `codex/pending-focus-commit-integrated-fix-v1` at `33b82f6560bb8d5269db7c1247eba614b2af4d55`.
+
+**PWA / Chromium — [workflow run 45995934080](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934080)**
+
+- Checked-out source SHA: `c3b7d9404fa0912681b32627ea01258a513bde31` (branch head).
+- **530 tests passed, 0 failed, 0 skipped.**
+- This run includes the real Chromium UI and browser multi-window suites.
+
+**Android APK — [workflow run 45995934016](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934016)**
+
+- The workflow checked out merge-candidate commit `366df8f8efbccccd2cc3d30f9f437ac6d0f90a76`, whose merge message identifies PR head `c3b7d9404fa0912681b32627ea01258a513bde31` and base `33b82f6560bb8d5269db7c1247eba614b2af4d55`.
+- **482 tests passed, 0 failed, 48 skipped**. The 48 skipped tests are browser/Chromium tests not run in the APK job; use the PWA run above for those results.
+- Gradle APK build succeeded; merged Android notification permission verification succeeded; artifact upload succeeded.
+- APK artifact: [time-tasks-app-apk — ID 15196755084](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934016/artifacts/15196755084)
+- SHA-256 of the uploaded ZIP: `90bb6be70e6b9c1db068b7c11509c52ec2b08941ee0b0de23022fc3e238cf921`
+- Artifact size: 5,537,804 bytes.
+
+### Manual Android / WebView status
+
+**Field testing of this PR #27 head was not performed.**
+
+No claim is made that SHA `c3b7d9404fa0912681b32627ea01258a513bde31` was installed or exercised on Redmi Note 10 5G / Android 13. The artifact above is an automated Debug APK build only. Therefore this CI result does not establish Web Locks behavior or task-linked V2 session persistence in the device's actual Android System WebView.
+
+The following device checks remain outstanding for this exact APK/head: Web Locks availability, Pomodoro then adjusted Stopwatch on the same migrated task, Stopwatch save through the reset dialog, Pomodoro save-and-switch, and reopen verification for duplicate credit/session prevention. Record the device model, Android version, WebView version, installed APK build, and observations when those checks are actually run.
+
+**Status:** automated PWA and APK workflows passed; Android field verification remains unperformed. PR #27 remains Draft and must not be described as field-tested.
