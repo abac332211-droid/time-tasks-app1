@@ -360,14 +360,32 @@ async function primeLinkedWorkTimer(page, {
 }
 
 
+async function openFreshPomodoroFinishDialog(page, durationSec) {
+  // Closing a modal hides its overlay but retains its old footer buttons.
+  // A button-exists check alone can therefore accept a stale 180-second
+  // snapshot before finishTimer's asynchronous Web Lock callback opens the
+  // dialog for the newly prepared session.
+  await page.waitForFunction(() => {
+    const overlay = document.getElementById('customModalOverlay');
+    return !overlay || overlay.classList.contains('hidden');
+  }, null, { timeout: 5000 });
+
+  await page.locator('#timerFinishBtn').click();
+  await page.waitForFunction((seconds) => {
+    const overlay = document.getElementById('customModalOverlay');
+    const body = document.getElementById('modalBody');
+    const footer = document.getElementById('modalFooter');
+    if (!overlay || overlay.classList.contains('hidden') || !body || !footer) return false;
+    const expectedDuration = _formatDuration(seconds);
+    const hasMeasuredSave = Array.from(footer.children).some(button =>
+      button.textContent.includes('حفظ الوقت المقاس'));
+    return hasMeasuredSave && body.textContent.includes(expectedDuration);
+  }, durationSec, { timeout: 5000 });
+}
+
 async function migrateTaskToV2ThroughFinishButton(page, taskId = 7011) {
   await primeLinkedWorkTimer(page, { taskId, mode: 'pomodoro', durationSec: 180, pauseAfterPrime: true });
-  await page.locator('#timerFinishBtn').click();
-  await page.waitForFunction(() => {
-    const footer = document.getElementById('modalFooter');
-    return footer && Array.from(footer.children).some(button =>
-      button.textContent.includes('حفظ الوقت المقاس'));
-  }, null, { timeout: 5000 });
+  await openFreshPomodoroFinishDialog(page, 180);
   const committed = await page.evaluate(async () => {
     const save = Array.from(document.getElementById('modalFooter').children)
       .find(button => button.textContent.includes('حفظ الوقت المقاس'));
@@ -2471,11 +2489,7 @@ async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
     durationSec,
     pauseAfterPrime: true
   });
-  await page.locator('#timerFinishBtn').click();
-  await page.waitForFunction(() =>
-    Array.from(document.getElementById('modalFooter').children).some(button =>
-      button.textContent.includes('حفظ الوقت المقاس')),
-  null, { timeout: 5000 });
+  await openFreshPomodoroFinishDialog(page, durationSec);
   const diagnostic = await page.evaluate(async () => {
       const originalSnapshotMatch = _focusTimerSnapshotMatchesState;
       window.__v2OriginalSnapshotMatch = originalSnapshotMatch;
@@ -2817,11 +2831,7 @@ test('V2 QuotaExceededError leaves a durable journal that recovers once after a 
       durationSec: 83,
       pauseAfterPrime: true
     });
-    await page.locator('#timerFinishBtn').click();
-    await page.waitForFunction(() =>
-      Array.from(document.getElementById('modalFooter').children).some(button =>
-        button.textContent.includes('حفظ الوقت المقاس')),
-    null, { timeout: 5000 });
+    await openFreshPomodoroFinishDialog(page, 83);
 
     await page.evaluate(() => {
       const originalSnapshotMatch = _focusTimerSnapshotMatchesState;
