@@ -79,6 +79,34 @@ test('V2 session permits a reversed civil clock only when clockAdjusted is expli
   assert.equal(app._validateFocusSessionRecord({ ...record, clockAdjusted: false }), false);
 });
 
+test('V2 Stopwatch accepts user-adjusted task credit while preserving measured duration', () => {
+  const app = validatorContext();
+  const record = validSession({
+    mode: 'stopwatch',
+    phase: 'work',
+    activeDurationMs: 125000,
+    durationSec: 125,
+    plannedDurationMs: null,
+    creditedSeconds: 120,
+    creditSource: 'user_adjusted',
+    outcome: 'stopped',
+    completed: false,
+    clockTrust: 'trusted',
+    clockAdjusted: false
+  });
+  assert.equal(app._validateFocusSessionRecordV2(record), true);
+
+  assert.equal(app._validateFocusSessionRecordV2({
+    ...record, clockAdjusted: true
+  }), false, 'a clock-adjusted session cannot claim trusted user-adjusted credit');
+  assert.equal(app._validateFocusSessionRecordV2({
+    ...record, clockTrust: 'partial'
+  }), false, 'partial clock trust cannot be used for this commit contract');
+  assert.equal(app._validateFocusSessionRecordV2({
+    ...record, mode: 'pomodoro', outcome: 'stopped'
+  }), false, 'stopped is a Stopwatch-only outcome');
+});
+
 test('V2 interrupted untrusted session may preserve no duration and never carry credit', () => {
   const app = validatorContext();
   const record = validSession({
