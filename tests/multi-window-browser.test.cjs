@@ -219,7 +219,7 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       { timeout: 20_000 }
     );
 
-    const interrupted = await recoveryPage.evaluate(() => {
+    const interrupted = await recoveryPage.evaluate(async () => {
       const task = {
         id: 7011,
         name: 'Crash recovery task',
@@ -258,7 +258,7 @@ test('two real same-origin pages exchange storage events and block stale main/ti
       window._logSession = function() {
         throw new Error('simulated abrupt process termination before session write');
       };
-      _applyStopwatchSave(125, task, 3);
+      await _applyStopwatchSave(125, task, 3);
 
       const committedMain = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
       const timerRecord = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));

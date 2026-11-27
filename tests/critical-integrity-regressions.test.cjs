@@ -126,10 +126,7 @@ test('focus commit lock serializes same-tab work and limits its write permit to 
       }
     }
   };
-  const start = html.indexOf('function _withFocusTaskCommitLock(');
-  const end = html.indexOf('\\n}\\n', start);
-  assert.ok(start >= 0 && end > start);
-  vm.runInNewContext(html.slice(start, end + 2), sandbox);
+  vm.runInNewContext(extractFunction('_withFocusTaskCommitLock'), sandbox);
   const first = sandbox._withFocusTaskCommitLock(() => {
     execution.push('first');
     assert.equal(sandbox._focusTaskCommitExecuting, true);
@@ -167,10 +164,7 @@ test('focus commit lock releases queue state after lock acquisition failure', as
       }
     }
   };
-  const start = html.indexOf('function _withFocusTaskCommitLock(');
-  const end = html.indexOf('\\n}\\n', start);
-  assert.ok(start >= 0 && end > start);
-  vm.runInNewContext(html.slice(start, end + 2), sandbox);
+  vm.runInNewContext(extractFunction('_withFocusTaskCommitLock'), sandbox);
   await assert.rejects(sandbox._withFocusTaskCommitLock(() => 'must not run'));
   assert.equal(sandbox._focusTaskCommitPendingCount, 0);
   assert.equal(sandbox._focusTaskCommitExecuting, false);

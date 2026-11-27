@@ -1563,17 +1563,17 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
       if (!sandbox.saveData()) {
         linkedTask.actual = oldActual;
         sandbox.storageRecoveryRequired = true;
-        return false;
+        return Promise.resolve(false);
       }
       if (!sandbox._logSession(tx.phase, tx.durationSec, true)) {
         sandbox.storageRecoveryRequired = true;
         alerts.push(["لم يكتمل استرداد جلسة التركيز", "بقي سجل المعاملة"]);
-        return false;
+        return Promise.resolve(false);
       }
-      if (!sandbox._resetAfterSession()) return false;
+      if (!sandbox._resetAfterSession()) return Promise.resolve(false);
       timer.pendingStopwatchTransaction = null;
-      if (!sandbox._completeRollingRecoveryCheckpoint("focus-session-commit")) return false;
-      return true;
+      if (!sandbox._completeRollingRecoveryCheckpoint("focus-session-commit")) return Promise.resolve(false);
+      return Promise.resolve(true);
     },
     _storeRollingRecoveryBackup(reason) {
       checkpoints.push(reason);
@@ -1596,9 +1596,9 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   };
 }
 
-test('failed session logging keeps committed task minutes and a pending recovery journal', () => {
+test('failed session logging keeps committed task minutes and a pending recovery journal', async () => {
   const harness = transitionDialogHarness({ saveResults: [true], logResult: false });
-  harness.footer.children[2].onclick();
+  await harness.footer.children[2].onclick();
 
   assert.equal(harness.task.actual, 2, 'verified task minutes remain committed while the journal is pending');
   assert.ok(harness.timer.pendingStopwatchTransaction, 'the durable transaction remains for recovery');
@@ -1609,9 +1609,9 @@ test('failed session logging keeps committed task minutes and a pending recovery
   assert.match(harness.alerts[0][0], /لم يكتمل استرداد جلسة التركيز/);
 });
 
-test('failed task persistence retains the prior actual balance and pending journal', () => {
+test('failed task persistence retains the prior actual balance and pending journal', async () => {
   const harness = transitionDialogHarness({ saveResults: [false], logResult: true });
-  harness.footer.children[2].onclick();
+  await harness.footer.children[2].onclick();
 
   assert.equal(harness.task.actual, null, 'an unverified task update must be rolled back in memory');
   assert.ok(harness.timer.pendingStopwatchTransaction);

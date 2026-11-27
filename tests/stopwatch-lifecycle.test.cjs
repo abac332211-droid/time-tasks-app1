@@ -124,7 +124,10 @@ function createStopwatchSaveHarness(options = {}) {
     showToast(message) { toasts.push(message); },
     showAlertModal(...args) { alerts.push(args); }
   };
-  vm.runInNewContext(extractFunction('_applyStopwatchSave'), sandbox);
+  vm.runInNewContext(
+    extractFunction('_applyStopwatchSaveLocked') + '\n' + extractFunction('_applyStopwatchSave'),
+    sandbox
+  );
   return {
     sandbox, timer, task, calls, alerts, toasts,
     get logged() { return logged; },

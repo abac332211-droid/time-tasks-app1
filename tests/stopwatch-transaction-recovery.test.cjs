@@ -182,6 +182,7 @@ function createRuntime(storage, options = {}) {
     '_loadFocusTimer',
     '_resetAfterSession',
     '_recoverPendingStopwatchSave',
+    '_applyStopwatchSaveLocked',
     '_applyStopwatchSave',
     'saveData'
   ];

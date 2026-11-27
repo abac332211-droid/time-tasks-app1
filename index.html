@@ -6108,8 +6108,6 @@ function validateBackup(obj) {
   if (d.focusSessions !== undefined && d.focusSessions !== null) {
     if (!Array.isArray(d.focusSessions))
       return { valid: false, reason: "حقل جلسات التركيز ليس مصفوفة." };
-    if (d.focusSessions.length > FOCUS_MAX_SESSIONS)
-      return { valid: false, reason: "عدد جلسات التركيز يتجاوز الحد الذي يمكن للتطبيق الاحتفاظ به." };
     const sessionIds = new Set();
     for (let i = 0; i < d.focusSessions.length; i++) {
       const session = d.focusSessions[i];
@@ -10049,8 +10047,10 @@ function _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd) {
 
 
 function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
-  if (!task || (minutesToAdd <= 0 && !_focusTimer.pendingStopwatchTransaction)) {
-    return Promise.resolve(_applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd));
+  if (!task) return Promise.resolve(_applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd));
+  if (_focusTaskCommitPendingCount > 0 && !_focusTaskCommitExecuting) {
+    showToast("⏳ توجد معاملة جلسة تركيز قيد الحفظ؛ لم نكرر طلب الإضافة.");
+    return Promise.resolve(false);
   }
   return _withFocusTaskCommitLock(function() {
     return _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd);
@@ -10327,7 +10327,7 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
       var committedMinutes = Math.max(1, Math.round(elapsed / 60));
       saveBtn.disabled = true;
       saveBtn.textContent = "جارٍ حفظ الجلسة…";
-      _applyStopwatchSave(elapsed, currentTask, committedMinutes).then(function(committed) {
+      return _applyStopwatchSave(elapsed, currentTask, committedMinutes).then(function(committed) {
         if (committed) onSwitch();
         else {
           saveBtn.disabled = false;
