@@ -878,19 +878,41 @@ test('a mismatched explicit task ID cannot divert a linked work session to the l
   assert.match(runtime.calls[0].message, /لم نمرر الجلسة إلى أي كاتب/);
 });
 
-test('all linked work-session entry points delegate to the V2 dispatch boundary', () => {
-  for (const name of [
-    '_applyTimerFinish',
-    '_applyStopwatchSave',
-    '_applyStopwatchSaveLocked',
-    '_showSessionTransitionDialog'
-  ]) {
+test('all focus-session save entry points preserve the shared V2/V1 dispatch boundary', () => {
+  const routes = [
+    ['_applyTimerFinish', /_commitFocusTaskSession/],
+    ['_applyStopwatchSave', /_commitFocusTaskSession/],
+    ['_applyStopwatchSaveLocked', /_commitFocusTaskSession/],
+    ['_showStopwatchSaveDialog', /_applyStopwatchSave/],
+    ['_showSessionTransitionDialog', /_commitFocusTaskSession/],
+    ['_continueFocusTimerFinish', /_applyTimerFinish/],
+    ['resetTimer', /_showStopwatchSaveDialog/]
+  ];
+  for (const [name, expectedRoute] of routes) {
     const source = extractFunction(name);
-    assert.match(source, /_commitFocusTaskSession/,
-      name + ' must pass task-linked saves through the unified dispatcher');
+    assert.match(source, expectedRoute,
+      name + ' must remain connected to the shared focus-session save route');
     assert.doesNotMatch(source, /_commitFocusTaskSessionLocked/,
       name + ' must not call the legacy locked writer directly');
   }
+
+  const dispatcher = extractFunction('_commitFocusTaskSession');
+  assert.match(dispatcher, /taskUsesV2CreditSchema/,
+    'the dispatcher must detect tasks that have entered V2');
+  assert.match(dispatcher, /return _commitPendingFocusSessionV2/,
+    'V2 task-linked work saves must reach the durable V2 writer');
+  assert.match(dispatcher, /return _withStopwatchTransactionLock/,
+    'non-V2 work saves must retain the locked V1 compatibility route');
+
+  const legacyWriter = extractFunction('_commitFocusTaskSessionLocked');
+  assert.match(legacyWriter, /actualSeconds/);
+  assert.match(legacyWriter, /كاتب جلسة قديم غير متوافق/,
+    'the legacy writer must refuse V2 task credit metadata');
+
+  const finish = extractFunction('_continueFocusTimerFinish');
+  assert.match(finish, /taskId:\s*null/);
+  assert.match(finish, /minutesToAdd:\s*0/,
+    'break and unlinked saves must not add minutes to a task');
 });
 
 
