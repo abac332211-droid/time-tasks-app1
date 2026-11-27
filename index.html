@@ -2375,6 +2375,36 @@ function computeTaskCreditDisclosure(taskList, operationList) {
   };
 }
 
+function _persistedTaskCreditStateMatches(currentTasks, persistedTasks) {
+  if (!Array.isArray(currentTasks) || !Array.isArray(persistedTasks)
+      || currentTasks.length !== persistedTasks.length) return false;
+  var persistedById = new Map();
+  for (var i = 0; i < persistedTasks.length; i++) {
+    var persistedTask = persistedTasks[i];
+    if (!persistedTask || !Number.isSafeInteger(persistedTask.id)
+        || persistedTask.id <= 0 || persistedById.has(persistedTask.id)) return false;
+    persistedById.set(persistedTask.id, persistedTask);
+  }
+  var creditFields = ["actual", "actualSeconds", "creditRevision",
+    "creditSchemaVersion", "lastCreditOperationId"];
+  for (var j = 0; j < currentTasks.length; j++) {
+    var currentTask = currentTasks[j];
+    if (!currentTask || !Number.isSafeInteger(currentTask.id)
+        || currentTask.id <= 0) return false;
+    var savedTask = persistedById.get(currentTask.id);
+    if (!savedTask) return false;
+    for (var k = 0; k < creditFields.length; k++) {
+      var field = creditFields[k];
+      var currentHasField = Object.prototype.hasOwnProperty.call(currentTask, field);
+      var savedHasField = Object.prototype.hasOwnProperty.call(savedTask, field);
+      if (currentHasField !== savedHasField
+          || (currentHasField && currentTask[field] !== savedTask[field])) return false;
+    }
+    persistedById.delete(currentTask.id);
+  }
+  return persistedById.size === 0;
+}
+
 function _readPersistedCreditOperationsForAnalytics() {
   try {
     var raw = localStorage.getItem(STORAGE_KEY);
@@ -2382,7 +2412,7 @@ function _readPersistedCreditOperationsForAnalytics() {
     var data = JSON.parse(raw);
     if (!data || data.schemaVersion !== CURRENT_SCHEMA_VERSION
         || !Array.isArray(data.tasks) || !Array.isArray(data.creditOperations)
-        || JSON.stringify(data.tasks) !== JSON.stringify(tasks)
+        || !_persistedTaskCreditStateMatches(tasks, data.tasks)
         || !_validateCreditOperationLedger(data.creditOperations, data.tasks)) return null;
     return data.creditOperations;
   } catch (error) {
