@@ -1510,6 +1510,8 @@ var _rollingRecoveryCheckpointHold = 0;
 var _stopwatchTransactionLockDepth = 0;
 var _focusCommitInFlight = false;
 var _focusCommitWriteDepth = 0;
+var _pendingFocusCommitWriteDepth = 0;
+var _pendingFocusCommitOwnerId = null;
 var _focusCommitPendingPromise = null;
 var _rollingRecoveryBackupPending = null;
 var _rollingRecoveryBackupEpoch = 0;
@@ -1626,6 +1628,64 @@ function _hasPersistedPendingStopwatchTransaction() {
       && timerRecord.pendingStopwatchTransaction !== undefined;
   } catch (e) {
     return true;
+  }
+}
+
+function _hasPersistedPendingFocusCommit() {
+  try {
+    var raw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (raw === null) return false;
+    var timerRecord = JSON.parse(raw);
+    if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return true;
+    if (!Object.prototype.hasOwnProperty.call(timerRecord, "pendingFocusCommit")
+        || timerRecord.pendingFocusCommit === null
+        || timerRecord.pendingFocusCommit === undefined) return false;
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
+// A transaction-owned writer scope is narrower than ordinary Web Lock ownership.
+// It is valid only for the exact durable operation identity (or the one initial
+// journal write whose validated intent is already held in memory).
+function _withPendingFocusCommitWrite(operationId, callback, allowCreate) {
+  if (typeof callback !== "function" || typeof operationId !== "string"
+      || !_isTaskStorageLockHeld()) return false;
+  if (_pendingFocusCommitWriteDepth > 0 && _pendingFocusCommitOwnerId !== operationId) return false;
+  var timerRecord = null;
+  try {
+    var raw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (raw !== null) {
+      timerRecord = JSON.parse(raw);
+      if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return false;
+    }
+  } catch (e) { return false; }
+  var hasPersistedJournal = !!timerRecord
+    && Object.prototype.hasOwnProperty.call(timerRecord, "pendingFocusCommit")
+    && timerRecord.pendingFocusCommit !== null
+    && timerRecord.pendingFocusCommit !== undefined;
+  var persisted = hasPersistedJournal ? timerRecord.pendingFocusCommit : null;
+  if (hasPersistedJournal) {
+    if (!_validatePendingFocusCommit(persisted) || persisted.operationId !== operationId) return false;
+  } else {
+    if (allowCreate !== true || !_focusTimer || !_focusTimer.pendingFocusCommit
+        || !_validatePendingFocusCommit(_focusTimer.pendingFocusCommit)
+        || _focusTimer.pendingFocusCommit.operationId !== operationId) return false;
+  }
+  var previousOwner = _pendingFocusCommitOwnerId;
+  var previousFocusCommitWriteDepth = typeof _focusCommitWriteDepth === "number"
+    ? _focusCommitWriteDepth : 0;
+  _pendingFocusCommitOwnerId = operationId;
+  _pendingFocusCommitWriteDepth++;
+  // The operation-owned scope is also the narrow, lock-bound permission for
+  // the in-flight focus commit to pass _storageWriteAllowed().
+  _focusCommitWriteDepth = previousFocusCommitWriteDepth + 1;
+  try { return callback(); }
+  finally {
+    _pendingFocusCommitWriteDepth = Math.max(0, _pendingFocusCommitWriteDepth - 1);
+    _pendingFocusCommitOwnerId = _pendingFocusCommitWriteDepth > 0 ? previousOwner : null;
+    _focusCommitWriteDepth = previousFocusCommitWriteDepth;
   }
 }
 
@@ -1762,10 +1822,18 @@ function _pendingStopwatchWriteAllowed() {
     if (timerRaw === null) return true;
     var timerRecord = JSON.parse(timerRaw);
     if (!timerRecord || typeof timerRecord !== "object" || Array.isArray(timerRecord)) return false;
+    var focusCommit = timerRecord.pendingFocusCommit;
+    if (focusCommit !== null && focusCommit !== undefined) {
+      if (!_validatePendingFocusCommit(focusCommit)) return false;
+      return _isTaskStorageLockHeld()
+        && _pendingFocusCommitWriteDepth > 0
+        && _pendingFocusCommitOwnerId === focusCommit.operationId;
+    }
     if (!timerRecord.pendingStopwatchTransaction) return true;
 
-    // Transaction IDs identify the journal; only the runtime executing inside
-    // the successfully granted Web Lock callback owns the right to write.
+    // The legacy journal remains isolated from the V2 focus-commit journal.
+    // Preserve the legacy ownership check: a page-memory token alone is not
+    // sufficient unless this callback actually holds the shared transaction lock.
     return typeof _stopwatchTransactionLockDepth === "number"
       && _stopwatchTransactionLockDepth > 0;
   } catch (e) {
@@ -2189,6 +2257,194 @@ function computeGap(expected, actual) {
   return (actual - expected) / expected;
 }
 
+// Use the measured seconds as the analytics source whenever the V2 credit
+// record exists. task.actual is intentionally a floored legacy display value;
+// using it for gaps discards up to 59 seconds and skews short tasks.
+function getTaskActualMinutes(task) {
+  if (!task || task.actual === null || task.actual === undefined) return null;
+  if (Number.isSafeInteger(task.actualSeconds) && task.actualSeconds >= 0)
+    return task.actualSeconds / 60;
+  return Number.isFinite(task.actual) && task.actual >= 0 ? task.actual : null;
+}
+
+// One canonical implementation for all task-gap views. Callers decide the
+// cohort (weekly tasks, one task type, or all tasks) before passing it here.
+function computeTaskGapMetrics(taskList) {
+  const withActual = (Array.isArray(taskList) ? taskList : []).filter(function(t) {
+    return getTaskActualMinutes(t) !== null && t.expected > 0;
+  });
+  const gaps = withActual.map(function(t) {
+    return computeGap(t.expected, getTaskActualMinutes(t));
+  });
+  const avgGap = gaps.length > 0
+    ? gaps.reduce(function(sum, gap) { return sum + gap; }, 0) / gaps.length : 0;
+  const sumExpected = withActual.reduce(function(sum, t) { return sum + t.expected; }, 0);
+  const sumActual = withActual.reduce(function(sum, t) {
+    return sum + getTaskActualMinutes(t);
+  }, 0);
+  const aggGap = sumExpected > 0 ? (sumActual - sumExpected) / sumExpected : 0;
+  const sorted = gaps.slice().sort(function(a, b) { return a - b; });
+  const middle = Math.floor(sorted.length / 2);
+  const medianGap = sorted.length === 0 ? 0
+    : (sorted.length % 2 === 1
+      ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2);
+  return { gapCount: gaps.length, avgGap, aggGap, medianGap, sumExpected, sumActual };
+}
+
+// Explain the part of a task balance that predates the append-only credit ledger.
+// Legacy balances are preserved, but their original source cannot be reconstructed safely.
+function computeTaskCreditDisclosure(taskList, operationList) {
+  if (!Array.isArray(operationList)) {
+    return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+      sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+  }
+  var legacyOpeningSeconds = 0;
+  var legacyTaskCount = 0;
+  var sessionCreditedSeconds = 0;
+  var manualAdjustmentNetSeconds = 0;
+  var rowsForDisclosure = Array.isArray(taskList) ? taskList : [];
+
+  for (var i = 0; i < rowsForDisclosure.length; i++) {
+    var task = rowsForDisclosure[i];
+    if (!task || !_validateTaskCreditFields(task)) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+    var rows = operationList.filter(function(row) {
+      return row && row.taskId === task.id;
+    }).slice().sort(function(a, b) { return a.revision - b.revision; });
+
+    if (rows.length !== task.creditRevision) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+    if (rows.length === 0) {
+      if (task.creditRevision !== 0) {
+        return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+          sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+      }
+      if (task.actualSeconds !== null && task.actualSeconds > 0) {
+        legacyOpeningSeconds += task.actualSeconds;
+        legacyTaskCount++;
+      }
+      continue;
+    }
+
+    var expectedPrevious = rows[0].previousSeconds;
+    var openingSeconds = expectedPrevious === null ? 0 : expectedPrevious;
+    if (!Number.isSafeInteger(openingSeconds) || openingSeconds < 0) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+    if (openingSeconds > 0) {
+      legacyOpeningSeconds += openingSeconds;
+      legacyTaskCount++;
+    }
+
+    for (var j = 0; j < rows.length; j++) {
+      var operation = rows[j];
+      if (!_validateCreditOperationRecord(operation)
+          || operation.revision !== j + 1
+          || operation.previousSeconds !== expectedPrevious) {
+        return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+          sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+      }
+      if (operation.kind === "session") {
+        sessionCreditedSeconds += operation.creditedSeconds;
+      } else if (operation.kind === "manual_adjustment") {
+        manualAdjustmentNetSeconds += (operation.targetSeconds === null ? 0 : operation.targetSeconds)
+          - (operation.previousSeconds === null ? 0 : operation.previousSeconds);
+      } else {
+        return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+          sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+      }
+      expectedPrevious = operation.targetSeconds;
+    }
+    if (expectedPrevious !== task.actualSeconds) {
+      return { available:false, legacyOpeningSeconds:0, legacyTaskCount:0,
+        sessionCreditedSeconds:0, manualAdjustmentNetSeconds:0 };
+    }
+  }
+
+  return {
+    available:true,
+    legacyOpeningSeconds:legacyOpeningSeconds,
+    legacyTaskCount:legacyTaskCount,
+    sessionCreditedSeconds:sessionCreditedSeconds,
+    manualAdjustmentNetSeconds:manualAdjustmentNetSeconds
+  };
+}
+
+function _persistedTaskCreditStateMatches(currentTasks, persistedTasks) {
+  if (!Array.isArray(currentTasks) || !Array.isArray(persistedTasks)
+      || currentTasks.length !== persistedTasks.length) return false;
+  var persistedById = new Map();
+  for (var i = 0; i < persistedTasks.length; i++) {
+    var persistedTask = persistedTasks[i];
+    if (!persistedTask || !Number.isSafeInteger(persistedTask.id)
+        || persistedTask.id <= 0 || persistedById.has(persistedTask.id)) return false;
+    persistedById.set(persistedTask.id, persistedTask);
+  }
+  var creditFields = ["actual", "actualSeconds", "creditRevision",
+    "creditSchemaVersion", "lastCreditOperationId"];
+  for (var j = 0; j < currentTasks.length; j++) {
+    var currentTask = currentTasks[j];
+    if (!currentTask || !Number.isSafeInteger(currentTask.id)
+        || currentTask.id <= 0) return false;
+    var savedTask = persistedById.get(currentTask.id);
+    if (!savedTask) return false;
+    for (var k = 0; k < creditFields.length; k++) {
+      var field = creditFields[k];
+      var currentHasField = Object.prototype.hasOwnProperty.call(currentTask, field);
+      var savedHasField = Object.prototype.hasOwnProperty.call(savedTask, field);
+      if (currentHasField !== savedHasField
+          || (currentHasField && currentTask[field] !== savedTask[field])) return false;
+    }
+    persistedById.delete(currentTask.id);
+  }
+  return persistedById.size === 0;
+}
+
+function _readPersistedCreditOperationsForAnalytics() {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (typeof raw !== "string") return null;
+    var data = JSON.parse(raw);
+    if (!data || data.schemaVersion !== CURRENT_SCHEMA_VERSION
+        || !Array.isArray(data.tasks) || !Array.isArray(data.creditOperations)
+        || !_persistedTaskCreditStateMatches(tasks, data.tasks)
+        || !_validateCreditOperationLedger(data.creditOperations, data.tasks)) return null;
+    return data.creditOperations;
+  } catch (error) {
+    return null;
+  }
+}
+
+function _formatCreditDisclosureSeconds(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds < 0) return "—";
+  return Math.floor(seconds / 60) + " د " + (seconds % 60) + " ث";
+}
+
+function renderTaskCreditDisclosure(taskList) {
+  var operations = _readPersistedCreditOperationsForAnalytics();
+  var disclosure = computeTaskCreditDisclosure(taskList, operations);
+  if (!disclosure.available || disclosure.legacyOpeningSeconds <= 0) return "";
+  var html = '<div class="small" style="margin-top:8px;padding:8px 10px;border-inline-start:3px solid var(--muted);color:var(--muted);line-height:1.6;">';
+  html += 'ℹ️ يتضمن الرصيد <b>' + _formatCreditDisclosureSeconds(disclosure.legacyOpeningSeconds)
+    + '</b> كان موجودًا قبل بدء دفتر الاعتمادات الحالي؛ لا تتوفر في البيانات الحالية سجلات تحدد مصدره التاريخي.';
+  if (disclosure.sessionCreditedSeconds > 0) {
+    html += ' الاعتمادات المسجلة من الجلسات بعد ذلك: <b>'
+      + _formatCreditDisclosureSeconds(disclosure.sessionCreditedSeconds) + '</b>.';
+  }
+  if (disclosure.manualAdjustmentNetSeconds !== 0) {
+    var manualText = (disclosure.manualAdjustmentNetSeconds > 0 ? "+" : "-")
+      + _formatCreditDisclosureSeconds(Math.abs(disclosure.manualAdjustmentNetSeconds));
+    html += ' صافي تعديلات الرصيد اليدوية اللاحقة: <b>' + manualText + '</b>.';
+  }
+  html += '</div>';
+  return html;
+}
+
 function isTaskDone(t) { return t.status === "done"; }
 function isTaskCancelled(t) { return t.status === "cancelled"; }
 
@@ -2434,6 +2690,17 @@ function getNextTaskId() {
   return next;
 }
 
+// Deleted tasks may still own immutable credit-operation history. Their IDs
+// remain reserved so a later import/startup cannot recycle an identity-bearing ID.
+function _getHighestCreditOperationTaskId(operations) {
+  if (!Array.isArray(operations)) return 0;
+  return operations.reduce(function(max, operation) {
+    return Math.max(max,
+      operation && Number.isSafeInteger(operation.taskId) && operation.taskId > 0
+        ? operation.taskId : 0);
+  }, 0);
+}
+
 function generateUniqueTaskId(existingIds) {
   let id = Date.now();
   while (existingIds.has(id)) id++;
@@ -2521,6 +2788,337 @@ function _validateTaskCreditFields(task) {
   return true;
 }
 
+// Durable, append-only credit history. It lives in the primary task record so a
+// task balance and the operation identity that changed it can be saved atomically.
+function _validateCreditOperationRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  var baseKeys = ["recordVersion", "operationId", "kind", "taskId", "revision",
+    "previousSeconds", "targetSeconds", "source", "sessionId", "createdAt"];
+  var sessionKeys = ["measuredSeconds", "creditedSeconds"];
+  var allowedKeys = baseKeys.concat(record.kind === "session" ? sessionKeys : []);
+  var ownKeys = Object.keys(record);
+  if (ownKeys.length !== allowedKeys.length) return false;
+  for (var i = 0; i < ownKeys.length; i++) {
+    if (allowedKeys.indexOf(ownKeys[i]) === -1) return false;
+  }
+  for (var j = 0; j < baseKeys.length; j++) {
+    if (!Object.prototype.hasOwnProperty.call(record, baseKeys[j])) return false;
+  }
+  var uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (record.recordVersion !== 1
+      || typeof record.operationId !== "string" || !uuidPattern.test(record.operationId)
+      || !Number.isSafeInteger(record.taskId) || record.taskId <= 0
+      || !Number.isSafeInteger(record.revision) || record.revision <= 0) return false;
+  if (record.previousSeconds !== null
+      && (!Number.isSafeInteger(record.previousSeconds) || record.previousSeconds < 0)) return false;
+  if (record.targetSeconds !== null
+      && (!Number.isSafeInteger(record.targetSeconds) || record.targetSeconds < 0)) return false;
+  if (typeof record.createdAt !== "string") return false;
+  var createdAtMs = Date.parse(record.createdAt);
+  if (!Number.isFinite(createdAtMs) || new Date(createdAtMs).toISOString() !== record.createdAt) return false;
+
+  if (record.kind === "session") {
+    if (typeof record.sessionId !== "string" || !uuidPattern.test(record.sessionId)
+        || record.sessionId !== record.operationId
+        || !Number.isSafeInteger(record.measuredSeconds) || record.measuredSeconds < 0
+        || !Number.isSafeInteger(record.creditedSeconds) || record.creditedSeconds < 0
+        || (record.source !== "measured" && record.source !== "user_adjusted")) return false;
+    if (record.source === "measured" && record.creditedSeconds !== record.measuredSeconds) return false;
+    var previous = record.previousSeconds === null ? 0 : record.previousSeconds;
+    var expectedTarget = record.creditedSeconds === 0 && record.previousSeconds === null
+      ? null : previous + record.creditedSeconds;
+    if (!Number.isSafeInteger(previous + record.creditedSeconds)
+        || record.targetSeconds !== expectedTarget) return false;
+    return true;
+  }
+  if (record.kind === "manual_adjustment") {
+    // A manual revision must represent an actual state change. In particular,
+    // null -> 0 is valid, but null -> null and 5 -> 5 are no-op records.
+    return record.sessionId === null
+      && record.source === "manual_adjustment"
+      && record.previousSeconds !== record.targetSeconds;
+  }
+  return false;
+}
+
+function _validatePendingFocusTimerProjection(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  var keys = ["mode", "phase", "running", "baseElapsed", "elapsedRemainderMs",
+    "cyclePosition", "taskId", "sessionStartAt", "awaitingConfirmation",
+    "pendingPhaseEndedAt", "clockAdjusted", "nativeSessionToken",
+    "handledNotificationActionIds", "pendingNotificationFinish"];
+  var ownKeys = Object.keys(snapshot);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  if ((snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+      || !["work", "short-break", "long-break"].includes(snapshot.phase)
+      || snapshot.running !== false
+      || !Number.isSafeInteger(snapshot.baseElapsed) || snapshot.baseElapsed < 0
+      || !Number.isInteger(snapshot.elapsedRemainderMs)
+      || snapshot.elapsedRemainderMs < 0 || snapshot.elapsedRemainderMs >= 1000
+      || !Number.isInteger(snapshot.cyclePosition)
+      || snapshot.cyclePosition < 0 || snapshot.cyclePosition > 3
+      || (snapshot.taskId !== null
+        && (!Number.isSafeInteger(snapshot.taskId) || snapshot.taskId <= 0))
+      || (snapshot.sessionStartAt !== null
+        && (!Number.isFinite(snapshot.sessionStartAt) || snapshot.sessionStartAt < 0))
+      || typeof snapshot.awaitingConfirmation !== "boolean"
+      || (snapshot.pendingPhaseEndedAt !== null
+        && (!Number.isFinite(snapshot.pendingPhaseEndedAt) || snapshot.pendingPhaseEndedAt < 0))
+      || typeof snapshot.clockAdjusted !== "boolean"
+      || (snapshot.nativeSessionToken !== null && typeof snapshot.nativeSessionToken !== "string")
+      || !Array.isArray(snapshot.handledNotificationActionIds)
+      || snapshot.handledNotificationActionIds.length > 10
+      || (snapshot.pendingNotificationFinish !== null
+        && (!snapshot.pendingNotificationFinish
+          || typeof snapshot.pendingNotificationFinish !== "object"
+          || Array.isArray(snapshot.pendingNotificationFinish)))) return false;
+  var seen = new Set();
+  for (var i = 0; i < snapshot.handledNotificationActionIds.length; i++) {
+    var id = snapshot.handledNotificationActionIds[i];
+    if (typeof id !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+        || seen.has(id)) return false;
+    seen.add(id);
+  }
+  if (snapshot.awaitingConfirmation) {
+    if (snapshot.mode !== "pomodoro" || snapshot.sessionStartAt === null
+        || snapshot.pendingPhaseEndedAt === null
+        || snapshot.pendingPhaseEndedAt < snapshot.sessionStartAt) return false;
+  } else if (snapshot.pendingPhaseEndedAt !== null) return false;
+  return true;
+}
+
+function _validatePendingFocusCreditSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  var keys = ["actualSeconds", "actual", "creditRevision",
+    "creditSchemaVersion", "lastCreditOperationId"];
+  var ownKeys = Object.keys(snapshot);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  if (snapshot.actualSeconds === null) {
+    if (snapshot.actual !== null) return false;
+  } else if (!Number.isSafeInteger(snapshot.actualSeconds) || snapshot.actualSeconds < 0
+      || !Number.isSafeInteger(snapshot.actual)
+      || snapshot.actual !== Math.floor(snapshot.actualSeconds / 60)) return false;
+  if (!Number.isSafeInteger(snapshot.creditRevision) || snapshot.creditRevision < 0
+      || snapshot.creditSchemaVersion !== 1) return false;
+  if (snapshot.lastCreditOperationId !== null
+      && (typeof snapshot.lastCreditOperationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(snapshot.lastCreditOperationId))) return false;
+  return (snapshot.creditRevision === 0) === (snapshot.lastCreditOperationId === null);
+}
+
+// The recovery record binds the V2 session, append-only ledger operation,
+// task credit revision, and the two timer projections into one immutable intent.
+function _validatePendingFocusCommit(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  var keys = ["protocolVersion", "operationId", "taskId", "operation", "session",
+    "creditBefore", "creditAfter", "timerBefore", "timerAfter", "stage",
+    "createdAt", "updatedAt"];
+  var ownKeys = Object.keys(record);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  var uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (record.protocolVersion !== 1
+      || typeof record.operationId !== "string" || !uuidPattern.test(record.operationId)
+      || !Number.isSafeInteger(record.taskId) || record.taskId <= 0
+      || !["prepared", "credit_applied", "session_applied", "timer_applied"].includes(record.stage)) return false;
+  function validIso(value) {
+    if (typeof value !== "string") return false;
+    var parsed = Date.parse(value);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+  }
+  if (!validIso(record.createdAt) || !validIso(record.updatedAt)) return false;
+  if (!_validatePendingFocusCreditSnapshot(record.creditBefore)
+      || !_validatePendingFocusCreditSnapshot(record.creditAfter)
+      || !_validatePendingFocusTimerProjection(record.timerBefore)
+      || !_validatePendingFocusTimerProjection(record.timerAfter)) return false;
+  if (!_validateCreditOperationRecord(record.operation)
+      || record.operation.kind !== "session"
+      || record.operation.operationId !== record.operationId
+      || record.operation.sessionId !== record.operationId
+      || record.operation.taskId !== record.taskId
+      || !_validateFocusSessionRecordV2(record.session)
+      || record.session.sessionId !== record.operationId
+      || record.session.taskId !== record.taskId
+      || record.session.phase !== "work"
+      || record.session.creditSource !== record.operation.source
+      || record.session.creditedSeconds !== record.operation.creditedSeconds
+      || record.session.durationSec !== record.operation.measuredSeconds
+      || record.operation.measuredSeconds !== Math.floor(record.session.activeDurationMs / 1000)
+      || record.operation.createdAt !== record.session.endedAt
+      || !Number.isFinite(record.timerBefore.sessionStartAt)
+      || new Date(record.timerBefore.sessionStartAt).getTime() !== Date.parse(record.session.startedAt)) return false;
+  var before = record.creditBefore, after = record.creditAfter, operation = record.operation;
+  if (before.creditRevision >= Number.MAX_SAFE_INTEGER
+      || after.creditRevision !== before.creditRevision + 1
+      || operation.revision !== after.creditRevision
+      || operation.previousSeconds !== before.actualSeconds
+      || operation.targetSeconds !== after.actualSeconds
+      || after.lastCreditOperationId !== record.operationId
+      || (before.lastCreditOperationId === record.operationId)
+      || after.creditSchemaVersion !== before.creditSchemaVersion) return false;
+  if (record.timerBefore.mode !== record.session.mode
+      || record.timerBefore.phase !== record.session.phase
+      || record.timerBefore.taskId !== record.taskId
+      || record.timerBefore.baseElapsed * 1000 + record.timerBefore.elapsedRemainderMs
+        !== record.session.activeDurationMs) return false;
+  var timerAfter = record.timerAfter;
+  if (timerAfter.mode !== record.timerBefore.mode
+      || timerAfter.phase !== "work"
+      || timerAfter.running !== false
+      || timerAfter.baseElapsed !== 0
+      || timerAfter.elapsedRemainderMs !== 0
+      || timerAfter.cyclePosition !== 0
+      || timerAfter.taskId !== record.taskId
+      || timerAfter.sessionStartAt !== null
+      || timerAfter.awaitingConfirmation
+      || timerAfter.pendingPhaseEndedAt !== null
+      || timerAfter.nativeSessionToken !== null
+      || timerAfter.pendingNotificationFinish !== null
+      || JSON.stringify(timerAfter.handledNotificationActionIds)
+        !== JSON.stringify(record.timerBefore.handledNotificationActionIds)) return false;
+  return true;
+}
+
+function _validateCreditOperationLedger(records, taskRecords) {
+  // Never trim this registry: dropping old IDs would make historical retries
+  // indistinguishable from new operations. At the cap, new credits must stop.
+  if (!Array.isArray(records) || records.length > 10000) return false;
+  var operationIds = new Set(), sessionIds = new Set();
+  var revisions = Object.create(null), latest = Object.create(null);
+  for (var i = 0; i < records.length; i++) {
+    var record = records[i];
+    if (!_validateCreditOperationRecord(record)) return false;
+    if (operationIds.has(record.operationId)) return false;
+    operationIds.add(record.operationId);
+    if (record.kind === "session") {
+      if (sessionIds.has(record.sessionId)) return false;
+      sessionIds.add(record.sessionId);
+    }
+    var taskKey = String(record.taskId);
+    var expectedRevision = (revisions[taskKey] || 0) + 1;
+    if (record.revision !== expectedRevision) return false;
+    if (expectedRevision > 1 && record.previousSeconds !== latest[taskKey].targetSeconds) return false;
+    revisions[taskKey] = expectedRevision;
+    latest[taskKey] = record;
+  }
+
+  if (taskRecords !== undefined) {
+    if (!Array.isArray(taskRecords)) return false;
+    for (var t = 0; t < taskRecords.length; t++) {
+      var task = taskRecords[t];
+      if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+      var hasCreditMetadata = ["actualSeconds", "creditRevision", "creditSchemaVersion",
+        "lastCreditOperationId"].some(function(key) {
+          return Object.prototype.hasOwnProperty.call(task, key);
+        });
+      var count = revisions[String(task.id)] || 0;
+      if (!hasCreditMetadata) {
+        if (count !== 0) return false;
+        continue;
+      }
+      if (!_validateTaskCreditFields(task) || task.creditRevision !== count) return false;
+      if (count === 0) {
+        if (task.lastCreditOperationId !== null) return false;
+      } else {
+        var finalOperation = latest[String(task.id)];
+        if (!finalOperation || finalOperation.operationId !== task.lastCreditOperationId
+            || finalOperation.targetSeconds !== task.actualSeconds) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function _classifyCreditOperationAttempt(records, candidate) {
+  if (!_validateCreditOperationLedger(records)) return { status: "invalid_ledger" };
+  if (!_validateCreditOperationRecord(candidate)) return { status: "invalid_operation" };
+  var existing = null;
+  var latestForTask = null;
+  for (var i = 0; i < records.length; i++) {
+    var row = records[i];
+    if (row.taskId === candidate.taskId
+        && (!latestForTask || row.revision > latestForTask.revision)) {
+      latestForTask = row;
+    }
+    if (row.operationId === candidate.operationId
+        || (candidate.sessionId !== null && row.sessionId === candidate.sessionId)) {
+      if (existing) return { status: "conflict" };
+      existing = row;
+    }
+  }
+  if (!existing) {
+    // "new" must mean appendable to the currently verified history, not merely
+    // that the UUID is absent. Preserve a numeric/null baseline on revision 1.
+    var expectedRevision = latestForTask ? latestForTask.revision + 1 : 1;
+    if (candidate.revision !== expectedRevision) return { status: "conflict" };
+    if (latestForTask && candidate.previousSeconds !== latestForTask.targetSeconds)
+      return { status: "conflict" };
+    // Keep historical retries recognizable at capacity, but never classify a
+    // previously unseen operation as appendable once the durable ledger is full.
+    if (records.length >= 10000) return { status: "ledger_full" };
+    return { status: "new" };
+  }
+  var keys = Object.keys(candidate);
+  if (keys.length !== Object.keys(existing).length) return { status: "conflict", record: existing };
+  for (var j = 0; j < keys.length; j++) {
+    var key = keys[j];
+    if (!Object.prototype.hasOwnProperty.call(existing, key)
+        || existing[key] !== candidate[key]) return { status: "conflict", record: existing };
+  }
+  return { status: "duplicate", record: existing };
+}
+
+function _creditOperationLedgerPreservesHistory(previousRecords, nextRecords) {
+  if (!_validateCreditOperationLedger(previousRecords)
+      || !_validateCreditOperationLedger(nextRecords)) return false;
+  var nextById = new Map();
+  for (var i = 0; i < nextRecords.length; i++) {
+    nextById.set(nextRecords[i].operationId, nextRecords[i]);
+  }
+  for (var p = 0; p < previousRecords.length; p++) {
+    var previous = previousRecords[p];
+    var next = nextById.get(previous.operationId);
+    if (!next) return false;
+    var keys = Object.keys(previous);
+    if (keys.length !== Object.keys(next).length) return false;
+    for (var k = 0; k < keys.length; k++) {
+      var key = keys[k];
+      if (!Object.prototype.hasOwnProperty.call(next, key)
+          || next[key] !== previous[key]) return false;
+    }
+  }
+  return true;
+}
+
+// Restoring a snapshot must never erase or rewrite an operation identity
+// that already exists in the current main record. Validate both sides before
+// comparing; malformed or unreadable snapshots fail closed.
+function _creditOperationSnapshotPreservesHistory(currentMainRaw, restoredMainRaw) {
+  function readLedger(raw) {
+    if (raw === null) return { valid: true, records: [] };
+    if (typeof raw !== "string") return { valid: false, records: [] };
+    try {
+      var main = JSON.parse(raw);
+      if (!main || typeof main !== "object" || Array.isArray(main)
+          || !validateV2(main)) return { valid: false, records: [] };
+      var records = Object.prototype.hasOwnProperty.call(main, "creditOperations")
+        ? main.creditOperations : [];
+      if (!Array.isArray(records)) return { valid: false, records: [] };
+      return { valid: true, records: records };
+    } catch (e) {
+      return { valid: false, records: [] };
+    }
+  }
+
+  var current = readLedger(currentMainRaw);
+  var restored = readLedger(restoredMainRaw);
+  return current.valid && restored.valid
+    && _creditOperationLedgerPreservesHistory(current.records, restored.records);
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -2572,6 +3170,14 @@ function validateV2(data) {
         const _c = t.checklist[_ci];
         if (!_c || typeof _c.text !== "string" || typeof _c.done !== "boolean") return false;
       }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(data, "creditOperations")) {
+    if (!_validateCreditOperationLedger(data.creditOperations, data.tasks)) return false;
+  } else {
+    for (let i = 0; i < data.tasks.length; i++) {
+      if (Number.isSafeInteger(data.tasks[i].creditRevision) && data.tasks[i].creditRevision > 0) return false;
     }
   }
 
@@ -2674,7 +3280,8 @@ function buildEmptyV2(firstUseDate) {
       lastRecurringDates: {}
     },
     tasks: [],
-    dailyLogs: []
+    dailyLogs: [],
+    creditOperations: []
   };
 }
 
@@ -2989,6 +3596,7 @@ function _setupSystemThemeListener() {
 function loadData(options) {
   var opts = options || {};
   var keepRecoveryLock = opts.keepRecoveryLock === true;
+  var _maxCreditOperationTaskId = 0;
   var loadOwnsStopwatchLock = typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
   if (!loadOwnsStopwatchLock) {
@@ -3011,8 +3619,8 @@ function loadData(options) {
     return loadMarkers[key] === true;
   }).length;
   if (loadMarkerCount > 1
-      || (loadMarkerCount > 0 && loadProbe.expectedTx)
-      || loadProbe.expectedTx) {
+      || (loadMarkerCount > 0 && (loadProbe.expectedTx || loadProbe.expectedFocusCommit))
+      || loadProbe.expectedTx || loadProbe.expectedFocusCommit) {
     storageRecoveryRequired = true;
     console.error("loadData: refusing restore or migration while a Stopwatch journal or overlapping recovery marker exists.");
     return false;
@@ -3069,6 +3677,7 @@ function loadData(options) {
     if (data && Array.isArray(data.tasks)) _healTaskArray(data.tasks);
     if (data && validateV2(data)) {
       tasks = data.tasks;
+      _maxCreditOperationTaskId = _getHighestCreditOperationTaskId(data.creditOperations);
       _loadAppSettings(data.settings || {});
       createdByVersion = data.createdByVersion || APP_VERSION;
       _applyThemePreference();
@@ -3082,10 +3691,10 @@ function loadData(options) {
   }
 
   try {
-    if (tasks.length > 0) {
-      var _maxExistingId = tasks.reduce(function(max, t) {
+    if (tasks.length > 0 || _maxCreditOperationTaskId > 0) {
+      var _maxExistingId = Math.max(_maxCreditOperationTaskId, tasks.reduce(function(max, t) {
         return Math.max(max, (typeof t.id === 'number' && Number.isFinite(t.id)) ? t.id : 0);
-      }, 0);
+      }, 0));
       if (!Number.isInteger(appSettings.lastTaskId) || appSettings.lastTaskId < _maxExistingId) {
         // The next identifier is derived from the highest persisted task ID on
         // every load. Keep the correction in memory here; the next normal
@@ -3432,6 +4041,11 @@ function _storeRollingRecoveryBackupLocked(reason, minIntervalMs, expectedGenera
     console.error("Rolling recovery snapshot publication requires the Stopwatch Web Lock.");
     return false;
   }
+  if (typeof _hasPersistedPendingFocusCommit === "function" && _hasPersistedPendingFocusCommit()) {
+    _rollingRecoveryBackupLastFailure = "pending_focus_commit";
+    _rollingRecoveryBackupStale = true;
+    return true;
+  }
   if (expectedGeneration === undefined) expectedGeneration = _readPersistedRollingBackupGeneration();
   if (expectedGeneration === null
       || _readPersistedRollingBackupGeneration() !== expectedGeneration) return false;
@@ -3713,10 +4327,12 @@ function _recoverInterruptedRollingRestore() {
     console.error("Rolling restore recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     storageRecoveryRequired = true;
-    console.error("Rolling restore recovery refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Rolling restore recovery refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -3731,6 +4347,12 @@ function _recoverInterruptedRollingRestore() {
     var sourceRaw = localStorage.getItem(sourceKey);
     var record = _parseRollingRecoveryBackup(sourceRaw);
     if (!record || record.sequence !== marker.sequence) return false;
+    var currentMainRaw = localStorage.getItem(STORAGE_KEY);
+    if (!_creditOperationSnapshotPreservesHistory(currentMainRaw, record.data.main)) {
+      storageRecoveryRequired = true;
+      console.error("Rolling recovery refused to remove or rewrite accepted credit operation identities.");
+      return false;
+    }
     if (!_restoreStorageSnapshot(record.data)) return false;
 
     localStorage.removeItem(ROLLING_RESTORE_IN_PROGRESS_KEY);
@@ -3765,6 +4387,22 @@ function _restoreLatestRollingRecoveryBackup() {
   }
   var latest = _getLatestRollingRecoveryBackup();
   if (!latest || latest === false) return false;
+  var currentMainRaw;
+  try {
+    currentMainRaw = localStorage.getItem(STORAGE_KEY);
+  } catch (readError) {
+    storageRecoveryRequired = true;
+    console.error("Manual rolling restore could not read the current main record.", readError);
+    return false;
+  }
+  if (!_creditOperationSnapshotPreservesHistory(currentMainRaw, latest.record.data.main)) {
+    console.warn("Manual rolling restore refused because the snapshot would roll back accepted credit history.");
+    if (typeof showAlertModal === "function") {
+      showAlertModal("استعادة غير آمنة",
+        "النسخة الداخلية أقدم من سجل عمليات اعتماد الرصيد الحالي أو تغيّر محتوى عملية محفوظة. رفضنا الاستعادة حتى لا نفقد هوية اعتماد سابقة.");
+    }
+    return false;
+  }
   var markerRaw = JSON.stringify({
     version: 1,
     slot: latest.slot,
@@ -3849,6 +4487,12 @@ function _recoverInterruptedResetWithLock(options, afterRecovery) {
 }
 
 function _resetSecondaryStorageTrackingAfterReset() {
+  if (typeof _hasPersistedPendingFocusCommit === "function"
+      && _hasPersistedPendingFocusCommit()) {
+    storageRecoveryRequired = true;
+    console.error("Reset cleanup refuses to clear a pending focus commit journal.");
+    return false;
+  }
   if (typeof _secondaryStorageKeys !== "undefined" && Array.isArray(_secondaryStorageKeys)) {
     for (var i = 0; i < _secondaryStorageKeys.length; i++) {
       var key = _secondaryStorageKeys[i];
@@ -3967,10 +4611,12 @@ function _recoverInterruptedReset(options) {
     console.error("Interrupted reset recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     storageRecoveryRequired = true;
-    console.error("Interrupted reset recovery refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Interrupted reset recovery refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -4148,12 +4794,142 @@ function saveData() {
       lastTaskId: (Number.isInteger(appSettings.lastTaskId) && appSettings.lastTaskId > 0) ? appSettings.lastTaskId : 0,
       lastRecurringDates: appSettings.lastRecurringDates || {}
     });
+    // Task editors, completion toggles, shutdown actions and task revival
+    // still edit the legacy minute field. For an already-migrated task, turn
+    // each actual-balance change into a PR #23 manual_adjustment in this same
+    // primary-record write. Ordinary saveData may not rewrite credit metadata.
+    var preparedTasks = JSON.parse(JSON.stringify(tasks));
+    var previousTasks = Array.isArray(existing.tasks) ? existing.tasks : [];
+    var previousCreditOperations = Array.isArray(existing.creditOperations)
+      ? existing.creditOperations.slice() : [];
+    var nextCreditOperations = previousCreditOperations.slice();
+    var hasCreditLedgerProtocol = previousCreditOperations.length > 0
+      || previousTasks.some(function(task) {
+        return task && ["actualSeconds", "creditRevision", "creditSchemaVersion",
+          "lastCreditOperationId"].some(function(key) {
+            return Object.prototype.hasOwnProperty.call(task, key);
+          });
+      })
+      || preparedTasks.some(function(task) {
+        return task && ["actualSeconds", "creditRevision", "creditSchemaVersion",
+          "lastCreditOperationId"].some(function(key) {
+            return Object.prototype.hasOwnProperty.call(task, key);
+          });
+      });
+    if (hasCreditLedgerProtocol
+        && !_validateCreditOperationLedger(previousCreditOperations, previousTasks))
+      return false;
+    var previousTaskById = new Map();
+    for (var previousTaskIndex = 0; previousTaskIndex < previousTasks.length; previousTaskIndex++) {
+      var previousTask = previousTasks[previousTaskIndex];
+      if (!previousTask || !Number.isSafeInteger(previousTask.id)
+          || previousTaskById.has(previousTask.id)) return false;
+      previousTaskById.set(previousTask.id, previousTask);
+    }
+    var creditMetadataKeys = ["actualSeconds", "creditRevision",
+      "creditSchemaVersion", "lastCreditOperationId"];
+    for (var nextTaskIndex = 0; nextTaskIndex < preparedTasks.length; nextTaskIndex++) {
+      var nextTask = preparedTasks[nextTaskIndex];
+      if (!nextTask || !Number.isSafeInteger(nextTask.id) || nextTask.id <= 0) return false;
+      var previousTask = previousTaskById.get(nextTask.id) || null;
+      var previousHasCredit = !!previousTask && creditMetadataKeys.some(function(key) {
+        return Object.prototype.hasOwnProperty.call(previousTask, key);
+      });
+      var nextHasCredit = creditMetadataKeys.some(function(key) {
+        return Object.prototype.hasOwnProperty.call(nextTask, key);
+      });
+      if (!previousTask) {
+        if (nextHasCredit && (!_validateTaskCreditFields(nextTask)
+            || nextTask.creditRevision !== 0 || nextTask.lastCreditOperationId !== null))
+          return false;
+        continue;
+      }
+      if (previousHasCredit !== nextHasCredit) return false;
+      if (!previousHasCredit) continue;
+      if (!_validateTaskCreditFields(previousTask)) return false;
+      // The editor changes the minute field before saveData derives the
+      // corresponding seconds value. Validate the durable fields separately
+      // from that intentionally transient display-field mismatch.
+      var nextTaskCreditValidation = Object.assign({}, nextTask);
+      nextTaskCreditValidation.actual = nextTask.actualSeconds === null
+        ? null
+        : (Number.isSafeInteger(nextTask.actualSeconds) && nextTask.actualSeconds >= 0
+            ? Math.floor(nextTask.actualSeconds / 60) : NaN);
+      if (!_validateTaskCreditFields(nextTaskCreditValidation)) return false;
+      if (nextTask.creditRevision !== previousTask.creditRevision
+          || nextTask.creditSchemaVersion !== previousTask.creditSchemaVersion
+          || nextTask.lastCreditOperationId !== previousTask.lastCreditOperationId)
+        return false;
+
+      var actualMinutesChanged = nextTask.actual !== previousTask.actual;
+      var actualSecondsChanged = nextTask.actualSeconds !== previousTask.actualSeconds;
+      // Ordinary task writers own the legacy minute field, not the durable
+      // seconds ledger. A seconds-only mutation has no trusted user intent and
+      // must not be converted into a synthetic manual adjustment.
+      if (!actualMinutesChanged && actualSecondsChanged) {
+        showAlertModal("تعارض سجل الرصيد",
+          "رفضنا حفظ تغيير مباشر في ثواني الرصيد دون تغيير قيمة الدقائق المعتمدة؛ لم نعدّل سجل العمليات.");
+        return false;
+      }
+      if (!actualMinutesChanged && !actualSecondsChanged) continue;
+
+      var targetSeconds;
+      if (actualMinutesChanged) {
+        if (nextTask.actual === null) targetSeconds = null;
+        else if (Number.isSafeInteger(nextTask.actual) && nextTask.actual >= 0) {
+          targetSeconds = nextTask.actual * 60;
+          if (!Number.isSafeInteger(targetSeconds)) return false;
+        } else return false;
+        if (actualSecondsChanged && nextTask.actualSeconds !== targetSeconds) return false;
+      } else {
+        targetSeconds = nextTask.actualSeconds;
+        if (targetSeconds === null) {
+          if (nextTask.actual !== null) return false;
+        } else if (!Number.isSafeInteger(targetSeconds) || targetSeconds < 0
+            || nextTask.actual !== Math.floor(targetSeconds / 60)) return false;
+      }
+
+      if (targetSeconds === previousTask.actualSeconds) {
+        nextTask.actualSeconds = targetSeconds;
+        nextTask.actual = targetSeconds === null ? null : Math.floor(targetSeconds / 60);
+        continue;
+      }
+      if (previousTask.creditRevision >= Number.MAX_SAFE_INTEGER
+          || nextCreditOperations.length >= 10000
+          || typeof _newPendingFocusCommitUuid !== "function") return false;
+      var adjustmentId = _newPendingFocusCommitUuid();
+      if (!adjustmentId) return false;
+      var adjustment = {
+        recordVersion: 1,
+        operationId: adjustmentId,
+        kind: "manual_adjustment",
+        taskId: nextTask.id,
+        revision: previousTask.creditRevision + 1,
+        previousSeconds: previousTask.actualSeconds,
+        targetSeconds: targetSeconds,
+        source: "manual_adjustment",
+        sessionId: null,
+        createdAt: new Date().toISOString()
+      };
+      if (!_validateCreditOperationRecord(adjustment)) return false;
+      nextCreditOperations.push(adjustment);
+      nextTask.actualSeconds = targetSeconds;
+      nextTask.actual = targetSeconds === null ? null : Math.floor(targetSeconds / 60);
+      nextTask.creditRevision = previousTask.creditRevision + 1;
+      nextTask.creditSchemaVersion = previousTask.creditSchemaVersion;
+      nextTask.lastCreditOperationId = adjustmentId;
+    }
+    if (hasCreditLedgerProtocol
+        && (!_creditOperationLedgerPreservesHistory(previousCreditOperations, nextCreditOperations)
+          || !_validateCreditOperationLedger(nextCreditOperations, preparedTasks))) return false;
+
     const v2 = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       createdByVersion: createdVer,
       settings: persistedSettings,
-      tasks: tasks,
-      dailyLogs: existing.dailyLogs || []
+      tasks: preparedTasks,
+      dailyLogs: existing.dailyLogs || [],
+      creditOperations: nextCreditOperations
     };
 
     if (!validateV2(v2)) {
@@ -4206,6 +4982,12 @@ function saveData() {
       return false;
     }
 
+    // Synchronize the verified credit metadata back into current task objects
+    // only after read-back succeeds, preserving references held by UI rollback code.
+    for (var verifiedTaskIndex = 0; verifiedTaskIndex < tasks.length; verifiedTaskIndex++) {
+      if (tasks[verifiedTaskIndex] && preparedTasks[verifiedTaskIndex])
+        Object.assign(tasks[verifiedTaskIndex], preparedTasks[verifiedTaskIndex]);
+    }
     _setMainStorageBaseline(verifiedMainRaw);
     _queueAllTaskReminderSync();
     if (typeof _storeRollingRecoveryBackup === "function"
@@ -4617,9 +5399,10 @@ function _executeResetAllTransaction() {
     var resetMarkerCount = Object.keys(resetMarkers).filter(function(key) {
       return resetMarkers[key] === true;
     }).length;
-    if (!resetProbe || resetProbe.error || resetProbe.expectedTx || resetMarkerCount > 0) {
+    if (!resetProbe || resetProbe.error || resetProbe.expectedTx
+        || resetProbe.expectedFocusCommit || resetMarkerCount > 0) {
       storageRecoveryRequired = true;
-      throw new Error("Reset refused because another recovery marker or Stopwatch journal is present.");
+      throw new Error("Reset refused because another recovery marker or focus transaction journal is present.");
     }
     fresh = buildEmptyV2();
     fresh.settings.darkMode = appSettings.darkMode;
@@ -6470,18 +7253,7 @@ function computeWeeklyReport() {
   const execution = avgOf(dailyLogs, "execution");
   const wellbeing = avgOf(dailyLogs, "wellbeing");
 
-  const tasksWithActual = weekTasks.filter(function(t) {
-    return t.actual !== null && t.actual !== undefined && t.expected > 0;
-  });
-  const gaps = tasksWithActual.map(function(t) { return (t.actual - t.expected) / t.expected; });
-  const avgGap = gaps.length > 0 ? gaps.reduce(function(s, g) { return s + g; }, 0) / gaps.length : 0;
-  const sumExp = tasksWithActual.reduce(function(s, t) { return s + t.expected; }, 0);
-  const sumAct = tasksWithActual.reduce(function(s, t) { return s + t.actual; }, 0);
-  const aggGap = sumExp > 0 ? (sumAct - sumExp) / sumExp : 0;
-  const sorted = gaps.slice().sort(function(a, b) { return a - b; });
-  const mid = Math.floor(sorted.length / 2);
-  const medianGap = sorted.length === 0 ? 0
-    : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
+  const gapMetrics = computeTaskGapMetrics(weekTasks);
 
   // فصل مجموعة المهام المخطط لها عن الإنجازات حسب وقت الإنجاز الفعلي.
   const doneTasks = weekTasks.filter(isTaskDone).length;
@@ -6524,7 +7296,10 @@ function computeWeeklyReport() {
     control, execution, wellbeing,
     doneTasks, totalTasks: weekTasks.length,
     completedThisWeek,
-    avgGap, aggGap, medianGap, gapCount: tasksWithActual.length,
+    avgGap: gapMetrics.avgGap,
+    aggGap: gapMetrics.aggGap,
+    medianGap: gapMetrics.medianGap,
+    gapCount: gapMetrics.gapCount,
     totalDistractions,
     recurringTotal, recurringDone, recurringByKind
   };
@@ -6596,6 +7371,12 @@ function renderWeeklyReport() {
     html += '<div class="weekly-metric"><span class="weekly-metric-label">وسيط الفجوة</span><span class="weekly-metric-value ' + gapMetricClass(report.medianGap) + '">' + gapText(report.medianGap) + '</span></div>';
     html += '</div>';
   }
+  var _weeklyDisclosureDays = new Set(getLast7OperationalDays());
+  var _weeklyDisclosureTasks = tasks.filter(function(t) {
+    return t && _weeklyDisclosureDays.has(t.plannedDate) && !isTaskCancelled(t);
+  });
+  if (typeof renderTaskCreditDisclosure === "function")
+    html += renderTaskCreditDisclosure(_weeklyDisclosureTasks);
   if (report.recurringTotal > 0) {
     var rpct = Math.round(report.recurringDone / report.recurringTotal * 100);
     var rclass = rpct >= 80 ? 'high' : (rpct >= 50 ? 'mid' : 'low');
@@ -6623,19 +7404,17 @@ function computeTypeAnalysis(tp) {
     return t.type === tp && !isTaskCancelled(t);
   });
   const done = all.filter(isTaskDone).length;
-  const withActual = all.filter(function(t) {
-    return t.actual !== null && t.actual !== undefined && t.expected > 0;
-  });
-  const gaps = withActual.map(function(t) { return (t.actual - t.expected) / t.expected; });
-  const avgGap = gaps.length > 0 ? gaps.reduce(function(s, g) { return s + g; }, 0) / gaps.length : 0;
-  const sumExp = withActual.reduce(function(s, t) { return s + t.expected; }, 0);
-  const sumAct = withActual.reduce(function(s, t) { return s + t.actual; }, 0);
-  const aggGap = sumExp > 0 ? (sumAct - sumExp) / sumExp : 0;
-  const sorted = gaps.slice().sort(function(a, b) { return a - b; });
-  const mid = Math.floor(sorted.length / 2);
-  const medianGap = sorted.length === 0 ? 0
-    : (sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
-  return { count: all.length, done, gapCount: gaps.length, avgGap, aggGap, medianGap };
+  const gapMetrics = computeTaskGapMetrics(all);
+  return {
+    count: all.length,
+    done,
+    gapCount: gapMetrics.gapCount,
+    avgGap: gapMetrics.avgGap,
+    aggGap: gapMetrics.aggGap,
+    medianGap: gapMetrics.medianGap,
+    sumExpected: gapMetrics.sumExpected,
+    sumActual: gapMetrics.sumActual
+  };
 }
 
 function sampleWarning(count) {
@@ -6660,6 +7439,9 @@ function renderTypeGapAnalysis() {
   let html = "";
   analyses.forEach(function(a) {
     const d = a.data;
+    const typeTasksForDisclosure = tasks.filter(function(t) {
+      return t && t.type === a.type && !isTaskCancelled(t);
+    });
     const warn = sampleWarning(d.gapCount);
     const mult = Math.max(0.25, 1 + d.aggGap);
     html += '<div class="type-gap-card">';
@@ -6671,8 +7453,11 @@ function renderTypeGapAnalysis() {
       html += '<div class="weekly-metric"><span class="weekly-metric-label">الفجوة المجمّعة</span><span class="weekly-metric-value ' + gapMetricClass(d.aggGap) + '">' + gapText(d.aggGap) + '</span></div>';
       html += '<div class="weekly-metric"><span class="weekly-metric-label">وسيط الفجوة</span><span class="weekly-metric-value ' + gapMetricClass(d.medianGap) + '">' + gapText(d.medianGap) + '</span></div>';
       html += '<div class="weekly-metric"><span class="weekly-metric-label">المعامل المقترح</span><span class="weekly-metric-value"><b>' + mult.toFixed(2) + '</b></span></div>';
-      html += '<div class="weekly-metric"><span class="weekly-metric-label">60 دقيقة تقدير ←</span><span class="weekly-metric-value">' + Math.round(60 * mult) + ' دقيقة فعلية</span></div>';
+      html += '<div class="weekly-metric"><span class="weekly-metric-label">مجموع المهام الداخلة في حساب الفجوة</span><span class="weekly-metric-value">' + _formatFocusSessionDuration(Math.round(d.sumExpected * 60)) + ' تقدير ← ' + _formatFocusSessionDuration(Math.round(d.sumActual * 60)) + ' فعلي</span></div>';
+      html += '<div class="weekly-metric"><span class="weekly-metric-label">مثال قياسي — لتوضيح المعامل، وليس وقت مهامك الفعلي</span><span class="weekly-metric-value">تقدير 60 دقيقة ← المتوقع ' + Math.round(60 * mult) + ' دقيقة</span></div>';
     }
+    if (typeof renderTaskCreditDisclosure === "function")
+      html += renderTaskCreditDisclosure(typeTasksForDisclosure);
     html += '<div class="type-sample-warning ' + warn.cls + '">' + warn.text + ' (' + d.gapCount + ' مهمة)</div>';
     html += '</div>';
   });
@@ -6786,10 +7571,18 @@ function _validateFocusSessionRecordV2(session) {
       && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
         || session.creditSource !== "none" || session.outcome !== "interrupted")) return false;
   if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
-  if (session.creditSource === "user_adjusted"
-      && (session.phase !== "work" || session.taskId === null
-        || session.clockTrust === "untrusted"
-        || (session.outcome !== "completed" && session.outcome !== "ended_early"))) return false;
+  if (session.creditSource === "user_adjusted") {
+    var adjustedPomodoroOutcome = session.mode === "pomodoro"
+      && (session.outcome === "completed" || session.outcome === "ended_early");
+    var adjustedStopwatchOutcome = session.mode === "stopwatch"
+      && session.outcome === "stopped";
+    // V2 Stopwatch may record a user-approved minute credit separately from
+    // measured seconds. It remains a trusted-clock session; clock-adjusted
+    // snapshots are deliberately fail-closed by the commit entry point.
+    if (session.phase !== "work" || session.taskId === null
+        || session.clockTrust !== "trusted" || session.clockAdjusted === true
+        || (!adjustedPomodoroOutcome && !adjustedStopwatchOutcome)) return false;
+  }
   return true;
 }
 
@@ -6877,6 +7670,8 @@ function _buildFocusTimerBackupSnapshot(timer, now, elapsedSec, phaseTargetSec, 
 function _validateFocusTimerBackupSnapshot(timer, taskIds) {
   if (!timer || typeof timer !== "object" || Array.isArray(timer))
     return { valid: false, reason: "حالة مؤقت التركيز غير صالحة." };
+  if (Object.prototype.hasOwnProperty.call(timer, "pendingFocusCommit"))
+    return { valid: false, reason: "لا يجوز تضمين سجل اعتماد جلسة داخلي في نسخة المستخدم الاحتياطية." };
   if (timer.mode !== "pomodoro" && timer.mode !== "stopwatch")
     return { valid: false, reason: "وضع مؤقت التركيز غير صالح." };
   if (!["work", "short-break", "long-break"].includes(timer.phase))
@@ -6922,6 +7717,8 @@ function buildBackupObject() {
     throw new Error("تعذر تصدير النسخة: هذه النافذة قديمة أو توجد تغييرات في نافذة أخرى. أعد تحميل التطبيق أولًا.");
   if (typeof _focusTimer !== "undefined" && _focusTimer.pendingStopwatchTransaction)
     throw new Error("تعذر تصدير النسخة: توجد عملية Stopwatch غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
+  if (typeof _focusTimer !== "undefined" && _focusTimer.pendingFocusCommit)
+    throw new Error("تعذر تصدير النسخة: توجد معاملة اعتماد جلسة معلقة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
 
   var keys = [
     ["main", STORAGE_KEY],
@@ -6958,11 +7755,18 @@ function buildBackupObject() {
   }
   if (timerRecord.pendingStopwatchTransaction)
     throw new Error("تعذر تصدير النسخة: توجد معاملة Stopwatch معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
+  if (timerRecord.pendingFocusCommit)
+    throw new Error("تعذر تصدير النسخة: توجد معاملة اعتماد جلسة معلقة في التخزين، حتى لو لم تستلم هذه النافذة حدث التغيير.");
 
   var data = rawSnapshot.main ? JSON.parse(rawSnapshot.main) : buildEmptyV2();
   if (!data || typeof data !== "object" || Array.isArray(data)
       || !Array.isArray(data.tasks) || !Array.isArray(data.dailyLogs))
     throw new Error("تعذر تصدير النسخة: بنية بيانات المهام والسجلات غير مكتملة.");
+  // A missing ledger is valid only for pre-ledger data. A present malformed
+  // value must fail closed; silently replacing it with [] would erase identities.
+  if (Object.prototype.hasOwnProperty.call(data, "creditOperations")
+      && !Array.isArray(data.creditOperations))
+    throw new Error("تعذر تصدير النسخة: سجل عمليات اعتماد الرصيد تالف أو ليس مصفوفة.");
   function readArray(property, label) {
     var stored = rawSnapshot[property];
     if (stored === null) return [];
@@ -6983,6 +7787,8 @@ function buildBackupObject() {
     exportedAt: localDateTimeString(), appVersion: APP_VERSION, schemaVersion: CURRENT_SCHEMA_VERSION,
     data: {
       settings: data.settings || {}, tasks: data.tasks, dailyLogs: data.dailyLogs,
+      creditOperations: Object.prototype.hasOwnProperty.call(data, "creditOperations")
+        ? data.creditOperations : [],
       focusSessions: readArray("focusSessions", "جلسات التركيز"),
       focusTimer: _buildFocusTimerBackupSnapshot(timerRecord, Date.now(), elapsed.seconds, _phaseTargetSec(),
         new Set(data.tasks.map(function(task) { return task && task.id; })), elapsed.remainderMs, _focusElapsedRemainderMs),
@@ -7237,6 +8043,16 @@ function validateBackup(obj) {
       return { valid: false, reason: "مرجع أصل المهمة المتكررة غير صالح (" + (i+1) + ")." };
   }
 
+  if (Object.prototype.hasOwnProperty.call(d, "creditOperations")) {
+    if (!_validateCreditOperationLedger(d.creditOperations, d.tasks))
+      return { valid: false, reason: "سجل عمليات اعتماد الرصيد غير صالح أو لا يطابق أرصدة المهام." };
+  } else {
+    for (let i = 0; i < d.tasks.length; i++) {
+      if (Number.isSafeInteger(d.tasks[i].creditRevision) && d.tasks[i].creditRevision > 0)
+        return { valid: false, reason: "تتطلب أرصدة المهام ذات الاعتمادات السابقة سجل عمليات الاعتماد الكامل." };
+    }
+  }
+
   if (obj.backupFormatVersion >= 2
       && (!Object.prototype.hasOwnProperty.call(d, "focusTimer")
           || !d.focusTimer || typeof d.focusTimer !== "object" || Array.isArray(d.focusTimer)))
@@ -7439,10 +8255,12 @@ function _restoreStorageSnapshot(rb) {
     console.error("Storage snapshot restore requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     markRecoveryRequired();
-    console.error("Storage snapshot restore refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Storage snapshot restore refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -7460,18 +8278,33 @@ function _restoreStorageSnapshot(rb) {
       return false;
     }
   }
+  if (rb.focusTimer !== null) {
+    // Internal recovery snapshots may contain opaque legacy values from older
+    // versions. Reject a known live journal, but preserve unreadable raw bytes
+    // verbatim so rollback can put the user's previous value back exactly.
+    try {
+      var snapshotTimer = JSON.parse(rb.focusTimer);
+      if (snapshotTimer && typeof snapshotTimer === "object" && !Array.isArray(snapshotTimer)
+          && snapshotTimer.pendingFocusCommit) {
+        markRecoveryRequired();
+        return false;
+      }
+    } catch (snapshotTimerError) {}
+  }
 
   var entries = [
-    [STORAGE_KEY, rb.main],
     [FOCUS_SESSIONS_KEY, rb.focusSessions],
     [FOCUS_TIMER_KEY, rb.focusTimer],
     [MENTAL_INBOX_KEY, rb.mentalInbox],
     [THOUGHTS_KEY, rb.thoughts],
     [PROJECTS_KEY, rb.projects],
     [FOCUS_SETTINGS_KEY, rb.focusSettings],
-    [NOTIFICATIONS_KEY, rb.notifications]
+    [NOTIFICATIONS_KEY, rb.notifications],
+    // Commit the main record last: it carries the durable credit identity ledger.
+    [STORAGE_KEY, rb.main]
   ];
   var before = [];
+  var previousMainRaw = null;
   function writeAndVerify(key, value) {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -7485,7 +8318,9 @@ function _restoreStorageSnapshot(rb) {
   // failure from leaving an avoidable partially-restored set of collections.
   try {
     for (var r = 0; r < entries.length; r++) {
-      before.push([entries[r][0], localStorage.getItem(entries[r][0])]);
+      var previousValue = localStorage.getItem(entries[r][0]);
+      before.push([entries[r][0], previousValue]);
+      if (entries[r][0] === STORAGE_KEY) previousMainRaw = previousValue;
     }
   } catch (readError) {
     markRecoveryRequired();
@@ -7514,7 +8349,7 @@ function _restoreStorageSnapshot(rb) {
     }
     _invalidateProjectsCache();
     if (compensationVerified && typeof _setMainStorageBaseline === "function") {
-      _setMainStorageBaseline(before[0][1]);
+      _setMainStorageBaseline(previousMainRaw);
     }
     markRecoveryRequired();
     return false;
@@ -7543,10 +8378,12 @@ function _recoverInterruptedImport() {
     console.error("Import recovery requires the Stopwatch Web Lock.");
     return false;
   }
-  if (typeof _hasPersistedPendingStopwatchTransaction === "function"
-      && _hasPersistedPendingStopwatchTransaction()) {
+  if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
+        && _hasPersistedPendingStopwatchTransaction())
+      || (typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())) {
     storageRecoveryRequired = true;
-    console.error("Import recovery refuses to overwrite a pending Stopwatch transaction.");
+    console.error("Import recovery refuses to overwrite a pending focus transaction.");
     return false;
   }
 
@@ -7587,6 +8424,12 @@ function _recoverInterruptedImport() {
 
 
 function showImportPreview(obj) {
+  if (typeof _hasPersistedPendingFocusCommit === "function"
+      && _hasPersistedPendingFocusCommit()) {
+    showAlertModal("الاستيراد محظور مؤقتًا",
+      "توجد جلسة تركيز معلقة قيد التثبيت أو الاسترداد. أكمل الاسترداد قبل استبدال أي بيانات.");
+    return;
+  }
   const d = obj.data;
   const tasksCount = d.tasks.length;
   const logsCount = d.dailyLogs.length;
@@ -7610,6 +8453,7 @@ function showImportPreview(obj) {
   } catch (e) {}
 
   const optionalGroups = [
+    ["creditOperations", "سجل عمليات اعتماد الرصيد"],
     ["focusSessions", "جلسات التركيز"],
     ["focusTimer", "مؤقت التركيز"],
     ["mentalInbox", "الأفكار المفتوحة"],
@@ -7666,10 +8510,13 @@ function showImportPreview(obj) {
             IMPORT_IN_PROGRESS_KEY, MIGRATION_IN_PROGRESS_KEY
           ];
           var pendingStopwatchTransaction = false;
+          var pendingFocusCommit = false;
           var importRecoveryMarkerPresent = false;
           try {
             pendingStopwatchTransaction = typeof _hasPersistedPendingStopwatchTransaction === "function"
               && _hasPersistedPendingStopwatchTransaction();
+            pendingFocusCommit = typeof _hasPersistedPendingFocusCommit === "function"
+              && _hasPersistedPendingFocusCommit();
             importRecoveryMarkerPresent = importBlockingKeys.some(function(key) {
               return localStorage.getItem(key) !== null;
             });
@@ -7679,16 +8526,40 @@ function showImportPreview(obj) {
               "تعذرت قراءة سجل Stopwatch أو علامات الاسترداد. لم يبدأ الاستيراد ولم تُستبدل أي بيانات.");
             return false;
           }
-          if (pendingStopwatchTransaction || importRecoveryMarkerPresent) {
+          if (pendingStopwatchTransaction || pendingFocusCommit || importRecoveryMarkerPresent) {
             showAlertModal("الاستيراد محظور مؤقتًا",
-              "يوجد سجل Stopwatch أو استرداد آخر قيد التنفيذ؛ لم يبدأ الاستيراد.");
+              "يوجد سجل معاملة مؤقت أو استرداد آخر قيد التنفيذ؛ لم يبدأ الاستيراد.");
             return false;
           }
           currentRaw = localStorage.getItem(STORAGE_KEY);
+          var _existingCreditOperations = [];
+          if (currentRaw !== null) {
+            try {
+              var _existingMainForCreditLedger = JSON.parse(currentRaw);
+              if (!validateV2(_existingMainForCreditLedger)) throw new Error("existing main record failed validation");
+              _existingCreditOperations = Array.isArray(_existingMainForCreditLedger.creditOperations)
+                ? _existingMainForCreditLedger.creditOperations : [];
+            } catch (_creditLedgerReadError) {
+              storageRecoveryRequired = true;
+              showAlertModal("تعذر التحقق من سجل الاعتمادات",
+                "لم يبدأ الاستيراد لأن سجل المهام الحالي أو سجل هويات العمليات لا يمكن التحقق منه.");
+              return false;
+            }
+          }
+          if (!_creditOperationLedgerPreservesHistory(
+              _existingCreditOperations,
+              Array.isArray(d.creditOperations) ? d.creditOperations : [])) {
+            showAlertModal("الاستيراد يتراجع عن سجل الاعتمادات",
+              "تحتوي النسخة على تاريخ أقدم أو معدل لهويات عمليات الرصيد على هذا الجهاز. رفضنا الاستيراد حتى لا تُمحى هويات عمليات سبق اعتمادها أو يُعاد تشغيل جلسة قديمة.");
+            return false;
+          }
         const settings = d.settings || {};
-        const maxTaskId = d.tasks.reduce(function(max, task) {
-          return Math.max(max, Number.isFinite(task && task.id) ? task.id : 0);
-        }, 0);
+        const maxTaskId = Math.max(
+          d.tasks.reduce(function(max, task) {
+            return Math.max(max, Number.isFinite(task && task.id) ? task.id : 0);
+          }, 0),
+          _getHighestCreditOperationTaskId(d.creditOperations)
+        );
         const importedFirstUseDate = (typeof settings.firstUseDate === "string" && isValidCalendarDate(settings.firstUseDate))
           ? settings.firstUseDate : todayStr();
         const importedDayStart = Number.isInteger(settings.operationalDayStart)
@@ -7710,7 +8581,8 @@ function showImportPreview(obj) {
             lastRecurringDates: settings.lastRecurringDates || {}
           }),
           tasks: d.tasks,
-          dailyLogs: d.dailyLogs
+          dailyLogs: d.dailyLogs,
+          creditOperations: Array.isArray(d.creditOperations) ? d.creditOperations : []
         };
 
         _healTaskArray(newData.tasks);
@@ -8016,6 +8888,8 @@ function undoLastImport() {
     }
     if ((typeof _hasPersistedPendingStopwatchTransaction === "function"
           && _hasPersistedPendingStopwatchTransaction())
+        || (typeof _hasPersistedPendingFocusCommit === "function"
+          && _hasPersistedPendingFocusCommit())
         || localStorage.getItem(RESET_IN_PROGRESS_KEY) !== null
         || localStorage.getItem(ROLLING_RESTORE_IN_PROGRESS_KEY) !== null
         || localStorage.getItem(IMPORT_IN_PROGRESS_KEY) !== null
@@ -8045,6 +8919,12 @@ function undoLastImport() {
             return;
           }
         }
+        var currentMainForUndo = localStorage.getItem(STORAGE_KEY);
+        if (!_creditOperationSnapshotPreservesHistory(currentMainForUndo, parsed.main)) {
+          showAlertModal("تعذر التراجع بأمان",
+            "نسخة التراجع ستحذف أو تغيّر هويات عمليات اعتماد سبق حفظها على هذا الجهاز. لم نبدأ التراجع ولم نعدّل أي بيانات.");
+          return;
+        }
 
         // Mark undo as an in-progress restore and verify the marker before writes.
         localStorage.setItem(IMPORT_IN_PROGRESS_KEY, "1");
@@ -8058,6 +8938,12 @@ function undoLastImport() {
       } else {
         if (!validateV2(parsed)) {
           showAlertModal("خطأ", "النسخة السابقة تالفة.");
+          return;
+        }
+        var currentMainForUndo = localStorage.getItem(STORAGE_KEY);
+        if (!_creditOperationSnapshotPreservesHistory(currentMainForUndo, raw)) {
+          showAlertModal("تعذر التراجع بأمان",
+            "نسخة التراجع ستحذف أو تغيّر هويات عمليات اعتماد سبق حفظها على هذا الجهاز. لم نبدأ التراجع ولم نعدّل أي بيانات.");
           return;
         }
         localStorage.setItem(STORAGE_KEY, raw);
@@ -8469,13 +9355,14 @@ return da - db;
     const status = getStatus(t);
     const cls = isTaskDone(t) ? "done" : "";
     const safeName = escapeHTML(t.name);
-    const gap = computeGap(t.expected, t.actual);
+    const gap = computeGap(t.expected, getTaskActualMinutes(t));
     let info = "🏷️ " + escapeHTML(t.type || "—") + " | ⏱️ متوقع: " + t.expected + " د";
     if (t.projectId && _projMap[t.projectId]) {
       info += " | 🎯 " + escapeHTML(_projMap[t.projectId].name);
     }
     if (t.actual !== null && t.actual !== undefined) {
-      info += " | ⏱️ فعلي: " + t.actual + " د";
+      info += " | ⏱️ فعلي: " + (Number.isSafeInteger(t.actualSeconds)
+        ? _formatFocusSessionDuration(t.actualSeconds) : t.actual + " د");
       info += ' | <span class="' + gapClass(gap) + '">📊 ' + gapText(gap) + "</span>";
     }
     info += "<br>📅 " + formatDate(t.plannedDate) + (t.plannedTime ? " — ⏰ " + t.plannedTime : "");
@@ -8605,15 +9492,11 @@ function renderStats() {
     const d = subset.filter(isTaskDone).length;
     const pct2 = Math.round(d / subset.length * 100);
     // FIX W7/B9 (G5): توافق مع computeWeeklyReport — استثناء expected=0
-    const withActual = subset.filter(function(t) {
-      return t.actual !== null && t.actual !== undefined && t.expected > 0;
-    });
+    const gapMetrics = computeTaskGapMetrics(subset);
     let gapLine = "";
-    if (withActual.length > 0) {
-      const avgGap = withActual.reduce(function(s, t) {
-        return s + computeGap(t.expected, t.actual);
-      }, 0) / withActual.length;
-      gapLine = ' | <span class="' + gapClass(avgGap) + '">فجوة ' + gapText(avgGap) + "</span>";
+    if (gapMetrics.gapCount > 0) {
+      gapLine = ' | <span class="' + gapClass(gapMetrics.avgGap) + '">فجوة '
+        + gapText(gapMetrics.avgGap) + "</span>";
     }
     return '' +
       '<div class="stat-box" style="margin-top:8px;text-align:right;">' +
@@ -8678,7 +9561,7 @@ function exportCSV() {
     "التاريخ_المخطط", "الوقت_المخطط", "أُنجزت_في", "أُنشئت_في"
   ];
   const rows = tasks.map(function(t) {
-    const gap = computeGap(t.expected, t.actual);
+    const gap = computeGap(t.expected, getTaskActualMinutes(t));
     return [
       t.id, t.name, t.type, t.status, t.expected,
       (t.actual !== null && t.actual !== undefined) ? t.actual : "",
@@ -9407,6 +10290,7 @@ var _focusTimer = {
   pendingPhaseEndedAt: null,
   clockAdjusted: false,
   pendingStopwatchTransaction: null,
+  pendingFocusCommit: null,
   nativeClockActive: false,
   nativeSessionToken: null,
   handledNotificationActionIds: [],
@@ -9514,7 +10398,7 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
         mode: "pomodoro", phase: "work", running: false, baseElapsed: 0,
         startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: null,
         awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false,
-        pendingStopwatchTransaction: null, nativeClockActive: false,
+        pendingStopwatchTransaction: null, pendingFocusCommit: null, nativeClockActive: false,
         nativeAnchorElapsedRealtimeMs: null, nativeAnchorBootCount: null,
         nativeAnchorBaseMs: null, nativeAnchorWallMs: null,
         nativeRestorePending: false, nativeBootMismatch: false,
@@ -9568,6 +10452,13 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
       && (typeof _validatePendingStopwatchTransaction !== "function"
         || !_validatePendingStopwatchTransaction(pendingTransaction)))
     return invalid("invalid_pending_stopwatch_transaction");
+  var pendingFocusCommit = owns("pendingFocusCommit") ? record.pendingFocusCommit : null;
+  if (pendingFocusCommit !== null && pendingFocusCommit !== undefined
+      && (typeof _validatePendingFocusCommit !== "function"
+        || !_validatePendingFocusCommit(pendingFocusCommit)))
+    return invalid("invalid_pending_focus_commit");
+  if (pendingTransaction && pendingFocusCommit)
+    return invalid("overlapping_focus_transaction_journals");
   var sessionToken = owns("nativeSessionToken") ? record.nativeSessionToken : null;
   if (sessionToken !== null && sessionToken !== undefined && !_isNativeStopwatchUuid(sessionToken))
     return invalid("invalid_native_session_token");
@@ -9608,7 +10499,8 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
     if (strictTaskReference === true) return invalid("task_reference_invalid");
     // A removed task must not invalidate unrelated elapsed timer history. Keep
     // the full transaction only when its task identity can still be verified.
-    if (pendingTransaction) return invalid("task_reference_invalid_with_transaction");
+    if (pendingTransaction || pendingFocusCommit)
+      return invalid("task_reference_invalid_with_transaction");
     taskId = null;
     clockAdjusted = true;
     migrated = true;
@@ -9653,6 +10545,7 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
       pendingPhaseEndedAt: pendingEnd,
       clockAdjusted: clockAdjusted,
       pendingStopwatchTransaction: pendingTransaction || null,
+      pendingFocusCommit: pendingFocusCommit || null,
       nativeClockActive: nativeActive,
       // Preserve the last verified service anchor while paused so FIFO
       // notification actions already queued for this token can still be checked
@@ -10396,6 +11289,7 @@ function _saveFocusTimer() {
       pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
       clockAdjusted: _focusTimer.clockAdjusted === true,
       pendingStopwatchTransaction: _focusTimer.pendingStopwatchTransaction || null,
+      pendingFocusCommit: _focusTimer.pendingFocusCommit || null,
       nativeClockActive: _focusTimer.nativeClockActive === true,
       nativeSessionToken: _focusTimer.nativeSessionToken || null,
       handledNotificationActionIds: Array.isArray(_focusTimer.handledNotificationActionIds)
@@ -11710,6 +12604,19 @@ function _formatDuration(sec) {
   return h + 'س ' + rem + 'د';
 }
 
+function _formatFocusSessionDuration(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  var minutes = Math.floor(sec / 60);
+  var remainingSeconds = sec % 60;
+  var hours = Math.floor(minutes / 60);
+  var remainingMinutes = minutes % 60;
+  var parts = [];
+  if (hours > 0) parts.push(hours + 'س');
+  if (remainingMinutes > 0) parts.push(remainingMinutes + ' د');
+  if (remainingSeconds > 0 || parts.length === 0) parts.push(remainingSeconds + ' ث');
+  return parts.join(' ');
+}
+
 function _renderTimerSettings() {
   var w = document.getElementById('timerWorkMin');
   var s = document.getElementById('timerShortMin');
@@ -11894,8 +12801,8 @@ function renderFocusSessionsCard() {
   var recent = _loadSessions().slice(-5).reverse();
 
   var html = '<div class="weekly-summary">';
-  html += '<div class="weekly-stat"><div class="weekly-stat-label">اليوم</div><div class="weekly-stat-value">' + todayStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(todayStats.totalSec) + '</div></div>';
-  html += '<div class="weekly-stat"><div class="weekly-stat-label">هذا الأسبوع</div><div class="weekly-stat-value">' + weeklyStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(weeklyStats.totalSec) + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">اليوم</div><div class="weekly-stat-value">' + todayStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatFocusSessionDuration(todayStats.totalSec) + '</div></div>';
+  html += '<div class="weekly-stat"><div class="weekly-stat-label">هذا الأسبوع</div><div class="weekly-stat-value">' + weeklyStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatFocusSessionDuration(weeklyStats.totalSec) + '</div></div>';
   html += '</div>';
 
   if (recent.length === 0) {
@@ -11906,7 +12813,7 @@ function renderFocusSessionsCard() {
       var icon = s.mode === 'stopwatch' ? '⏱️' : (s.phase === 'work' ? '🍅' : '☕');
       var name = s.taskName ? escapeHTML(s.taskName.slice(0, 32)) : 'بدون مهمة';
       if (s.taskName && s.taskName.length > 32) name += '…';
-      html += '<div class="weekly-metric"><span class="weekly-metric-label">' + icon + ' ' + name + '</span><span class="weekly-metric-value">' + _formatDuration(s.durationSec) + '</span></div>';
+      html += '<div class="weekly-metric"><span class="weekly-metric-label">' + icon + ' ' + name + '</span><span class="weekly-metric-value">' + _formatFocusSessionDuration(s.durationSec) + '</span></div>';
     });
     html += '</div>';
   }
@@ -12149,6 +13056,14 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   }
   if(_focusTimerExternalConflict){showAlertModal("تعارض حالة المؤقت","تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل إعادة تعيينه.");return;}
   var elapsed=_getElapsedSec();
+  if (_isClockAdjustedV2WorkSession(_focusTimer)) {
+    var adjustedSnapshot = _freezeFocusTimerForDecision();
+    if (!adjustedSnapshot) return false;
+    return _showClockAdjustedV2ReviewDialog(adjustedSnapshot, {
+      discardText: "تجاهل وتصفير",
+      successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+  }
   if(_focusTimer.mode==='stopwatch'&&elapsed>=STOPWATCH_SAVE_THRESHOLD_SEC){_showStopwatchSaveDialog(elapsed);return;}
   showConfirmModal('إعادة التعيين','سيتم تجاهل الجلسة الحالية دون تسجيلها وإعادة المؤقت إلى الصفر. المدة: '+_formatDuration(elapsed)+'. متابعة؟',
     function(){
@@ -12158,6 +13073,66 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
       });
     });
 }
+function _isFocusTaskCreditSchemaV2(task) {
+  return !!task && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+    .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); });
+}
+
+function _isClockAdjustedV2WorkSession(snapshot) {
+  if (!snapshot || snapshot.clockAdjusted !== true || snapshot.phase !== "work"
+      || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+      || snapshot.taskId === null || snapshot.taskId === undefined) return false;
+  var task = Array.isArray(tasks)
+    ? tasks.find(function(row) { return row && row.id === snapshot.taskId; }) : null;
+  return _isFocusTaskCreditSchemaV2(task);
+}
+
+function _showClockAdjustedV2ReviewDialog(snapshot, options) {
+  if (!_isClockAdjustedV2WorkSession(snapshot)) return false;
+  options = options || {};
+  var overlay = document.getElementById("customModalOverlay");
+  var card = document.getElementById("modalCardElement");
+  document.getElementById("modalTitle").textContent = "جلسة تحتاج إلى مراجعة الساعة";
+  document.getElementById("modalBody").innerHTML =
+    '<p style="margin:0 0 10px;line-height:1.7;">اكتشف التطبيق تغيرًا في ساعة المؤقت. الجلسة محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>'
+    + '<p style="margin:0;line-height:1.7;">لا يمكن اعتماد هذه الجلسة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً.</p>';
+  var footer = document.getElementById("modalFooter");
+  footer.innerHTML = "";
+  var keepPaused = document.createElement("button");
+  keepPaused.className = "btn-ghost";
+  keepPaused.textContent = "إبقاء متوقفة";
+  keepPaused.onclick = function() {
+    closeModal();
+    _pendingFinishDialogShown = false;
+    _renderFocusTimer();
+  };
+  var discard = document.createElement("button");
+  discard.className = "btn-danger";
+  discard.textContent = options.discardText || "تجاهل وتصفير";
+  discard.onclick = function() {
+    closeModal();
+    _pendingFinishDialogShown = false;
+    _discardShortFocusSession({
+      snapshot: snapshot,
+      allowLong: true,
+      onDiscarded: options.onDiscarded,
+      successToast: options.successToast || "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+  };
+  footer.appendChild(keepPaused);
+  footer.appendChild(discard);
+  overlay.classList.remove("hidden");
+  _pendingFinishDialogShown = true;
+  const trap = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) document.removeEventListener("keydown", _modalKeyHandler);
+  _modalKeyHandler = function(e) {
+    if (e.key === "Escape") { e.preventDefault(); keepPaused.click(); }
+    else trap(e);
+  };
+  document.addEventListener("keydown", _modalKeyHandler);
+  return true;
+}
+
 function _showStopwatchSaveDialog(elapsedSec) {
   if (!_isTaskStorageLockHeld()) {
     return _withTaskStorageLock(function() { return _showStopwatchSaveDialog(elapsedSec); });
@@ -12165,6 +13140,12 @@ function _showStopwatchSaveDialog(elapsedSec) {
   if(_focusTimerExternalConflict){showAlertModal("تعارض حالة المؤقت","تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق أولًا.");return;}
   var snapshot=_freezeFocusTimerForDecision();if(!snapshot)return;
   elapsedSec=snapshot.baseElapsed;
+  if (_isClockAdjustedV2WorkSession(snapshot)) {
+    return _showClockAdjustedV2ReviewDialog(snapshot, {
+      discardText: "تجاهل وتصفير",
+      successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+  }
   if(elapsedSec<60){_discardShortFocusSession({snapshot:snapshot,successToast:"⚪ أُعيد تعيين Stopwatch دون تسجيل الجلسة"});return;}
   var task=snapshot.taskId!==null?tasks.find(function(t){return t.id===snapshot.taskId;}):null;
   var minutes=Math.max(1,Math.round(elapsedSec/60));
@@ -12409,6 +13390,62 @@ function _pendingTxMatchesCommitRequest(tx,p) {
 
 function _commitFocusTaskSession(p) {
   if(!p||!p.snapshot)return Promise.resolve(false);
+  var snapshot = p.snapshot;
+  var taskId = p.taskId === undefined ? snapshot.taskId : p.taskId;
+  var snapshotHasLinkedWorkSession = snapshot.taskId !== null && snapshot.taskId !== undefined
+    && snapshot.phase === "work"
+    && (snapshot.mode === "stopwatch" || snapshot.mode === "pomodoro");
+  if (snapshotHasLinkedWorkSession) {
+    if (taskId !== snapshot.taskId) {
+      showAlertModal("تعارض ربط المهمة",
+        "تغير معرّف المهمة في طلب الحفظ. لم نمرر الجلسة إلى أي كاتب ولم نغيّر الرصيد أو المؤقت.");
+      return Promise.resolve(false);
+    }
+    var linkedTask = Array.isArray(tasks)
+      ? tasks.find(function(row) { return row && row.id === snapshot.taskId; })
+      : null;
+    var taskUsesV2CreditSchema = !!linkedTask
+      && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(linkedTask, key); });
+    var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
+        && Number.isInteger(snapshot.elapsedRemainderMs)
+      ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
+    var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
+      ? Math.floor(measuredActiveDurationMs / 1000) : null;
+    var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
+      && Number.isSafeInteger(p.minutesToAdd)
+      && p.minutesToAdd * 60 === measuredActiveSeconds;
+    // First trusted linked Pomodoro commits (and exactly measured Stopwatch
+    // approvals) enter V2 here. All other legacy task saves stay on the V1
+    // transaction until a V2 commit has migrated their credit metadata.
+    var shouldEnterV2 = taskUsesV2CreditSchema
+      || (snapshot.clockAdjusted !== true
+        && (snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement));
+    if (shouldEnterV2) {
+      if (p.completed === false) {
+        showAlertModal("جلسة غير مكتملة",
+          "قرار حفظ جلسة العمل غير مكتمل. بقيت الجلسة متوقفة ولم نغيّر الرصيد.");
+        return Promise.resolve(false);
+      }
+      if (snapshot.clockAdjusted === true) {
+        showAlertModal("جلسة تحتاج إلى مراجعة الساعة",
+          "اكتشف التطبيق تغيرًا في ساعة المؤقت. لم نعتمد الثواني المقاسة ولم نمرر المهمة V2 إلى الكاتب القديم. بقيت الجلسة متوقفة ببياناتها دون تغيير؛ راجعها أو تجاهلها صراحةً.");
+        return Promise.resolve(false);
+      }
+      // Once a task has entered V2, every finish/reset/task-switch save must
+      // use the same durable writer. Legacy tasks retain their established
+      // V1 transaction contract until they are migrated by a V2 commit.
+      return _commitPendingFocusSessionV2({
+        snapshot: snapshot,
+        taskId: taskId,
+        minutesToAdd: p.minutesToAdd,
+        useMeasuredCredit: p.useMeasuredCredit === true,
+        completed: true,
+        onCommitted: p.onCommitted,
+        successToast: p.successToast
+      });
+    }
+  }
   if(_focusCommitInFlight){showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");return Promise.resolve(false);}
   if(_startupResetRecoveryInFlight||_resetRecoveryInFlight||_resetInFlight){
     showToast("⏳ هناك عملية استرداد أو حذف قيد التنفيذ");return Promise.resolve(false);
@@ -12433,9 +13470,16 @@ function _commitFocusTaskSession(p) {
     });
   _focusCommitPendingPromise=pending;return pending;
 }
-
 function _commitFocusTaskSessionLocked(p) {
   if(!p||!p.snapshot||!_stopwatchTransactionLockDepth)return false;
+  if ((typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())
+      || (_focusTimer && _focusTimer.pendingFocusCommit)) {
+    storageRecoveryRequired = true;
+    showAlertModal("معاملة اعتماد أخرى قيد الاسترداد",
+      "لم نبدأ حفظ جلسة Stopwatch القديمة لأن سجل اعتماد جلسة V2 ما زال معلقًا.");
+    return false;
+  }
   var s=p.snapshot,taskId=p.taskId===undefined?s.taskId:p.taskId;
   var minutes=p.minutesToAdd,completed=p.completed!==false;
   if(!_focusTimerSnapshotMatchesState(s)||s.running!==false||!Number.isInteger(s.baseElapsed)||s.baseElapsed<60
@@ -12468,6 +13512,12 @@ function _commitFocusTaskSessionLocked(p) {
       showAlertModal("جلسة Stopwatch قديمة تحتاج إلى مراجعة","توجد جلسة سابقة بلا معرّف معاملة موثوق؛ لم نضف الدقائق ولم نصفر المؤقت.");return false;}
     var task=tasks.find(function(t){return t&&t.id===taskId;});
     if(!task){showAlertModal("المهمة غير موجودة","لم تعد المهمة المرتبطة موجودة في سجل المهام.");return false;}
+    if (["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); })) {
+      showAlertModal("كاتب جلسة قديم غير متوافق",
+        "هذه المهمة تستخدم سجل رصيد V2؛ أوقفنا كاتب Stopwatch القديم قبل إنشاء المعاملة حتى لا يغيّر الرصيد دون سجل عملية.");
+      return false;
+    }
     var previous=task.actual===undefined||task.actual===null?null:task.actual;
     if(previous!==null&&(!Number.isFinite(previous)||previous<0)){showAlertModal("قيمة مهمة غير صالحة","المدة الفعلية السابقة غير صالحة.");return false;}
     var previousId=task.lastStopwatchTransactionId==null?null:task.lastStopwatchTransactionId;
@@ -12610,10 +13660,17 @@ function _assertCreditMigrationReady() {
           && timerRecord.pendingStopwatchTransaction !== null
           && timerRecord.pendingStopwatchTransaction !== undefined)
         return { ok:false, reason:"pending_legacy_transaction" };
+      if (Object.prototype.hasOwnProperty.call(timerRecord, "pendingFocusCommit")
+          && timerRecord.pendingFocusCommit !== null
+          && timerRecord.pendingFocusCommit !== undefined)
+        return { ok:false, reason:"pending_focus_commit" };
     }
     if (_focusTimer && _focusTimer.pendingStopwatchTransaction !== null
         && _focusTimer.pendingStopwatchTransaction !== undefined)
       return { ok:false, reason:"pending_memory_transaction" };
+    if (_focusTimer && _focusTimer.pendingFocusCommit !== null
+        && _focusTimer.pendingFocusCommit !== undefined)
+      return { ok:false, reason:"pending_memory_focus_commit" };
 
     // The credit migration changes task records, so the main task collection
     // must be as fresh and verified as the timer collection before the gate opens.
@@ -12650,6 +13707,101 @@ function _assertCreditMigrationReady() {
   }
 }
 
+// One-time compatibility bridge from legacy minute balances to the PR #23
+// seconds schema. It is deliberately metadata-only: no historical operation is
+// fabricated and null is never normalized to numeric zero.
+function _migrateLegacyTaskCreditMetadataLocked() {
+  var readiness = _assertCreditMigrationReady();
+  if (!readiness || readiness.ok !== true) return readiness || { ok:false, reason:"migration_gate_failed" };
+  try {
+    var previousRaw = localStorage.getItem(STORAGE_KEY);
+    if (typeof previousRaw !== "string" || previousRaw !== _mainStorageBaselineRaw
+        || _mainStorageExternalChangeObserved || !_mainStorageBaselineReady)
+      return { ok:false, reason:"main_baseline_conflict" };
+    var mainData = JSON.parse(previousRaw);
+    if (!validateV2(mainData) || !Array.isArray(mainData.tasks)
+        || !Array.isArray(tasks) || JSON.stringify(tasks) !== JSON.stringify(mainData.tasks))
+      return { ok:false, reason:"main_record_invalid_or_stale" };
+
+    var previousLedger = Array.isArray(mainData.creditOperations)
+      ? mainData.creditOperations.slice() : [];
+    var migratedTasks = 0;
+    var needsLedgerArray = !Object.prototype.hasOwnProperty.call(mainData, "creditOperations");
+
+    for (var i = 0; i < mainData.tasks.length; i++) {
+      var task = mainData.tasks[i];
+      var fields = ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"];
+      var hasAnyCreditField = fields.some(function(key) {
+        return Object.prototype.hasOwnProperty.call(task, key);
+      });
+      if (hasAnyCreditField) {
+        // A partially migrated or inconsistent task is evidence of an
+        // unsupported write. Never fill missing fields by guessing.
+        if (!_validateTaskCreditFields(task))
+          return { ok:false, reason:"partial_or_invalid_credit_metadata", taskId:task.id };
+        continue;
+      }
+
+      var legacyActual = task.actual;
+      var actualSeconds;
+      if (legacyActual === null) {
+        actualSeconds = null;
+      } else {
+        // The legacy UI stores whole minutes. Fractional or unsafe values have
+        // no unambiguous mapping under the current floor(actualSeconds / 60) rule.
+        if (!Number.isSafeInteger(legacyActual) || legacyActual < 0)
+          return { ok:false, reason:"legacy_actual_not_a_safe_integer", taskId:task.id };
+        actualSeconds = legacyActual * 60;
+        if (!Number.isSafeInteger(actualSeconds))
+          return { ok:false, reason:"legacy_actual_seconds_overflow", taskId:task.id };
+      }
+      task.actualSeconds = actualSeconds;
+      task.creditRevision = 0;
+      task.creditSchemaVersion = 1;
+      task.lastCreditOperationId = null;
+      migratedTasks++;
+    }
+
+    if (needsLedgerArray) mainData.creditOperations = [];
+    var nextLedger = Array.isArray(mainData.creditOperations) ? mainData.creditOperations : null;
+    if (!nextLedger || !_creditOperationLedgerPreservesHistory(previousLedger, nextLedger))
+      return { ok:false, reason:"credit_ledger_history_not_preserved" };
+    if (!validateV2(mainData))
+      return { ok:false, reason:"migrated_main_record_invalid" };
+
+    if (migratedTasks === 0 && !needsLedgerArray)
+      return { ok:true, reason:null, migratedTasks:0, alreadyMigrated:true };
+
+    var nextRaw = JSON.stringify(mainData);
+    if (localStorage.getItem(STORAGE_KEY) !== previousRaw
+        || _mainStorageBaselineRaw !== previousRaw || _mainStorageExternalChangeObserved)
+      return { ok:false, reason:"main_storage_changed_during_migration" };
+    if (!_writeMainStorageRecordVerified(nextRaw)) {
+      storageRecoveryRequired = true;
+      return { ok:false, reason:"migration_write_or_readback_failed" };
+    }
+    var verifiedRaw = localStorage.getItem(STORAGE_KEY);
+    var verified = verifiedRaw === nextRaw ? JSON.parse(verifiedRaw) : null;
+    if (!verified || !validateV2(verified)
+        || JSON.stringify(verified.tasks) !== JSON.stringify(mainData.tasks)) {
+      storageRecoveryRequired = true;
+      _mainStorageBaselineReady = false;
+      return { ok:false, reason:"migration_post_write_verification_failed" };
+    }
+    tasks = verified.tasks;
+    return {
+      ok:true,
+      reason:null,
+      migratedTasks:migratedTasks,
+      alreadyMigrated:migratedTasks === 0
+    };
+  } catch (error) {
+    storageRecoveryRequired = true;
+    console.error("Legacy task credit migration failed:", error);
+    return { ok:false, reason:"migration_storage_read_failed" };
+  }
+}
+
 function _validatePendingStopwatchTransaction(tx) {
   if(!tx||typeof tx!=="object"||Array.isArray(tx))return false;
   if(tx.version!==1||typeof tx.id!=="string"||tx.id.length<8||tx.id.length>160)return false;
@@ -12673,6 +13825,12 @@ function _validatePendingStopwatchTransaction(tx) {
 }
 
 function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
+  if ((typeof _hasPersistedPendingFocusCommit === "function"
+        && _hasPersistedPendingFocusCommit())
+      || (_focusTimer && _focusTimer.pendingFocusCommit)) {
+    storageRecoveryRequired = true;
+    return false;
+  }
   var tx=_focusTimer&&_focusTimer.pendingStopwatchTransaction;
   if(!tx)return true;
   if(!_stopwatchTransactionLockDepth){storageRecoveryRequired=true;showAlertModal("تعذر تأمين استرداد الجلسة","يجب تنفيذ الاسترداد داخل قفل النوافذ الحصري.");return false;}
@@ -12704,6 +13862,9 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
     var legacy=_loadSessions().filter(function(s){return s&&!s.transactionId&&s.startedAt===started
       &&s.taskId===tx.taskId&&s.mode===tx.mode&&s.phase===tx.phase;});
     if(legacy.length)throw new Error("Legacy session matches without transaction identity.");
+    if (["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); }))
+      throw new Error("Legacy Stopwatch transaction cannot overwrite a task protected by the V2 credit ledger.");
     var actual=task.actual==null?null:task.actual;
     var markerPresent=Object.prototype.hasOwnProperty.call(task,"lastStopwatchTransactionId")
       &&task.lastStopwatchTransactionId!==null&&task.lastStopwatchTransactionId!==undefined;
@@ -12798,6 +13959,7 @@ function _probeStartupStopwatchRecovery() {
     var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
     var timerObj = null;
     var tx = null;
+    var focusCommit = null;
     var mainRaw = localStorage.getItem(STORAGE_KEY);
     var bootGeneration = _readPersistedRollingBackupGeneration();
     if (timerRaw !== null) {
@@ -12806,30 +13968,49 @@ function _probeStartupStopwatchRecovery() {
         return {
           pending: true, error: "سجل المؤقت المخزن غير صالح.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: null, expectedTx: null, bootPersistedGeneration: bootGeneration,
-          mainRaw: mainRaw, mainData: null
+          timerObj: null, expectedTx: null, expectedFocusCommit: null,
+          bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
       if (!timerObj || typeof timerObj !== "object" || Array.isArray(timerObj)) {
         return {
           pending: true, error: "سجل المؤقت المخزن ليس كائنًا صالحًا.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: null, expectedTx: null, bootPersistedGeneration: bootGeneration,
-          mainRaw: mainRaw, mainData: null
+          timerObj: null, expectedTx: null, expectedFocusCommit: null,
+          bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
-      if (Object.prototype.hasOwnProperty.call(timerObj, "pendingStopwatchTransaction")
-          && timerObj.pendingStopwatchTransaction !== null
+      if (timerObj.pendingStopwatchTransaction !== null
           && timerObj.pendingStopwatchTransaction !== undefined) {
         tx = timerObj.pendingStopwatchTransaction;
         if (!_validatePendingStopwatchTransaction(tx)) {
           return {
             pending: true, error: "سجل معاملة Stopwatch المعلّقة غير صالح.",
             blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-            timerObj: timerObj, expectedTx: null, bootPersistedGeneration: bootGeneration,
+            timerObj: timerObj, expectedTx: null, expectedFocusCommit: null,
+            bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+          };
+        }
+      }
+      if (timerObj.pendingFocusCommit !== null && timerObj.pendingFocusCommit !== undefined) {
+        focusCommit = timerObj.pendingFocusCommit;
+        if (!_validatePendingFocusCommit(focusCommit)) {
+          return {
+            pending: true, error: "سجل اعتماد جلسة التركيز المعلّق غير صالح.",
+            blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+            timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+            expectedFocusCommit: null, bootPersistedGeneration: bootGeneration,
             mainRaw: mainRaw, mainData: null
           };
         }
+      }
+      if (tx && focusCommit) {
+        return {
+          pending: true, error: "توجد معاملتا Stopwatch واعتماد جلسة V2 متداخلتان.",
+          blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+          timerObj: timerObj, expectedTx: null, expectedFocusCommit: null,
+          bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+        };
       }
     }
     if (bootGeneration === null) {
@@ -12837,40 +14018,45 @@ function _probeStartupStopwatchRecovery() {
         pending: true, error: "تعذرت قراءة جيل النسخ الدوّارة.",
         blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
         timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+        expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
         bootPersistedGeneration: null, mainRaw: mainRaw, mainData: null
       };
     }
     var mainData = null;
-    if (tx && !hasMarkers) {
+    if ((tx || focusCommit) && !hasMarkers) {
       if (mainRaw === null) {
         return {
-          pending: true, error: "السجل الرئيسي للمهام مفقود أثناء وجود معاملة معلّقة.",
+          pending: true, error: "السجل الرئيسي للمهام مفقود أثناء وجود معاملة تركيز معلّقة.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: timerObj, expectedTx: JSON.parse(JSON.stringify(tx)),
+          timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+          expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
           bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
       mainData = JSON.parse(mainRaw);
       if (!mainData || mainData.schemaVersion !== CURRENT_SCHEMA_VERSION || !validateV2(mainData)) {
         return {
-          pending: true, error: "السجل الرئيسي غير صالح أثناء وجود معاملة Stopwatch معلّقة.",
+          pending: true, error: "السجل الرئيسي غير صالح أثناء وجود معاملة تركيز معلّقة.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
-          timerObj: timerObj, expectedTx: JSON.parse(JSON.stringify(tx)),
+          timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+          expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
           bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
     }
     return {
-      pending: hasMarkers || !!tx, error: null,
+      pending: hasMarkers || !!tx || !!focusCommit, error: null,
       blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
       timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+      expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
       bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: mainData
     };
   } catch (e) {
     return {
-      pending: true, error: "تعذر فحص حالة التخزين وسجل Stopwatch قبل التهيئة.",
+      pending: true, error: "تعذر فحص حالة التخزين وسجل المؤقت قبل التهيئة.",
       blockingMarkers: null, markerValues: null, timerRaw: null, timerObj: null,
-      expectedTx: null, bootPersistedGeneration: null, mainRaw: null, mainData: null
+      expectedTx: null, expectedFocusCommit: null,
+      bootPersistedGeneration: null, mainRaw: null, mainData: null
     };
   }
 }
@@ -12891,6 +14077,9 @@ function _readAndValidateResyncBundle() {
       if (!timerObj || typeof timerObj !== "object" || Array.isArray(timerObj)) return null;
       if (timerObj.pendingStopwatchTransaction
           && !_validatePendingStopwatchTransaction(timerObj.pendingStopwatchTransaction)) return null;
+      if (timerObj.pendingFocusCommit
+          && !_validatePendingFocusCommit(timerObj.pendingFocusCommit)) return null;
+      if (timerObj.pendingStopwatchTransaction && timerObj.pendingFocusCommit) return null;
     }
 
     var sessionsRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
@@ -12900,6 +14089,7 @@ function _readAndValidateResyncBundle() {
       if (!Array.isArray(parsedSessions) || parsedSessions.length > FOCUS_MAX_SESSIONS) return null;
       var sessionIds = new Set();
       var transactionIds = new Set();
+      var v2SessionIds = new Set();
       for (var si = 0; si < parsedSessions.length; si++) {
         var session = parsedSessions[si];
         if (!_validateFocusSessionRecord(session)) return null;
@@ -12910,6 +14100,10 @@ function _readAndValidateResyncBundle() {
         if (session.transactionId !== undefined) {
           if (transactionIds.has(session.transactionId)) return null;
           transactionIds.add(session.transactionId);
+        }
+        if (session.recordVersion === 2) {
+          if (v2SessionIds.has(session.sessionId)) return null;
+          v2SessionIds.add(session.sessionId);
         }
       }
       sessionsArr = parsedSessions;
@@ -12988,6 +14182,800 @@ function _applyValidatedResyncBundle(bundle) {
   if (!_applyHydratedFocusTimerRecord(timerCandidate)) return false;
   _loadFocusSettings();
   return true;
+}
+
+
+function _focusCommitDeepEqual(left, right) {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
+    return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (!_focusCommitDeepEqual(left[i], right[i])) return false;
+    }
+    return true;
+  }
+  var leftKeys = Object.keys(left).sort(), rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (var k = 0; k < leftKeys.length; k++) {
+    if (leftKeys[k] !== rightKeys[k]
+        || !_focusCommitDeepEqual(left[leftKeys[k]], right[rightKeys[k]])) return false;
+  }
+  return true;
+}
+
+function _pendingFocusTimerProjectionFromTimer(timer, remainderMs) {
+  if (!timer || timer.running !== false) return null;
+  var remainder = Number.isInteger(remainderMs) ? remainderMs : 0;
+  var projection = {
+    mode: timer.mode,
+    phase: timer.phase,
+    running: false,
+    baseElapsed: timer.baseElapsed,
+    elapsedRemainderMs: remainder,
+    cyclePosition: timer.cyclePosition,
+    taskId: timer.taskId === undefined ? null : timer.taskId,
+    sessionStartAt: timer.sessionStartAt === undefined ? null : timer.sessionStartAt,
+    awaitingConfirmation: timer.awaitingConfirmation === true,
+    pendingPhaseEndedAt: timer.pendingPhaseEndedAt === undefined ? null : timer.pendingPhaseEndedAt,
+    clockAdjusted: timer.clockAdjusted === true,
+    nativeSessionToken: timer.nativeSessionToken || null,
+    handledNotificationActionIds: Array.isArray(timer.handledNotificationActionIds)
+      ? timer.handledNotificationActionIds.slice(-10) : [],
+    pendingNotificationFinish: timer.pendingNotificationFinish
+      ? JSON.parse(JSON.stringify(timer.pendingNotificationFinish)) : null
+  };
+  return _validatePendingFocusTimerProjection(projection) ? projection : null;
+}
+
+function _capturePendingFocusTimerProjection() {
+  return _pendingFocusTimerProjectionFromTimer(_focusTimer, _focusElapsedRemainderMs);
+}
+
+function _pendingFocusTimerAfterProjection(before) {
+  if (!_validatePendingFocusTimerProjection(before)) return null;
+  var after = JSON.parse(JSON.stringify(before));
+  after.phase = "work";
+  after.running = false;
+  after.baseElapsed = 0;
+  after.elapsedRemainderMs = 0;
+  after.cyclePosition = 0;
+  after.sessionStartAt = null;
+  after.awaitingConfirmation = false;
+  after.pendingPhaseEndedAt = null;
+  after.clockAdjusted = false;
+  after.nativeSessionToken = null;
+  after.pendingNotificationFinish = null;
+  return _validatePendingFocusTimerProjection(after) ? after : null;
+}
+
+function _capturePendingFocusCreditSnapshot(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return null;
+  var keys = ["actualSeconds", "actual", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"];
+  if (!keys.every(function(key) { return Object.prototype.hasOwnProperty.call(task, key); })
+      || !_validateTaskCreditFields(task)) return null;
+  var snapshot = {
+    actualSeconds: task.actualSeconds,
+    actual: task.actual,
+    creditRevision: task.creditRevision,
+    creditSchemaVersion: task.creditSchemaVersion,
+    lastCreditOperationId: task.lastCreditOperationId
+  };
+  return _validatePendingFocusCreditSnapshot(snapshot) ? snapshot : null;
+}
+
+function _pendingFocusTaskMatchesCreditSnapshot(task, snapshot) {
+  if (!_capturePendingFocusCreditSnapshot(task) || !_validatePendingFocusCreditSnapshot(snapshot)) return false;
+  var current = _capturePendingFocusCreditSnapshot(task);
+  return current.actualSeconds === snapshot.actualSeconds
+    && current.actual === snapshot.actual
+    && current.creditRevision === snapshot.creditRevision
+    && current.creditSchemaVersion === snapshot.creditSchemaVersion
+    && current.lastCreditOperationId === snapshot.lastCreditOperationId;
+}
+
+function _readPendingFocusSessions() {
+  try {
+    var raw = localStorage.getItem(FOCUS_SESSIONS_KEY);
+    if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_SESSIONS_KEY))
+      _trackSecondaryStorageRead(FOCUS_SESSIONS_KEY, raw);
+    if (_secondaryStorageConflicts[FOCUS_SESSIONS_KEY]
+        || raw !== _secondaryStorageBaselines[FOCUS_SESSIONS_KEY])
+      return { ok: false, reason: "sessions_baseline_conflict", rows: [], raw: raw };
+    var rows = raw === null ? [] : JSON.parse(raw);
+    if (!Array.isArray(rows) || rows.length > FOCUS_MAX_SESSIONS)
+      return { ok: false, reason: "sessions_record_invalid", rows: [], raw: raw };
+    var ids = new Set(), sessionIds = new Set(), transactionIds = new Set();
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!_validateFocusSessionRecord(row)) return { ok: false, reason: "session_invalid", rows: [], raw: raw };
+      if (row.id !== undefined) {
+        if (ids.has(row.id)) return { ok: false, reason: "session_id_duplicate", rows: [], raw: raw };
+        ids.add(row.id);
+      }
+      if (row.transactionId !== undefined) {
+        if (transactionIds.has(row.transactionId))
+          return { ok: false, reason: "session_transaction_duplicate", rows: [], raw: raw };
+        transactionIds.add(row.transactionId);
+      }
+      if (row.recordVersion === 2) {
+        if (sessionIds.has(row.sessionId))
+          return { ok: false, reason: "session_identity_duplicate", rows: [], raw: raw };
+        sessionIds.add(row.sessionId);
+      }
+    }
+    return { ok: true, reason: null, rows: rows, raw: raw };
+  } catch (e) {
+    return { ok: false, reason: "sessions_read_failed", rows: [], raw: null };
+  }
+}
+
+function _writePendingFocusCommitCredit(journal) {
+  if (!_isTaskStorageLockHeld() || !_storageWriteAllowed()
+      || !_validatePendingFocusCommit(journal)) return false;
+  try {
+    var mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null) return false;
+    if (!_mainStorageBaselineReady) {
+      if (!_setMainStorageBaseline(mainRaw)) return false;
+    }
+    if (_mainStorageExternalChangeObserved || mainRaw !== _mainStorageBaselineRaw) return false;
+    var mainData = JSON.parse(mainRaw);
+    if (!validateV2(mainData) || !Array.isArray(mainData.tasks)) return false;
+    var records = Array.isArray(mainData.creditOperations) ? mainData.creditOperations : [];
+    var attempt = _classifyCreditOperationAttempt(records, journal.operation);
+    var task = mainData.tasks.find(function(row) { return row && row.id === journal.taskId; });
+    if (!task) return false;
+    if (attempt.status === "duplicate") {
+      if (!_focusCommitDeepEqual(attempt.record, journal.operation)
+          || !_pendingFocusTaskMatchesCreditSnapshot(task, journal.creditAfter)) return false;
+      tasks = mainData.tasks;
+      _setMainStorageBaseline(mainRaw);
+      return true;
+    }
+    if (attempt.status !== "new"
+        || !_pendingFocusTaskMatchesCreditSnapshot(task, journal.creditBefore)) return false;
+    task.actualSeconds = journal.creditAfter.actualSeconds;
+    task.actual = journal.creditAfter.actual;
+    task.creditRevision = journal.creditAfter.creditRevision;
+    task.creditSchemaVersion = journal.creditAfter.creditSchemaVersion;
+    task.lastCreditOperationId = journal.creditAfter.lastCreditOperationId;
+    mainData.creditOperations = records.slice();
+    mainData.creditOperations.push(journal.operation);
+    if (!_creditOperationLedgerPreservesHistory(records, mainData.creditOperations)
+        || !validateV2(mainData)) return false;
+    var nextRaw = JSON.stringify(mainData);
+    if (localStorage.getItem(STORAGE_KEY) !== mainRaw) return false;
+    localStorage.setItem(STORAGE_KEY, nextRaw);
+    if (localStorage.getItem(STORAGE_KEY) !== nextRaw) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    tasks = mainData.tasks;
+    if (typeof _loadAppSettings === "function") _loadAppSettings(mainData.settings || {});
+    _setMainStorageBaseline(nextRaw);
+    if (typeof _queueAllTaskReminderSync === "function") _queueAllTaskReminderSync();
+    return true;
+  } catch (e) {
+    storageRecoveryRequired = true;
+    console.error("Pending focus credit write failed:", e);
+    return false;
+  }
+}
+
+function _ensurePendingFocusCommitSession(journal) {
+  if (!_isTaskStorageLockHeld() || !_storageWriteAllowed()
+      || !_validatePendingFocusCommit(journal)) return false;
+  var read = _readPendingFocusSessions();
+  if (!read.ok) return false;
+  var found = read.rows.find(function(row) {
+    return row && row.recordVersion === 2 && row.sessionId === journal.operationId;
+  });
+  if (found) return _focusCommitDeepEqual(found, journal.session);
+  if (read.rows.some(function(row) { return row && row.id === journal.session.id; })) return false;
+  var rows = read.rows.slice();
+  if (rows.length >= FOCUS_MAX_SESSIONS) rows = rows.slice(-(FOCUS_MAX_SESSIONS - 1));
+  rows.push(JSON.parse(JSON.stringify(journal.session)));
+  if (!_saveSessions(rows)) return false;
+  var savedRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
+  var savedRows = savedRaw === null ? [] : JSON.parse(savedRaw);
+  var saved = Array.isArray(savedRows) ? savedRows.find(function(row) {
+    return row && row.recordVersion === 2 && row.sessionId === journal.operationId;
+  }) : null;
+  return !!saved && _focusCommitDeepEqual(saved, journal.session);
+}
+
+function _applyPendingFocusTimerProjection(projection) {
+  if (!_validatePendingFocusTimerProjection(projection)) return false;
+  _focusTimer.mode = projection.mode;
+  _focusTimer.phase = projection.phase;
+  _focusTimer.running = false;
+  _focusTimer.baseElapsed = projection.baseElapsed;
+  _focusTimer.startedAt = null;
+  _focusTimer.cyclePosition = projection.cyclePosition;
+  _focusTimer.taskId = projection.taskId;
+  _focusTimer.sessionStartAt = projection.sessionStartAt;
+  _focusTimer.awaitingConfirmation = projection.awaitingConfirmation;
+  _focusTimer.pendingPhaseEndedAt = projection.pendingPhaseEndedAt;
+  _focusTimer.clockAdjusted = projection.clockAdjusted;
+  _focusTimer.nativeSessionToken = projection.nativeSessionToken;
+  _focusTimer.handledNotificationActionIds = projection.handledNotificationActionIds.slice();
+  _focusTimer.pendingNotificationFinish = projection.pendingNotificationFinish
+    ? JSON.parse(JSON.stringify(projection.pendingNotificationFinish)) : null;
+  _focusTimer.nativeClockActive = false;
+  _focusTimer.nativeRestorePending = false;
+  _focusTimer.nativeBootMismatch = false;
+  _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+  _focusTimer.nativeAnchorBootCount = null;
+  _focusTimer.nativeAnchorBaseMs = null;
+  _focusTimer.nativeAnchorWallMs = null;
+  _focusElapsedRemainderMs = projection.elapsedRemainderMs;
+  if (typeof _clearFocusTimerClock === "function") _clearFocusTimerClock();
+  return _focusCommitDeepEqual(_capturePendingFocusTimerProjection(), projection);
+}
+
+function _persistPendingFocusCommitStage(journal, stage) {
+  var order = { prepared: 0, credit_applied: 1, session_applied: 2, timer_applied: 3 };
+  if (!Object.prototype.hasOwnProperty.call(order, stage)
+      || !Object.prototype.hasOwnProperty.call(order, journal && journal.stage)) return false;
+  // Recovery can infer that a later durable step completed before its stage
+  // marker was saved. Never move the durable marker backwards on replay.
+  if (order[stage] <= order[journal.stage]) return true;
+  var next = JSON.parse(JSON.stringify(journal));
+  next.stage = stage;
+  next.updatedAt = new Date().toISOString();
+  if (!_validatePendingFocusCommit(next)) return false;
+  var previous = _focusTimer.pendingFocusCommit;
+  _focusTimer.pendingFocusCommit = next;
+  if (!_saveFocusTimer()) {
+    _focusTimer.pendingFocusCommit = previous;
+    return false;
+  }
+  return true;
+}
+
+function _verifyPendingFocusCommitStorage(journal, requirePendingJournal, allowLaterCredits) {
+  try {
+    var mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null) return false;
+    var mainData = JSON.parse(mainRaw);
+    if (!validateV2(mainData) || !Array.isArray(mainData.tasks)) return false;
+    var records = Array.isArray(mainData.creditOperations) ? mainData.creditOperations : [];
+    var attempt = _classifyCreditOperationAttempt(records, journal.operation);
+    if (attempt.status !== "duplicate" || !_focusCommitDeepEqual(attempt.record, journal.operation)) return false;
+    var task = mainData.tasks.find(function(row) { return row && row.id === journal.taskId; });
+    if (!task) return false;
+    if (allowLaterCredits) {
+      if (!_validateTaskCreditFields(task) || task.creditRevision < journal.creditAfter.creditRevision) return false;
+    } else if (!_pendingFocusTaskMatchesCreditSnapshot(task, journal.creditAfter)) return false;
+
+    var sessions = _readPendingFocusSessions();
+    if (!sessions.ok) return false;
+    var savedSession = sessions.rows.find(function(row) {
+      return row && row.recordVersion === 2 && row.sessionId === journal.operationId;
+    });
+    if (savedSession) {
+      if (!_focusCommitDeepEqual(savedSession, journal.session)) return false;
+    } else if (!allowLaterCredits || sessions.rows.length < FOCUS_MAX_SESSIONS) {
+      return false;
+    }
+
+    var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (timerRaw === null) return false;
+    var timerObj = JSON.parse(timerRaw);
+    if (!timerObj || typeof timerObj !== "object" || Array.isArray(timerObj)
+        || timerObj.pendingStopwatchTransaction) return false;
+    if (requirePendingJournal) {
+      if (!_focusCommitDeepEqual(timerObj.pendingFocusCommit, journal)) return false;
+      var normalized = _normalizeFocusTimerRecord(timerObj, mainData.tasks, true);
+      if (!normalized.valid) return false;
+      var projection = _pendingFocusTimerProjectionFromTimer(normalized.timer, normalized.remainderMs);
+      return !!projection && _focusCommitDeepEqual(projection, journal.timerAfter);
+    }
+    if (timerObj.pendingFocusCommit !== null && timerObj.pendingFocusCommit !== undefined) return false;
+    var finalTimer = _normalizeFocusTimerRecord(timerObj, mainData.tasks, true);
+    if (!finalTimer.valid) return false;
+    if (allowLaterCredits) return true;
+    var finalProjection = _pendingFocusTimerProjectionFromTimer(finalTimer.timer, finalTimer.remainderMs);
+    return !!finalProjection && _focusCommitDeepEqual(finalProjection, journal.timerAfter);
+  } catch (e) {
+    return false;
+  }
+}
+
+function _recoverPendingFocusCommitLocked() {
+  if (!_isTaskStorageLockHeld()) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  var timerRaw, timerObj, journal;
+  try {
+    timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    timerObj = timerRaw === null ? null : JSON.parse(timerRaw);
+    journal = timerObj && timerObj.pendingFocusCommit;
+  } catch (e) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  if (!journal || !_validatePendingFocusCommit(journal)
+      || (timerObj && timerObj.pendingStopwatchTransaction)) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  return _withPendingFocusCommitWrite(journal.operationId, function() {
+    try {
+      if (!_focusCommitDeepEqual(_focusTimer.pendingFocusCommit, journal)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_writePendingFocusCommitCredit(journal)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_persistPendingFocusCommitStage(journal, "credit_applied")) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      journal = _focusTimer.pendingFocusCommit;
+      if (!_ensurePendingFocusCommitSession(journal)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_persistPendingFocusCommitStage(journal, "session_applied")) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      journal = _focusTimer.pendingFocusCommit;
+      var currentProjection = _capturePendingFocusTimerProjection();
+      if (_focusCommitDeepEqual(currentProjection, journal.timerBefore)) {
+        if (!_applyPendingFocusTimerProjection(journal.timerAfter)) {
+          storageRecoveryRequired = true;
+          return false;
+        }
+        if (!_saveFocusTimer()) {
+          // Keep the in-memory view aligned with the last proven projection.
+          // A write that reached storage but failed verification will be
+          // reconciled from the durable timer record on the next recovery pass.
+          _applyPendingFocusTimerProjection(journal.timerBefore);
+          storageRecoveryRequired = true;
+          return false;
+        }
+      } else if (!_focusCommitDeepEqual(currentProjection, journal.timerAfter)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_persistPendingFocusCommitStage(_focusTimer.pendingFocusCommit, "timer_applied")) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      journal = _focusTimer.pendingFocusCommit;
+      if (!_verifyPendingFocusCommitStorage(journal, true, false)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+
+      _focusTimer.pendingFocusCommit = null;
+      if (!_saveFocusTimer()) {
+        _focusTimer.pendingFocusCommit = journal;
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (!_verifyPendingFocusCommitStorage(journal, false, false)) {
+        _focusTimer.pendingFocusCommit = journal;
+        _withPendingFocusCommitWrite(journal.operationId, function() {
+          _focusTimer.pendingFocusCommit = journal;
+          return _saveFocusTimer();
+        }, true);
+        storageRecoveryRequired = true;
+        return false;
+      }
+      if (typeof _storeRollingRecoveryBackup === "function")
+        _storeRollingRecoveryBackup("focus-commit", 0);
+      return true;
+    } catch (e) {
+      _focusTimer.pendingFocusCommit = journal;
+      storageRecoveryRequired = true;
+      console.error("Pending focus commit recovery failed:", e);
+      return false;
+    }
+  });
+}
+
+function _verifyPendingFocusCommitSiblingOutcome(journal, bundle) {
+  if (!_validatePendingFocusCommit(journal) || !bundle
+      || !bundle.mainData || !Array.isArray(bundle.mainData.tasks)
+      || !bundle.timerObj || bundle.timerObj.pendingFocusCommit
+      || bundle.timerObj.pendingStopwatchTransaction) return false;
+  return _verifyPendingFocusCommitStorage(journal, false, true);
+}
+
+function _recoverPendingFocusCommitFromStartup(expectedJournal, lockedProbe, initialProbe) {
+  if (!_isTaskStorageLockHeld()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "lock_not_held" };
+  }
+  var currentProbe = lockedProbe || _probeStartupStopwatchRecovery();
+  var firstProbe = initialProbe || currentProbe;
+  if (!expectedJournal || !_validatePendingFocusCommit(expectedJournal)
+      || !currentProbe || currentProbe.error) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_probe_invalid" };
+  }
+  var markers = currentProbe.blockingMarkers || {};
+  if (Object.keys(markers).some(function(key) { return markers[key] === true; })) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_marker_overlap" };
+  }
+  var activeJournal = currentProbe.expectedFocusCommit || null;
+  if (activeJournal && !_focusCommitDeepEqual(activeJournal, expectedJournal)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_identity_changed" };
+  }
+
+  var bundle = _readAndValidateResyncBundle();
+  if (!bundle || !_applyValidatedResyncBundle(bundle)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_resync_bundle_invalid" };
+  }
+
+  var previousRecoveryFlag = storageRecoveryRequired;
+  storageRecoveryRequired = false;
+  var recovered;
+  if (activeJournal) {
+    var previousWriteDepth = typeof _startupStopwatchRecoveryWriteDepth === "number"
+      ? _startupStopwatchRecoveryWriteDepth : 0;
+    _startupStopwatchRecoveryWriteDepth = previousWriteDepth + 1;
+    try { recovered = _recoverPendingFocusCommitLocked(); }
+    finally { _startupStopwatchRecoveryWriteDepth = previousWriteDepth; }
+  } else {
+    recovered = _verifyPendingFocusCommitSiblingOutcome(expectedJournal, bundle);
+  }
+  if (!recovered) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    return { ok: false, reason: activeJournal
+      ? "focus_commit_recovery_failed" : "focus_commit_sibling_outcome_unproven" };
+  }
+
+  storageRecoveryRequired = false;
+  if (typeof _flushPendingCorruptStorageSnapshotsInsideLock === "function"
+      && !_flushPendingCorruptStorageSnapshotsInsideLock()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "corrupt_snapshot_preservation_failed" };
+  }
+  var postInit = _runPostRecoveryPersistedInitInsideLock();
+  if (!postInit.ok) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_post_init_failed", detail: postInit.reason };
+  }
+  if (!_finishStartupInitializationInsideLock()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_startup_finalize_failed" };
+  }
+  return { ok: true, recovered: activeJournal ? "replayed" : "sibling_commit_verified" };
+}
+
+function _newPendingFocusCommitUuid() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+      return crypto.randomUUID();
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      var bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      var hex = Array.from(bytes).map(function(byte) {
+        return byte.toString(16).padStart(2, "0");
+      }).join("");
+      return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-"
+        + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+    }
+  } catch (e) {}
+  return null;
+}
+
+// V2-only commit entry point. It requires an already-migrated task credit
+// snapshot; the legacy Stopwatch writer remains unchanged and separate.
+function _focusCommitLedgerCanAcceptOperation(mainData, taskId, creditSnapshot) {
+  if (!mainData || !validateV2(mainData) || !Array.isArray(mainData.tasks)
+      || !Array.isArray(mainData.creditOperations)
+      || mainData.creditOperations.length >= 10000
+      || JSON.stringify(mainData.tasks) !== JSON.stringify(tasks)) return false;
+  var persistedTask = mainData.tasks.find(function(row) { return row && row.id === taskId; });
+  return !!persistedTask && _pendingFocusTaskMatchesCreditSnapshot(persistedTask, creditSnapshot);
+}
+
+function _commitFocusSessionV2Locked(sessionFields) {
+  if (!_isTaskStorageLockHeld() || !sessionFields
+      || typeof sessionFields !== "object" || Array.isArray(sessionFields)
+      || _focusTimer.running !== false || _focusTimer.pendingStopwatchTransaction
+      || _focusTimer.pendingFocusCommit
+      || _hasPersistedPendingFocusCommit()) return false;
+  var timerBefore = _capturePendingFocusTimerProjection();
+  if (!timerBefore || timerBefore.taskId === null
+      || timerBefore.mode !== sessionFields.mode || timerBefore.phase !== "work") return false;
+  var task = tasks.find(function(row) { return row && row.id === timerBefore.taskId; });
+  var creditBefore = _capturePendingFocusCreditSnapshot(task);
+  if (!creditBefore || creditBefore.creditRevision >= Number.MAX_SAFE_INTEGER) return false;
+  // Refuse a full or stale append-only ledger before creating the durable
+  // journal. Otherwise a capacity failure would leave a transaction that can
+  // never advance and would unnecessarily lock normal writes.
+  var mainRaw;
+  var mainData;
+  try {
+    mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null || !_mainStorageBaselineReady
+        || _mainStorageExternalChangeObserved || mainRaw !== _mainStorageBaselineRaw) return false;
+    mainData = JSON.parse(mainRaw);
+  } catch (ledgerReadError) {
+    return false;
+  }
+  if (!_focusCommitLedgerCanAcceptOperation(mainData, timerBefore.taskId, creditBefore)) return false;
+  var measured = sessionFields.durationSec;
+  var credited = sessionFields.creditedSeconds;
+  if (!Number.isSafeInteger(measured) || measured < 0
+      || !Number.isSafeInteger(credited) || credited < 0
+      || (sessionFields.creditSource !== "measured"
+        && sessionFields.creditSource !== "user_adjusted")) return false;
+  if (sessionFields.activeDurationMs !== timerBefore.baseElapsed * 1000
+      + timerBefore.elapsedRemainderMs
+      || measured !== Math.floor(sessionFields.activeDurationMs / 1000)
+      || sessionFields.taskId !== timerBefore.taskId
+      || !Number.isFinite(timerBefore.sessionStartAt)
+      || new Date(timerBefore.sessionStartAt).toISOString() !== sessionFields.startedAt) return false;
+
+  var sessions = _readPendingFocusSessions();
+  if (!sessions.ok) return false;
+  var sessionId = _newPendingFocusCommitUuid();
+  if (!sessionId
+      || mainData.creditOperations.some(function(row) { return row.operationId === sessionId; })
+      || sessions.rows.some(function(row) { return row && row.sessionId === sessionId; })) return false;
+  var existingIdentity = sessions.rows.some(function(row) {
+    return row && row.startedAt === sessionFields.startedAt
+      && row.taskId === timerBefore.taskId
+      && row.mode === timerBefore.mode && row.phase === timerBefore.phase;
+  });
+  if (existingIdentity) return false;
+  var nextNumericId = sessions.rows.reduce(function(max, row) {
+    return Math.max(max, Number.isSafeInteger(row && row.id) ? row.id : 0);
+  }, 0) + 1;
+  if (!Number.isSafeInteger(nextNumericId) || nextNumericId <= 0) return false;
+  var session = Object.assign({}, sessionFields, {
+    id: nextNumericId,
+    recordVersion: 2,
+    sessionId: sessionId
+  });
+  if (!_validateFocusSessionRecordV2(session)) return false;
+
+  var previousSeconds = creditBefore.actualSeconds;
+  var baseSeconds = previousSeconds === null ? 0 : previousSeconds;
+  var targetSeconds = credited === 0 && previousSeconds === null
+    ? null : baseSeconds + credited;
+  if (!Number.isSafeInteger(baseSeconds + credited)) return false;
+  var operation = {
+    recordVersion: 1,
+    operationId: sessionId,
+    kind: "session",
+    taskId: timerBefore.taskId,
+    revision: creditBefore.creditRevision + 1,
+    previousSeconds: previousSeconds,
+    targetSeconds: targetSeconds,
+    source: session.creditSource,
+    sessionId: sessionId,
+    createdAt: session.endedAt,
+    measuredSeconds: measured,
+    creditedSeconds: credited
+  };
+  var creditAfter = {
+    actualSeconds: targetSeconds,
+    actual: targetSeconds === null ? null : Math.floor(targetSeconds / 60),
+    creditRevision: creditBefore.creditRevision + 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: sessionId
+  };
+  var timerAfter = _pendingFocusTimerAfterProjection(timerBefore);
+  var nowIso = new Date().toISOString();
+  var journal = {
+    protocolVersion: 1,
+    operationId: sessionId,
+    taskId: timerBefore.taskId,
+    operation: operation,
+    session: session,
+    creditBefore: creditBefore,
+    creditAfter: creditAfter,
+    timerBefore: timerBefore,
+    timerAfter: timerAfter,
+    stage: "prepared",
+    createdAt: nowIso,
+    updatedAt: nowIso
+  };
+  if (!_validatePendingFocusCommit(journal)) return false;
+  _focusTimer.pendingFocusCommit = journal;
+  var persisted = _withPendingFocusCommitWrite(sessionId, function() {
+    if (!_saveFocusTimer()) return false;
+    return _recoverPendingFocusCommitLocked();
+  }, true);
+  if (!persisted) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  return true;
+}
+
+function _commitFocusSessionV2(sessionFields) {
+  if (_isTaskStorageLockHeld()) return _commitFocusSessionV2Locked(sessionFields);
+  return _withStopwatchTransactionLock(function() {
+    return _commitFocusSessionV2Locked(sessionFields);
+  });
+}
+
+// All task-linked trusted work sessions use this durable V2 writer. Stopwatch
+// sessions may preserve measured duration and user-approved credit separately;
+// clock-adjusted snapshots are rejected before entering this function.
+function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasuredCredit) {
+  if (!snapshot || !task || snapshot.running !== false
+      || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+      || snapshot.phase !== "work" || snapshot.clockAdjusted === true
+      || !Number.isSafeInteger(minutesToAdd) || minutesToAdd < 0 || minutesToAdd > 1000000
+      || !Number.isSafeInteger(snapshot.baseElapsed) || snapshot.baseElapsed < 0
+      || !Number.isInteger(snapshot.elapsedRemainderMs)
+      || snapshot.elapsedRemainderMs < 0 || snapshot.elapsedRemainderMs >= 1000
+      || !Number.isFinite(snapshot.sessionStartAt) || snapshot.sessionStartAt < 0
+      || task.id !== snapshot.taskId) return null;
+
+  var activeDurationMs = snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs;
+  var durationSec = Math.floor(activeDurationMs / 1000);
+  var creditedSeconds = snapshot.mode === "pomodoro" && useMeasuredCredit === true
+    ? durationSec : minutesToAdd * 60;
+  var plannedDurationMs = snapshot.mode === "pomodoro"
+    ? POMODORO_WORK_SEC * 1000 : null;
+  if (!Number.isSafeInteger(activeDurationMs) || activeDurationMs < 60000
+      || !Number.isSafeInteger(durationSec) || !Number.isSafeInteger(creditedSeconds)
+      || (plannedDurationMs !== null
+        && (!Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0))) return null;
+
+  var started = new Date(snapshot.sessionStartAt);
+  var endedMs = Number.isFinite(snapshot.pendingPhaseEndedAt)
+    ? snapshot.pendingPhaseEndedAt : Date.now();
+  var ended = new Date(endedMs);
+  if (!Number.isFinite(started.getTime()) || !Number.isFinite(ended.getTime())
+      || ended.getTime() < started.getTime()) return null;
+
+  var outcome = snapshot.mode === "stopwatch" ? "stopped"
+    : (activeDurationMs >= plannedDurationMs ? "completed" : "ended_early");
+  return {
+    mode: snapshot.mode,
+    phase: "work",
+    taskId: task.id,
+    taskName: typeof task.name === "string" ? task.name : "",
+    startedAt: started.toISOString(),
+    endedAt: ended.toISOString(),
+    activeDurationMs: activeDurationMs,
+    durationSec: durationSec,
+    plannedDurationMs: plannedDurationMs,
+    creditedSeconds: creditedSeconds,
+    creditSource: creditedSeconds === durationSec ? "measured" : "user_adjusted",
+    outcome: outcome,
+    clockSource: snapshot.nativeSessionToken ? "android_elapsed_realtime" : "performance_now",
+    clockTrust: "trusted",
+    clockAdjusted: false,
+    completed: outcome === "completed"
+  };
+}
+
+// The unified task-session dispatcher enters here for every linked, trusted
+// Pomodoro or Stopwatch work save, including user-adjusted Stopwatch minutes.
+function _commitPendingFocusSessionV2(params) {
+  if (!params || !params.snapshot) return Promise.resolve(false);
+  if (_focusCommitPendingPromise) return _focusCommitPendingPromise;
+  if (_focusCommitInFlight) {
+    showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");
+    return Promise.resolve(false);
+  }
+  if (_startupResetRecoveryInFlight || _resetRecoveryInFlight || _resetInFlight
+      || storageRecoveryRequired || _focusTimerExternalConflict) {
+    showAlertModal("الحفظ محمي",
+      "توجد حالة استرداد أو تعارض مؤقت غير محسوم؛ لم نبدأ معاملة جلسة V2.");
+    return Promise.resolve(false);
+  }
+
+  var releaseHold = _acquireRollingRecoveryCheckpointHold(true);
+  var pending = _withStopwatchTransactionLock(function() {
+    if (_focusCommitInFlight || storageRecoveryRequired || _focusTimerExternalConflict) return false;
+    var migration = _migrateLegacyTaskCreditMetadataLocked();
+    if (!migration || migration.ok !== true) {
+      showAlertModal("تعذر تجهيز رصيد المهمة",
+        "لم نُنشئ معاملة الجلسة لأن ترحيل رصيد المهمة أو التحقق من خط الأساس لم يكتمل. السبب: "
+          + (migration && migration.reason ? migration.reason : "unknown"));
+      return false;
+    }
+    var snapshot = params.snapshot;
+    if (!_focusTimerSnapshotMatchesState(snapshot) || snapshot.running !== false
+        || snapshot.taskId === null || snapshot.taskId === undefined
+        || snapshot.phase !== "work"
+        || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+        || snapshot.clockAdjusted === true) {
+      showAlertModal("تعارض لقطة الجلسة",
+        "تغيرت حالة المؤقت أو لم تعد جلسة العمل صالحة لعقد V2؛ لم نكتب اعتمادًا.");
+      return false;
+    }
+    var task = tasks.find(function(row) { return row && row.id === snapshot.taskId; });
+    if (!task || !_capturePendingFocusCreditSnapshot(task)) {
+      showAlertModal("رصيد المهمة غير جاهز",
+        "لم تجتز المهمة ترحيل رصيد V2؛ لم نُسجل الجلسة أو نغيّر الرصيد.");
+      return false;
+    }
+    var baseline = _focusCommitBaselinesMatch(snapshot);
+    if (!baseline) {
+      showAlertModal("تعارض خط الأساس",
+        "لم نتحقق من خطوط أساس المهمة والمؤقت والجلسات؛ لم ننفذ معاملة V2.");
+      return false;
+    }
+    var sessionFields = _buildPendingFocusSessionFields(
+      snapshot, task, params.minutesToAdd, params.useMeasuredCredit === true);
+    if (!sessionFields) {
+      showAlertModal("بيانات الجلسة غير صالحة",
+        "تعذر بناء سجل V2 موثوق من لقطة المؤقت والقيمة المعتمدة؛ بقيت البيانات دون تعديل.");
+      return false;
+    }
+
+    _focusCommitInFlight = true;
+    _renderFocusTimer();
+    var committed = _commitFocusSessionV2Locked(sessionFields);
+    if (!committed) {
+      if (_focusTimer.pendingFocusCommit) storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof params._releaseCheckpointHold === "function") {
+      params._releaseCheckpointHold();
+      releaseHold = null;
+    } else if (releaseHold) {
+      releaseHold();
+      releaseHold = null;
+    }
+    if (!_completeRollingRecoveryCheckpoint("focus-session-v2-commit",
+        "حُفظت جلسة التركيز", "حُفظت الجلسة لكن تعذر التحقق من لقطة استرداد متسقة؛ أوقفنا الكتابة اللاحقة.")) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    if (typeof params.onCommitted === "function"
+        && _withFocusCommitWrite(function() {
+          return params.onCommitted();
+        }) !== true) {
+      showAlertModal("حُفظت الجلسة ولم يكتمل الانتقال",
+        "لم يُرجع callback الانتقال true؛ لم نعلن بدء الجلسة التالية.");
+      return false;
+    }
+    if (params.successToast) showToast(params.successToast);
+    // The V2 writer updates the persisted task balance and the in-memory task
+    // array. Refresh every task-derived view now; otherwise cards and gap
+    // analytics remain stale until the next full app load.
+    try {
+      if (typeof renderTasks === "function") renderTasks();
+      if (typeof renderWeeklyReport === "function") renderWeeklyReport();
+      if (typeof renderStats === "function") renderStats();
+      if (typeof renderTypeGapAnalysis === "function") renderTypeGapAnalysis();
+      if (typeof renderFocusSessionsCard === "function") renderFocusSessionsCard();
+    } catch (renderError) {
+      console.warn("Focus session committed, but one or more task views could not refresh:", renderError);
+    }
+    return true;
+  }).catch(function(error) {
+    if (_focusTimer && _focusTimer.pendingFocusCommit) storageRecoveryRequired = true;
+    console.error("Pending focus session commit failed:", error);
+    showAlertModal("تعذر تأمين معاملة جلسة التركيز",
+      "لم نتابع عملية قد تتداخل مع نافذة أخرى؛ بقي سجل الاسترداد محفوظًا.");
+    return false;
+  }).finally(function() {
+    if (releaseHold) releaseHold();
+    _focusCommitInFlight = false;
+    if (_focusCommitPendingPromise === pending) _focusCommitPendingPromise = null;
+    _renderFocusTimer();
+  });
+  _focusCommitPendingPromise = pending;
+  return pending;
 }
 
 function _verifySiblingTransactionOutcome(bundle, expectedTx, bootPersistedGeneration) {
@@ -13107,6 +15095,10 @@ function _recoverPendingStopwatchSaveFromStartup(expectedTx, bootPersistedGenera
   if (lockedProbe.error) {
     storageRecoveryRequired = true;
     return { ok: false, reason: "locked_probe_failed" };
+  }
+  if (lockedProbe.expectedFocusCommit) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "v2_focus_commit_requires_dedicated_recovery" };
   }
   var initialProbe = probeSnapshot || lockedProbe;
   if (JSON.stringify(lockedProbe.markerValues) !== JSON.stringify(initialProbe.markerValues)) {
@@ -13338,6 +15330,27 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
   }
   var markers = lockedProbe.blockingMarkers || {};
   var markerCount = Object.keys(markers).filter(function(key) { return markers[key]; }).length;
+  var initialFocusCommit = initialProbe.expectedFocusCommit || null;
+  var currentFocusCommit = lockedProbe.expectedFocusCommit || null;
+  if ((initialFocusCommit || currentFocusCommit) && markerCount > 0) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_and_recovery_marker_overlap" };
+  }
+  if (initialFocusCommit && currentFocusCommit
+      && JSON.stringify(initialFocusCommit) !== JSON.stringify(currentFocusCommit)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "focus_commit_identity_changed_while_waiting" };
+  }
+  if (currentFocusCommit) {
+    if (initialFocusCommit && lockedProbe.timerRaw !== initialProbe.timerRaw) {
+      storageRecoveryRequired = true;
+      return { ok: false, reason: "focus_commit_storage_snapshot_changed" };
+    }
+    return _recoverPendingFocusCommitFromStartup(currentFocusCommit, lockedProbe, initialProbe);
+  }
+  if (initialFocusCommit) {
+    return _recoverPendingFocusCommitFromStartup(initialFocusCommit, lockedProbe, initialProbe);
+  }
   var initialTx = initialProbe.expectedTx || null;
   var currentTx = lockedProbe.expectedTx || null;
   var siblingMayHaveCommitted = !!initialTx && !currentTx && markerCount === 0;
@@ -13393,7 +15406,8 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
     return { ok: false, reason: "main_storage_baseline_capture_failed" };
   }
   var bundle = _readAndValidateResyncBundle();
-  if (!bundle || (bundle.timerObj && bundle.timerObj.pendingStopwatchTransaction)) {
+  if (!bundle || (bundle.timerObj
+      && (bundle.timerObj.pendingStopwatchTransaction || bundle.timerObj.pendingFocusCommit))) {
     storageRecoveryRequired = true;
     return { ok: false, reason: "normal_startup_bundle_invalid_or_transaction_present" };
   }
@@ -13442,7 +15456,7 @@ function _applyStopwatchSave(elapsedSec,task,minutesToAdd,snapshot) {
 
 function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
-  return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
+  return frozen?_commitFocusTaskSession({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
 function _cancelPendingNotificationFinish() {
   if (!_focusTimer.pendingNotificationFinish) return true;
@@ -13464,13 +15478,20 @@ function _cancelPendingNotificationFinish() {
 function _continueFocusTimerFinish(snapshot) {
   if (!snapshot) return Promise.resolve(false);
   var elapsed = snapshot.baseElapsed;
+  var isBreak = snapshot.mode === "pomodoro" && snapshot.phase !== "work";
+  var task = snapshot.taskId !== null ? tasks.find(function(t) { return t.id === snapshot.taskId; }) : null;
+  if (_isClockAdjustedV2WorkSession(snapshot)) {
+    _showClockAdjustedV2ReviewDialog(snapshot, {
+      discardText: "تجاهل وتصفير",
+      successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+    return true;
+  }
   if (elapsed < 60) {
     var message = snapshot.mode === "pomodoro" && snapshot.phase !== "work"
       ? "☕ الاستراحة أقل من دقيقة — أُغلقت دون تسجيل" : "⏱️ الجلسة أقل من دقيقة — أُلغيت";
     return _discardShortFocusSession({ snapshot: snapshot, successToast: message });
   }
-  var isBreak = snapshot.mode === "pomodoro" && snapshot.phase !== "work";
-  var task = snapshot.taskId !== null ? tasks.find(function(t) { return t.id === snapshot.taskId; }) : null;
   if (isBreak || !task) {
     return _commitFocusTaskSession({
       snapshot: snapshot, taskId: null, allowUnlinkedTaskSnapshotLink: isBreak,
@@ -13520,11 +15541,13 @@ function _continueFocusTimerFinish(snapshot) {
   };
   var save = document.createElement("button");
   save.className = "btn-primary";
-  save.textContent = "+ " + minutes + " د";
+  save.textContent = snapshot.mode === "pomodoro" ? "حفظ الوقت المقاس" : "+ " + minutes + " د";
   save.onclick = function() {
     closeModal();
     _pendingFinishDialogShown = false;
-    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot))
+    Promise.resolve(_applyTimerFinish(
+        elapsed, task, minutes, snapshot.phase, snapshot, snapshot.mode === "pomodoro"
+      ))
       .then(function(ok) {
         if (!ok && _focusTimer.pendingNotificationFinish) {
           _pendingFinishDialogShown = false;
@@ -13615,11 +15638,20 @@ function finishTimer(_nativeClockSynchronized) {
   return _continueFocusTimerFinish(snapshot);
 }
 
-function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot) {
+function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnapshot,useMeasuredCredit) {
   var snapshot=frozenSnapshot||_captureFocusTimerSnapshot();
   if(!snapshot||snapshot.baseElapsed!==elapsedSec||snapshot.phase!==capturedPhase)return Promise.resolve(false);
-  return _commitFocusTaskSession({snapshot:snapshot,taskId:snapshot.taskId,minutesToAdd:minutesToAdd,
-    completed:true,successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"});
+  var request = {
+    snapshot:snapshot, taskId:snapshot.taskId, minutesToAdd:minutesToAdd,
+    useMeasuredCredit:useMeasuredCredit === true,
+    completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
+  };
+  // Every linked work-session finish is routed through the shared
+  // schema-aware dispatcher. It chooses the initial V2 entry for trusted
+  // measured Pomodoro/exact Stopwatch sessions, preserves V1 compatibility
+  // for legacy adjusted/manual Stopwatch sessions, and never sends V2 tasks
+  // back to the legacy writer.
+  return _commitFocusTaskSession(request);
 }
 function _resetAfterSession() {
   if (_focusTimerExternalConflict) {
@@ -13733,6 +15765,13 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
   document.getElementById('modalBody').innerHTML='<p style="margin:0;line-height:1.7;">'+description+'</p>';
   var footer=document.getElementById('modalFooter');footer.innerHTML='';
   function switchNext(){return typeof onSwitch==="function"&&onSwitch()===true;}
+  if (_isClockAdjustedV2WorkSession(snapshot)) {
+    return _showClockAdjustedV2ReviewDialog(snapshot, {
+      discardText: "تجاهل والانتقال",
+      onDiscarded: switchNext,
+      successToast: "⚪ أُلغيت الجلسة غير الموثوقة دون اعتمادها"
+    });
+  }
   var cancel=document.createElement('button');cancel.className='btn-ghost';cancel.textContent='إلغاء';
   cancel.onclick=function(){
     closeModal();
@@ -13762,7 +15801,8 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
     var isBreak=mode==='pomodoro'&&phase!=='work';
     _commitFocusTaskSession({snapshot:snapshot,taskId:taskLinked?currentId:null,
       allowUnlinkedTaskSnapshotLink:isBreak,minutesToAdd:taskLinked?Math.max(1,Math.round(elapsed/60)):0,
-      completed:true,onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
+      useMeasuredCredit:taskLinked&&mode==='pomodoro',completed:!isBreak,
+      onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
   };
   footer.appendChild(cancel);footer.appendChild(discard);footer.appendChild(save);
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
@@ -13845,6 +15885,10 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
   if(!_focusTimer.running&&_focusTimer.taskId===taskId&&_getElapsedSec()>0){toggleTimer();_scrollToTimer();return Promise.resolve(true);}
   var elapsed=_getElapsedSec(),hasSession=_focusTimer.running||elapsed>0;
   if(hasSession&&elapsed<60){
+    if (_isClockAdjustedV2WorkSession(_focusTimer)) {
+      _showSessionTransitionDialog(taskId,_beginNewSession);
+      return Promise.resolve(true);
+    }
     var snapshot=_freezeFocusTimerForDecision();if(!snapshot)return Promise.resolve(false);
     return _discardShortFocusSession({snapshot:snapshot,onDiscarded:_beginNewSession,
       successToast:'⏱️ أُلغيت الجلسة القصيرة وبدأت جلسة المهمة الجديدة'});
@@ -14674,6 +16718,16 @@ function _completeNormalStartupInit(options) {
   if (!opts.focusStateAlreadyLoaded) {
     _loadFocusTimer();
     _loadFocusSettings();
+  }
+  if (!storageRecoveryRequired && _focusTimer.pendingFocusCommit) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    showAlertModal("استرداد اعتماد جلسة مطلوب",
+      "ظهر سجل اعتماد جلسة معلّق بعد الفحص الأولي. لم يبدأ التطبيق الكتابة؛ أعد محاولة استرداد التخزين.");
+    renderAll();
+    _renderFocusTimer();
+    return false;
   }
   if (!storageRecoveryRequired && _focusTimer.pendingStopwatchTransaction) {
     storageRecoveryRequired = true;

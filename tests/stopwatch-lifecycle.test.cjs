@@ -19,6 +19,11 @@ function extractFunction(name) {
   assert.ok(match, 'function ' + name + ' exists in index.html');
   const source = match[0];
   const helpers = [];
+  if (name !== '_isClockAdjustedV2WorkSession'
+      && /\b_isClockAdjustedV2WorkSession\s*\(/.test(source)) {
+    helpers.push(extractFunction('_isFocusTaskCreditSchemaV2'));
+    helpers.push(extractFunction('_isClockAdjustedV2WorkSession'));
+  }
   if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
     helpers.push('function _isTaskStorageLockHeld() { return true; }');
   }
@@ -102,7 +107,9 @@ test('Stopwatch save refuses to delegate without a valid frozen snapshot', async
 function createResetTimerHarness(elapsed) {
   const calls = [];
   const sandbox = {
-    _focusTimer: { mode: 'stopwatch', running: false, baseElapsed: elapsed },
+    tasks: [],
+    _focusTimer: { mode: 'stopwatch', phase: 'work', taskId: null,
+      mode: 'stopwatch', running: false, baseElapsed: elapsed, clockAdjusted: false },
     _focusTimerExternalConflict: false,
     _isTaskStorageLockHeld: () => true,
     _withTaskStorageLock: callback => callback(),
