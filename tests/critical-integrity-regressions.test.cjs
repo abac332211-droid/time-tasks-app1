@@ -9,7 +9,7 @@ function extractFunction(name) {
   const marker = 'function ' + name + '(';
   const start = html.indexOf(marker);
   assert.notEqual(start, -1, 'missing ' + name);
-  const end = html.indexOf('\\n}', start);
+  const end = html.indexOf('\n}', start);
   assert.notEqual(end, -1, 'missing end for ' + name);
   return html.slice(start, end + 2);
 }
@@ -74,12 +74,12 @@ test('away confirmation dismissal releases the modal guard but preserves pending
 });
 
 test('timer decision modals expose their cancel controls to backdrop and Escape handling', () => {
-  assert.match(extractFunction('_showSessionTransitionDialog'), /cancelBtn\\.id = 'modalCancelBtn'/);
-  assert.match(extractFunction('_showStopwatchSaveDialog'), /cancelBtn\\.id = 'modalCancelBtn'/);
-  assert.match(extractFunction('finishTimer'), /cancelBtn\\.id = 'modalCancelBtn'/);
+  assert.match(extractFunction('_showSessionTransitionDialog'), /cancelBtn\.id = 'modalCancelBtn'/);
+  assert.match(extractFunction('_showStopwatchSaveDialog'), /cancelBtn\.id = 'modalCancelBtn'/);
+  assert.match(extractFunction('finishTimer'), /cancelBtn\.id = 'modalCancelBtn'/);
 });
 
 test('session history safety ceiling is raised without automatic truncation', () => {
   assert.match(html, /FOCUS_MAX_SESSIONS = 10000/);
-  assert.doesNotMatch(html, /valid\\s*=\\s*valid\\.slice\\(-FOCUS_MAX_SESSIONS\\)/);
+  assert.doesNotMatch(html, /valid\s*=\s*valid\.slice\\(-FOCUS_MAX_SESSIONS\\)/);
 });
