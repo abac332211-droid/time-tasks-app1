@@ -1515,6 +1515,37 @@ var _mainStorageBaselineReady = false;
 var _mainStorageExternalChangeObserved = false;
 var _mainStorageConflictListenerInstalled = false;
 var _secondaryStorageBaselines = Object.create(null);
+var _focusTaskCommitQueue = Promise.resolve();
+var _focusTaskCommitPendingCount = 0;
+var _focusTaskCommitExecuting = false;
+
+function _withFocusTaskCommitLock(callback) {
+  if (typeof callback !== "function") return Promise.reject(new Error("Focus commit callback is invalid."));
+  _focusTaskCommitPendingCount++;
+  function execute() {
+    if (typeof navigator === "undefined" || !navigator.locks
+        || typeof navigator.locks.request !== "function") {
+      throw new Error("The Web Locks API is required for a task-linked focus commit.");
+    }
+    return navigator.locks.request("timeTasksApp-focus-session-commit", { mode: "exclusive" }, function() {
+      _focusTaskCommitExecuting = true;
+      try {
+        var value = callback();
+        if (value && typeof value.then === "function")
+          throw new Error("A focus commit lock callback must be synchronous.");
+        return value;
+      } finally {
+        _focusTaskCommitExecuting = false;
+      }
+    });
+  }
+  var result = _focusTaskCommitQueue.then(execute, execute);
+  _focusTaskCommitQueue = result.then(function() { return undefined; }, function() { return undefined; });
+  return result.finally(function() {
+    _focusTaskCommitPendingCount = Math.max(0, _focusTaskCommitPendingCount - 1);
+  });
+}
+
 var _secondaryStorageConflicts = Object.create(null);
 var _focusTimerExternalConflict = false;
 // String literals are intentional: several key constants are declared later in the file.
@@ -1639,6 +1670,8 @@ function _captureMainStorageBaseline() {
 }
 
 function _storageWriteAllowed() {
+  if (typeof _focusTaskCommitPendingCount !== "undefined"
+      && _focusTaskCommitPendingCount > 0 && !_focusTaskCommitExecuting) return false;
   if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) return false;
   var blockingKeys = [];
   if (typeof IMPORT_IN_PROGRESS_KEY !== "undefined") blockingKeys.push(IMPORT_IN_PROGRESS_KEY);
@@ -2376,6 +2409,9 @@ function validateV2(data) {
     if (typeof t.plannedTime !== "string" || !isValidLocalTime(t.plannedTime)) return false;
     if (t.completedAt !== null && !isValidLocalDateTime(t.completedAt)) return false;
     if (typeof t.createdAt !== "number" || !Number.isFinite(t.createdAt) || t.createdAt <= 0) return false;
+    if (t.lastFocusTransactionId !== undefined && t.lastFocusTransactionId !== null
+        && (typeof t.lastFocusTransactionId !== "string"
+          || t.lastFocusTransactionId.length < 8 || t.lastFocusTransactionId.length > 160)) return false;
     if (t.status !== "done" && t.completedAt !== null) return false;
     if (t.projectId !== undefined && t.projectId !== null) {
       if (typeof t.projectId !== "number" || !Number.isInteger(t.projectId) || t.projectId <= 0) return false;
@@ -3408,6 +3444,11 @@ function _recoverInterruptedReset() {
 }
 
 function saveData() {
+  if (typeof _focusTaskCommitPendingCount !== "undefined"
+      && _focusTaskCommitPendingCount > 0 && !_focusTaskCommitExecuting) {
+    showToast("⏳ توجد معاملة جلسة تركيز قيد الحفظ؛ أعد المحاولة بعد اكتمالها");
+    return false;
+  }
   if (storageRecoveryRequired) {
     console.error("saveData: refusing write — data recovery required");
     showAlertModal("تنبيه الحفظ", "البيانات القديمة لم تُرحَّل بعد. استعدها من نسخة احتياطية، أو احذف كل البيانات من الإعدادات.");
@@ -5953,6 +5994,10 @@ function validateBackup(obj) {
     if (t._sourceTaskId !== undefined && t._sourceTaskId !== null
         && (!Number.isInteger(t._sourceTaskId) || t._sourceTaskId <= 0))
       return { valid: false, reason: "مرجع أصل المهمة المتكررة غير صالح (" + (i+1) + ")." };
+    if (t.lastFocusTransactionId !== undefined && t.lastFocusTransactionId !== null
+        && (typeof t.lastFocusTransactionId !== "string"
+          || t.lastFocusTransactionId.length < 8 || t.lastFocusTransactionId.length > 160))
+      return { valid: false, reason: "معرّف معاملة جلسة التركيز غير صالح (" + (i+1) + ")." };
   }
 
   if (obj.backupFormatVersion >= 2
@@ -7976,8 +8021,7 @@ window.addEventListener("load", function() {
 
 var FOCUS_TIMER_KEY = "timeTasksApp_focusTimer";
 var FOCUS_SESSIONS_KEY = "timeTasksApp_focusSessions";
-// Safety ceiling only; session history is never evicted automatically.
-var FOCUS_MAX_SESSIONS = 10000;
+// No application-level session count cap: retain history until verified storage quota is reached.
 var FOCUS_SETTINGS_KEY = "timeTasksApp_focusSettings";
 var DEFAULT_WORK_MIN = 25, DEFAULT_SHORT_MIN = 5, DEFAULT_LONG_MIN = 15;
 var POMODORO_WORK_SEC = DEFAULT_WORK_MIN * 60;
@@ -9110,9 +9154,6 @@ function _loadSessions() {
       if (sessionValid) valid.push(session);
       else invalid.push(i + 1);
     }
-    if (arr.length > FOCUS_MAX_SESSIONS) {
-      invalid.push("تجاوز حد السجلات الآمن " + FOCUS_MAX_SESSIONS);
-    }
     if (invalid.length) {
       _preserveCorruptStorageSnapshot(FOCUS_SESSIONS_KEY, raw);
       storageRecoveryRequired = true;
@@ -9139,7 +9180,7 @@ function _loadSessions() {
 function _saveSessions(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
-    if (!Array.isArray(arr) || arr.length > FOCUS_MAX_SESSIONS) return false;
+    if (!Array.isArray(arr)) return false;
     var _idsToSave = new Set();
     for (var _si = 0; _si < arr.length; _si++) {
       if (!_validateFocusSessionRecord(arr[_si])) return false;
@@ -9891,7 +9932,7 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
 
 
 
-function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
+function _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd) {
   if (_focusTimer.pendingStopwatchTransaction) {
     if (_recoverPendingStopwatchSave(false)) {
       renderAll();
@@ -10006,6 +10047,21 @@ function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
 }
 
 
+
+function _applyStopwatchSave(elapsedSec, task, minutesToAdd) {
+  if (!task || (minutesToAdd <= 0 && !_focusTimer.pendingStopwatchTransaction)) {
+    return Promise.resolve(_applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd));
+  }
+  return _withFocusTaskCommitLock(function() {
+    return _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd);
+  }).catch(function(error) {
+    console.error("Focus session lock acquisition failed:", error);
+    showAlertModal("تعذر تأمين حفظ جلسة التركيز",
+      "لم يبدأ تعديل رصيد المهمة لأن قفل الحفظ لم يتوفر أو تعذر الحصول عليه. بقي المؤقت متوقفًا؛ أعد المحاولة في نافذة واحدة وتأكد من تشغيل التطبيق عبر HTTPS أو WebView موثوق.");
+    _renderFocusTimer();
+    return false;
+  });
+}
 
 function finishTimer() {
   // Freeze the timer from a single monotonic sample before displaying any decision UI.
@@ -10269,7 +10325,15 @@ function _showSessionTransitionDialog(newTaskId, onSwitch) {
     if (currentTask && elapsed >= 60
         && (modeSnapshot === 'stopwatch' || (modeSnapshot === 'pomodoro' && phaseSnapshot === 'work'))) {
       var committedMinutes = Math.max(1, Math.round(elapsed / 60));
-      if (_applyStopwatchSave(elapsed, currentTask, committedMinutes)) onSwitch();
+      saveBtn.disabled = true;
+      saveBtn.textContent = "جارٍ حفظ الجلسة…";
+      _applyStopwatchSave(elapsed, currentTask, committedMinutes).then(function(committed) {
+        if (committed) onSwitch();
+        else {
+          saveBtn.disabled = false;
+          saveBtn.textContent = "حفظ";
+        }
+      });
       return;
     }
     var _oldActual = currentTask ? currentTask.actual : null;

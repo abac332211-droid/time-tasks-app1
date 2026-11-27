@@ -79,9 +79,9 @@ test('timer decision modals expose their cancel controls to backdrop and Escape 
   assert.match(extractFunction('finishTimer'), /cancelBtn\.id = 'modalCancelBtn'/);
 });
 
-test('session history safety ceiling is raised without automatic truncation', () => {
-  assert.match(html, /FOCUS_MAX_SESSIONS = 10000/);
-  assert.doesNotMatch(html, /valid\s*=\s*valid\.slice\\(-FOCUS_MAX_SESSIONS\\)/);
+test('session history has no app-level count limit or automatic truncation', () => {
+  assert.doesNotMatch(html, /FOCUS_MAX_SESSIONS/);
+  assert.doesNotMatch(html, /valid.*slice\(/);
 });
 
 
@@ -104,4 +104,76 @@ test('deleting a task linked to an active focus session is blocked without touch
   assert.equal(timerWrites, 0);
   assert.equal(sandbox.tasks[0], task);
   assert.equal(sandbox._focusTimer.taskId, 9);
+});
+
+
+test('focus commit lock serializes same-tab work and limits its write permit to the synchronous transaction', async () => {
+  const execution = [];
+  let nativeActive = 0, maxNativeActive = 0;
+  const sandbox = {
+    _focusTaskCommitQueue: Promise.resolve(),
+    _focusTaskCommitPendingCount: 0,
+    _focusTaskCommitExecuting: false,
+    navigator: {
+      locks: {
+        request(name, options, callback) {
+          assert.equal(name, 'timeTasksApp-focus-session-commit');
+          assert.equal(options.mode, 'exclusive');
+          nativeActive++;
+          maxNativeActive = Math.max(maxNativeActive, nativeActive);
+          return Promise.resolve().then(callback).finally(() => { nativeActive--; });
+        }
+      }
+    }
+  };
+  const start = html.indexOf('function _withFocusTaskCommitLock(');
+  const end = html.indexOf('\\n}\\n', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInNewContext(html.slice(start, end + 2), sandbox);
+  const first = sandbox._withFocusTaskCommitLock(() => {
+    execution.push('first');
+    assert.equal(sandbox._focusTaskCommitExecuting, true);
+    return 1;
+  });
+  const second = sandbox._withFocusTaskCommitLock(() => {
+    execution.push('second');
+    assert.equal(sandbox._focusTaskCommitExecuting, true);
+    return 2;
+  });
+  assert.equal(sandbox._focusTaskCommitPendingCount, 2);
+  assert.equal(sandbox._focusTaskCommitExecuting, false,
+    'the write permit is not held while waiting for a lock');
+  assert.deepEqual(await Promise.all([first, second]), [1, 2]);
+  assert.deepEqual(execution, ['first', 'second']);
+  assert.equal(maxNativeActive, 1);
+  assert.equal(sandbox._focusTaskCommitPendingCount, 0);
+  assert.equal(sandbox._focusTaskCommitExecuting, false);
+});
+
+test('focus commit lock releases queue state after lock acquisition failure', async () => {
+  let requests = 0;
+  const sandbox = {
+    _focusTaskCommitQueue: Promise.resolve(),
+    _focusTaskCommitPendingCount: 0,
+    _focusTaskCommitExecuting: false,
+    navigator: {
+      locks: {
+        request() {
+          requests++;
+          return requests === 1
+            ? Promise.reject(new Error('simulated Web Lock acquisition failure'))
+            : Promise.resolve().then(() => 'recovered');
+        }
+      }
+    }
+  };
+  const start = html.indexOf('function _withFocusTaskCommitLock(');
+  const end = html.indexOf('\\n}\\n', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInNewContext(html.slice(start, end + 2), sandbox);
+  await assert.rejects(sandbox._withFocusTaskCommitLock(() => 'must not run'));
+  assert.equal(sandbox._focusTaskCommitPendingCount, 0);
+  assert.equal(sandbox._focusTaskCommitExecuting, false);
+  assert.equal(await sandbox._withFocusTaskCommitLock(() => 'recovered'), 'recovered');
+  assert.equal(sandbox._focusTaskCommitPendingCount, 0);
 });
