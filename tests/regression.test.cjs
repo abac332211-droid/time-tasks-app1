@@ -24,6 +24,11 @@ function extractFunction(name) {
   const source = match[0];
   if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
   const helpers = [];
+  if (name !== '_isClockAdjustedV2WorkSession'
+      && /\b_isClockAdjustedV2WorkSession\s*\(/.test(source)) {
+    helpers.push(extractFunction('_isFocusTaskCreditSchemaV2'));
+    helpers.push(extractFunction('_isClockAdjustedV2WorkSession'));
+  }
   if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
     helpers.push('function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }');
   }
