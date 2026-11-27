@@ -3615,6 +3615,180 @@ function toggleDarkMode() {
   showToast(appSettings.darkMode ? "🌙 الوضع الليلي" : "☀️ الوضع النهاري");
 }
 
+function _hasExactCorruptStorageSnapshot(baseKey, raw) {
+  if (typeof baseKey !== "string" || typeof raw !== "string") return false;
+  var prefix = baseKey + "_corrupt_";
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (typeof key === "string" && key.indexOf(prefix) === 0
+          && localStorage.getItem(key) === raw) return true;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
+
+function _findForensicallyPreservedSecondaryRoots() {
+  var definitions = [
+    { key: FOCUS_SESSIONS_KEY, label: "جلسات التركيز" },
+    { key: MENTAL_INBOX_KEY, label: "صندوق الأفكار" },
+    { key: THOUGHTS_KEY, label: "الخواطر" },
+    { key: PROJECTS_KEY, label: "المشاريع" }
+  ];
+  var candidates = [];
+  var unsupported = [];
+  try {
+    var mainRaw = localStorage.getItem(STORAGE_KEY);
+    var mainData = mainRaw === null ? null : JSON.parse(mainRaw);
+    if (!mainData || !validateV2(mainData)) {
+      unsupported.push("سجل المهام الرئيسي غير سليم؛ يجب استعادته من نسخة موثوقة أولًا");
+      return { candidates: [], unsupported: unsupported };
+    }
+
+    // Never reset a timer key automatically: it can contain elapsed time or a
+    // pending task/session journal that cannot be reconstructed from a blank value.
+    var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (timerRaw !== null) {
+      var timerData = JSON.parse(timerRaw);
+      if (!timerData || typeof timerData !== "object" || Array.isArray(timerData)
+          || timerData.running === true
+          || (timerData.pendingStopwatchTransaction
+            && !_validatePendingStopwatchTransaction(timerData.pendingStopwatchTransaction))) {
+        unsupported.push("مفتاح المؤقت يحتوي حالة لا يمكن عزلها تلقائيًا دون المخاطرة بزمن غير مسترد");
+      } else if (timerData.pendingStopwatchTransaction) {
+        unsupported.push("توجد معاملة Stopwatch معلّقة؛ يجب استكمالها قبل عزل أي مجموعة أخرى");
+      }
+    }
+
+    var objectKeys = [
+      [FOCUS_SETTINGS_KEY, "إعدادات المؤقت"],
+      [NOTIFICATIONS_KEY, "إعدادات الإشعارات"]
+    ];
+    for (var oi = 0; oi < objectKeys.length; oi++) {
+      var objectRaw = localStorage.getItem(objectKeys[oi][0]);
+      if (objectRaw === null) continue;
+      var objectValue = JSON.parse(objectRaw);
+      if (!objectValue || typeof objectValue !== "object" || Array.isArray(objectValue))
+        unsupported.push("مفتاح " + objectKeys[oi][1] + " ليس كائن إعدادات صالحًا");
+    }
+
+    for (var di = 0; di < definitions.length; di++) {
+      var def = definitions[di];
+      var raw = localStorage.getItem(def.key);
+      if (raw === null) continue;
+      var value;
+      var rootIsArray = false;
+      try {
+        value = JSON.parse(raw);
+        rootIsArray = Array.isArray(value);
+      } catch (parseError) {
+        rootIsArray = false;
+      }
+      if (rootIsArray) {
+        if (def.key === FOCUS_SESSIONS_KEY) {
+          var seen = new Set();
+          for (var si = 0; si < value.length; si++) {
+            var row = value[si];
+            var valid = _validateFocusSessionRecord(row);
+            if (valid && row.id !== undefined) {
+              if (seen.has(row.id)) valid = false;
+              else seen.add(row.id);
+            }
+            if (!valid) {
+              unsupported.push("سجل جلسات التركيز يحتوي صفوفًا غير صالحة؛ لن نحذف أي جلسة أو نستبدل المصفوفة تلقائيًا");
+              break;
+            }
+          }
+        }
+        continue;
+      }
+      if (!_hasExactCorruptStorageSnapshot(def.key, raw)) {
+        unsupported.push("لا توجد لقطة جنائية مطابقة تمامًا للمفتاح " + def.label + "؛ رفضنا تغييره");
+        continue;
+      }
+      candidates.push({ key: def.key, label: def.label, raw: raw, replacement: "[]" });
+    }
+  } catch (e) {
+    return { candidates: [], unsupported: ["تعذرت قراءة حالة المفاتيح الثانوية: " + String(e && e.message ? e.message : e)] };
+  }
+  return { candidates: candidates, unsupported: unsupported };
+}
+
+function _quarantineForensicallyPreservedSecondaryRoot(candidate) {
+  if (!candidate || typeof candidate.key !== "string" || typeof candidate.raw !== "string"
+      || candidate.replacement !== "[]") return false;
+  var current;
+  try {
+    current = localStorage.getItem(candidate.key);
+    if (current !== candidate.raw
+        || !_hasExactCorruptStorageSnapshot(candidate.key, candidate.raw)) return false;
+    localStorage.setItem(candidate.key, candidate.replacement);
+    if (localStorage.getItem(candidate.key) !== candidate.replacement)
+      throw new Error("The empty replacement failed read-back verification.");
+  } catch (writeError) {
+    // Compensate if setItem reached storage but read-back failed. The forensic
+    // copy is never removed, whether the compensation succeeds or not.
+    try {
+      localStorage.setItem(candidate.key, candidate.raw);
+      if (localStorage.getItem(candidate.key) !== candidate.raw) throw new Error("Original bytes could not be restored.");
+      _secondaryStorageBaselines[candidate.key] = candidate.raw;
+    } catch (restoreError) {
+      storageRecoveryRequired = true;
+      console.error("Secondary forensic quarantine rollback failed:", candidate.key, writeError, restoreError);
+    }
+    return false;
+  }
+
+  _secondaryStorageBaselines[candidate.key] = candidate.replacement;
+  delete _secondaryStorageConflicts[candidate.key];
+  if (candidate.key === FOCUS_SESSIONS_KEY) _sessionsCache = null;
+  if (candidate.key === PROJECTS_KEY) _invalidateProjectsCache();
+  return true;
+}
+
+function _secondaryStorageRecoveryReady() {
+  try {
+    var main = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    if (!main || !validateV2(main)) return false;
+    var arrays = [FOCUS_SESSIONS_KEY, MENTAL_INBOX_KEY, THOUGHTS_KEY, PROJECTS_KEY];
+    for (var i = 0; i < arrays.length; i++) {
+      var raw = localStorage.getItem(arrays[i]);
+      if (raw === null) continue;
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return false;
+      if (arrays[i] === FOCUS_SESSIONS_KEY) {
+        var ids = new Set();
+        for (var si = 0; si < parsed.length; si++) {
+          var row = parsed[si];
+          if (!_validateFocusSessionRecord(row)) return false;
+          if (row.id !== undefined) {
+            if (ids.has(row.id)) return false;
+            ids.add(row.id);
+          }
+        }
+      }
+    }
+    var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (timerRaw !== null) {
+      var timer = JSON.parse(timerRaw);
+      if (!timer || typeof timer !== "object" || Array.isArray(timer) || timer.running === true
+          || timer.pendingStopwatchTransaction) return false;
+    }
+    var objectKeys = [FOCUS_SETTINGS_KEY, NOTIFICATIONS_KEY];
+    for (var oi = 0; oi < objectKeys.length; oi++) {
+      var objRaw = localStorage.getItem(objectKeys[oi]);
+      if (objRaw === null) continue;
+      var obj = JSON.parse(objRaw);
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function retryStorageRecovery() {
   if (!storageRecoveryRequired) {
     showToast('✅ لا يوجد حظر حاليًّا');
@@ -3675,6 +3849,46 @@ function retryStorageRecovery() {
           showAlertModal("تعذرت استعادة النسخة الداخلية",
             "لم يثبت التطبيق نجاح الاستعادة كاملة. احتفظ بعلامة الاسترداد والنسخة الداخلية ثم أعد المحاولة.");
         }
+      }
+    );
+    return;
+  }
+
+  var forensicRecovery = _findForensicallyPreservedSecondaryRoots();
+  if (forensicRecovery.unsupported.length) {
+    showAlertModal("لم نُجرِ عزلًا تلقائيًا",
+      forensicRecovery.unsupported.join("<br>") +
+      "<br><br>لم نعدّل المفتاح الرئيسي أو المؤقت أو النسخ واللقطات الجنائية. استعد نسخة موثوقة أو راجع المفتاح المتأثر قبل المتابعة.");
+    return;
+  }
+  if (forensicRecovery.candidates.length) {
+    var labels = forensicRecovery.candidates.map(function(item) { return item.label; }).join("، ");
+    showConfirmModal(
+      "عزل مجموعات ثانوية تالفة",
+      "عثر التطبيق على مجموعات لا يمكن تحليل جذرها، مع وجود نسخة جنائية مطابقة بايتًا ببايت لكل مجموعة. سيُستبدل محتوى المفاتيح التالية بمصفوفة فارغة بعد حفظ النسخة الأصلية في مفاتيح _corrupt_ التي لن نحذفها: " +
+        labels + ". لن يُمس مخزن المهام الرئيسي أو المؤقت أو النسخ الدوّارة. قد لا تظهر عناصر هذه المجموعات في الواجهة بعد العزل، لكن بايتاتها الأصلية ستظل محفوظة في اللقطات الجنائية. هل تريد المتابعة؟",
+      function() {
+        for (var qi = 0; qi < forensicRecovery.candidates.length; qi++) {
+          if (!_quarantineForensicallyPreservedSecondaryRoot(forensicRecovery.candidates[qi])) {
+            storageRecoveryRequired = true;
+            showAlertModal("توقف العزل قبل اكتماله",
+              "تعذر التحقق من عزل " + forensicRecovery.candidates[qi].label +
+              ". أُعيدت البايتات الأصلية قدر الإمكان، ولم نحذف أي لقطة جنائية. راجع التخزين قبل المحاولة مجددًا.");
+            return;
+          }
+        }
+        if (!_secondaryStorageRecoveryReady()) {
+          storageRecoveryRequired = true;
+          showAlertModal("بقيت حالة تخزين غير محسومة",
+            "عُزلت الجذور التالفة بعد حفظها جنائيًا، لكن بقي مفتاح آخر غير سليم. لم نرفع حظر الكتابة ولم نعد تحميل الصفحة.");
+          return;
+        }
+        _resetSecondaryStorageTracking();
+        _sessionsCache = null;
+        _invalidateProjectsCache();
+        storageRecoveryRequired = false;
+        showToast("✅ عُزلت المجموعات التالفة مع الاحتفاظ بنسخها الأصلية — أعد التحميل");
+        setTimeout(function() { _reloadAfterVerifiedOperation(); }, 600);
       }
     );
     return;
@@ -3916,19 +4130,11 @@ function _preserveCorruptStorageSnapshot(baseKey, raw) {
       return false;
     }
 
-    // Retention is applied only after the new original bytes have been verified.
-    // Keep at most three copies; never remove the last known-good forensic copy
-    // before a replacement has been durably stored.
-    existing.push({ key: snapshotKey, stamp: stamp + suffix / 1000 });
-    existing.sort(function(a, b) { return a.stamp - b.stamp; });
-    while (existing.length > 3) {
-      var oldest = existing.shift();
-      if (existing.length === 0) break;
-      try { localStorage.removeItem(oldest.key); } catch (pruneError) {
-        console.warn("Could not prune old corruption snapshot:", oldest.key, pruneError);
-        break;
-      }
-    }
+    // Forensic snapshots are evidence, not a rolling cache. Never prune or delete
+    // an earlier copy as a side effect of preserving a newer corrupted value.
+    return true;
+
+
     return true;
   } catch (e) {
     console.warn("Could not preserve corrupt storage snapshot:", baseKey, e);
@@ -9165,6 +9371,16 @@ function _loadSessions() {
     _sessionsCache = valid;
     return _sessionsCache.slice();
   } catch (e) {
+    try {
+      var corruptRaw = localStorage.getItem(FOCUS_SESSIONS_KEY);
+      if (corruptRaw !== null && corruptRaw !== "") {
+        if (!_preserveCorruptStorageSnapshot(FOCUS_SESSIONS_KEY, corruptRaw)) {
+          console.error("Could not preserve the original focus-session bytes before recovery.", FOCUS_SESSIONS_KEY);
+        }
+      }
+    } catch (preserveError) {
+      console.error("Could not read focus-session bytes for forensic preservation:", preserveError);
+    }
     storageRecoveryRequired = true;
     _sessionsCache = [];
     console.error("Focus session storage could not be read or validated:", e);
