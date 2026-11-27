@@ -98,6 +98,54 @@ test('V2 interrupted untrusted session may preserve no duration and never carry 
   }), false);
 });
 
+test('V2 Stopwatch stores measured seconds separately from user-adjusted credit', () => {
+  const app = validatorContext();
+  const stopwatch = validSession({
+    mode: 'stopwatch',
+    plannedDurationMs: null,
+    activeDurationMs: 125_000,
+    durationSec: 125,
+    creditedSeconds: 120,
+    creditSource: 'user_adjusted',
+    outcome: 'stopped',
+    completed: false,
+    clockSource: 'mixed',
+    clockTrust: 'partial',
+    clockAdjusted: true
+  });
+  assert.equal(app._validateFocusSessionRecord(stopwatch), true);
+
+  assert.equal(app._validateFocusSessionRecord({
+    ...stopwatch, creditSource: 'measured', clockTrust: 'partial'
+  }), false, 'partial clocks cannot claim measured credit');
+
+  assert.equal(app._validateFocusSessionRecord({
+    ...stopwatch, clockTrust: 'untrusted'
+  }), false, 'an untrusted clock cannot carry user-adjusted task credit');
+});
+
+test('clock-adjusted Pomodoro work is an interrupted partial-trust session with explicit user credit', () => {
+  const app = validatorContext();
+  const record = validSession({
+    activeDurationMs: 72_000,
+    durationSec: 72,
+    creditedSeconds: 60,
+    creditSource: 'user_adjusted',
+    outcome: 'interrupted',
+    completed: false,
+    clockSource: 'mixed',
+    clockTrust: 'partial',
+    clockAdjusted: true
+  });
+  assert.equal(app._validateFocusSessionRecord(record), true);
+  assert.equal(app._validateFocusSessionRecord({
+    ...record, clockAdjusted: false
+  }), false, 'the adjusted interruption exception requires an explicit clockAdjusted flag');
+  assert.equal(app._validateFocusSessionRecord({
+    ...record, clockTrust: 'untrusted'
+  }), false, 'untrusted time cannot be credited');
+});
+
 test('breaks and sessions without a task cannot carry task credit', () => {
   const app = validatorContext();
   assert.equal(app._validateFocusSessionRecord(validSession({
