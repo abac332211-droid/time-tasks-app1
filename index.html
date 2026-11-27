@@ -7559,7 +7559,11 @@ function _validateFocusSessionRecordV2(session) {
   }
   if (session.outcome === "stopped"
       && (session.mode !== "stopwatch" || session.plannedDurationMs !== null)) return false;
-  if ((session.outcome === "skipped" || session.outcome === "discarded" || session.outcome === "interrupted")
+  var adjustedInterruptedCredit = session.outcome === "interrupted"
+      && session.clockAdjusted === true && session.clockTrust === "partial"
+      && session.creditSource === "user_adjusted";
+  if ((session.outcome === "skipped" || session.outcome === "discarded"
+      || (session.outcome === "interrupted" && !adjustedInterruptedCredit))
       && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
   if (session.creditSource === "none" && session.creditedSeconds !== 0) return false;
   if (session.creditSource === "measured"
@@ -7571,10 +7575,15 @@ function _validateFocusSessionRecordV2(session) {
       && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
         || session.creditSource !== "none" || session.outcome !== "interrupted")) return false;
   if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
+  var adjustedStopwatchCredit = session.mode === "stopwatch" && session.outcome === "stopped";
+  var adjustedPomodoroInterruptionCredit = session.mode === "pomodoro"
+    && session.outcome === "interrupted" && session.clockAdjusted === true
+    && session.clockTrust === "partial";
   if (session.creditSource === "user_adjusted"
       && (session.phase !== "work" || session.taskId === null
         || session.clockTrust === "untrusted"
-        || (session.outcome !== "completed" && session.outcome !== "ended_early"))) return false;
+        || (session.outcome !== "completed" && session.outcome !== "ended_early"
+          && !adjustedStopwatchCredit && !adjustedPomodoroInterruptionCredit))) return false;
   return true;
 }
 
@@ -14674,13 +14683,14 @@ function _commitFocusSessionV2(sessionFields) {
   });
 }
 
-// The PR #23 session contract supports trusted Pomodoro work sessions. Legacy
-// Stopwatch confirmation retains its minute-based writer unless a future
-// contract explicitly extends V2 to represent its user-adjusted "stopped" case.
+// Task-linked work sessions use one V2 credit contract. Stopwatch may retain
+// both its measured duration and a separately user-approved minute value.
+// A clock-adjusted Pomodoro is recorded as interrupted with partial trust;
+// it is never represented as a trusted completed/ended-early Pomodoro.
 function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasuredCredit) {
   if (!snapshot || !task || snapshot.running !== false
       || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
-      || snapshot.phase !== "work" || snapshot.clockAdjusted === true
+      || snapshot.phase !== "work"
       || !Number.isSafeInteger(minutesToAdd) || minutesToAdd < 0 || minutesToAdd > 1000000
       || !Number.isSafeInteger(snapshot.baseElapsed) || snapshot.baseElapsed < 0
       || !Number.isInteger(snapshot.elapsedRemainderMs)
@@ -14688,9 +14698,11 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
       || !Number.isFinite(snapshot.sessionStartAt) || snapshot.sessionStartAt < 0
       || task.id !== snapshot.taskId) return null;
 
+  var clockAdjusted = snapshot.clockAdjusted === true;
   var activeDurationMs = snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs;
   var durationSec = Math.floor(activeDurationMs / 1000);
-  var creditedSeconds = snapshot.mode === "pomodoro" && useMeasuredCredit === true
+  var trustedMeasuredApproval = useMeasuredCredit === true && !clockAdjusted;
+  var creditedSeconds = snapshot.mode === "pomodoro" && trustedMeasuredApproval
     ? durationSec : minutesToAdd * 60;
   var plannedDurationMs = snapshot.mode === "pomodoro"
     ? POMODORO_WORK_SEC * 1000 : null;
@@ -14699,19 +14711,16 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
       || (plannedDurationMs !== null
         && (!Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0))) return null;
 
-  // PR #23 only admits measured credit for Stopwatch's "stopped" outcome.
-  // A minute-based, user-adjusted Stopwatch value remains on the legacy writer.
-  if (snapshot.mode === "stopwatch" && creditedSeconds !== durationSec) return null;
-
   var started = new Date(snapshot.sessionStartAt);
   var endedMs = Number.isFinite(snapshot.pendingPhaseEndedAt)
     ? snapshot.pendingPhaseEndedAt : Date.now();
   var ended = new Date(endedMs);
   if (!Number.isFinite(started.getTime()) || !Number.isFinite(ended.getTime())
-      || ended.getTime() < started.getTime()) return null;
+      || (ended.getTime() < started.getTime() && !clockAdjusted)) return null;
 
   var outcome = snapshot.mode === "stopwatch" ? "stopped"
-    : (activeDurationMs >= plannedDurationMs ? "completed" : "ended_early");
+    : (clockAdjusted ? "interrupted"
+      : (activeDurationMs >= plannedDurationMs ? "completed" : "ended_early"));
   return {
     mode: snapshot.mode,
     phase: "work",
@@ -14723,11 +14732,12 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
     durationSec: durationSec,
     plannedDurationMs: plannedDurationMs,
     creditedSeconds: creditedSeconds,
-    creditSource: creditedSeconds === durationSec ? "measured" : "user_adjusted",
+    creditSource: !clockAdjusted && creditedSeconds === durationSec ? "measured" : "user_adjusted",
     outcome: outcome,
-    clockSource: snapshot.nativeSessionToken ? "android_elapsed_realtime" : "performance_now",
-    clockTrust: "trusted",
-    clockAdjusted: false,
+    clockSource: clockAdjusted ? "mixed"
+      : (snapshot.nativeSessionToken ? "android_elapsed_realtime" : "performance_now"),
+    clockTrust: clockAdjusted ? "partial" : "trusted",
+    clockAdjusted: clockAdjusted,
     completed: outcome === "completed"
   };
 }
@@ -14763,8 +14773,7 @@ function _commitPendingFocusSessionV2(params) {
     if (!_focusTimerSnapshotMatchesState(snapshot) || snapshot.running !== false
         || snapshot.taskId === null || snapshot.taskId === undefined
         || snapshot.phase !== "work"
-        || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
-        || snapshot.clockAdjusted === true) {
+        || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")) {
       showAlertModal("تعارض لقطة الجلسة",
         "تغيرت حالة المؤقت أو لم تعد جلسة العمل صالحة لعقد V2؛ لم نكتب اعتمادًا.");
       return false;
@@ -14841,6 +14850,32 @@ function _commitPendingFocusSessionV2(params) {
   });
   _focusCommitPendingPromise = pending;
   return pending;
+}
+
+// Route every task-linked work-session save through the V2 transaction writer.
+// The writer performs legacy credit migration under the shared lock before it
+// creates the durable journal. There is deliberately no legacy fallback here.
+function _commitTaskLinkedFocusSessionV2(params) {
+  if (!params || !params.snapshot) return Promise.resolve(false);
+  var snapshot = params.snapshot;
+  var taskId = params.taskId === undefined ? snapshot.taskId : params.taskId;
+  if (taskId === null || taskId === undefined || taskId !== snapshot.taskId
+      || snapshot.phase !== "work"
+      || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")) {
+    showAlertModal("جلسة مهمة غير صالحة",
+      "لم نبدأ الحفظ لأن الجلسة لا تطابق مهمة عمل مرتبطة صالحة.");
+    return Promise.resolve(false);
+  }
+  var task = tasks.find(function(row) { return row && row.id === taskId; });
+  if (!task) {
+    showAlertModal("المهمة غير موجودة",
+      "لم نبدأ الحفظ لأن المهمة المرتبطة لم تعد موجودة.");
+    return Promise.resolve(false);
+  }
+  return _commitPendingFocusSessionV2(Object.assign({}, params, {
+    taskId: taskId,
+    useMeasuredCredit: params.useMeasuredCredit === true && snapshot.clockAdjusted !== true
+  }));
 }
 
 function _verifySiblingTransactionOutcome(bundle, expectedTx, bootPersistedGeneration) {
@@ -15315,13 +15350,15 @@ function _runStorageRecoveryCoordinatorWithFreshProbeRetry(probeSnapshot) {
 function _applyStopwatchSave(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
   if(!frozen||frozen.baseElapsed!==elapsedSec)return Promise.resolve(false);
-  return _commitFocusTaskSession({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,
-    completed:true,successToast:"✅ أُنهِيَت جلسة Stopwatch وسُجلت مرة واحدة"});
+  return _commitTaskLinkedFocusSessionV2({snapshot:frozen,taskId:frozen.taskId,
+    minutesToAdd:minutesToAdd,useMeasuredCredit:false,completed:true,
+    successToast:"✅ أُنهِيَت جلسة Stopwatch وسُجلت مرة واحدة"});
 }
 
 function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
-  return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
+  return frozen?_commitTaskLinkedFocusSessionV2({snapshot:frozen,taskId:frozen.taskId,
+    minutesToAdd:minutesToAdd,useMeasuredCredit:false,completed:true}):false;
 }
 function _cancelPendingNotificationFinish() {
   if (!_focusTimer.pendingNotificationFinish) return true;
@@ -15362,9 +15399,13 @@ function _continueFocusTimerFinish(snapshot) {
   var overlay = document.getElementById("customModalOverlay"), card = document.getElementById("modalCardElement");
   document.getElementById("modalTitle").textContent = "⏹ إنهاء الجلسة";
   var body = document.getElementById("modalBody");
-  body.innerHTML = "<p style=\"margin:0 0 10px;line-height:1.7;\">المدة المقاسة: <b>"
-    + _formatDuration(elapsed) + "</b></p>"
+  body.innerHTML = "<p style=\"margin:0 0 10px;line-height:1.7;\">"
+    + (snapshot.clockAdjusted ? "المدة المحفوظة عند آخر نقطة موثوقة: " : "المدة المقاسة: ")
+    + "<b>" + _formatDuration(elapsed) + "</b></p>"
     + "<p style=\"margin:0 0 10px;line-height:1.7;\">المهمة: <b>" + escapeHTML(task.name) + "</b></p>"
+    + (snapshot.clockAdjusted
+      ? "<p style=\"margin:0 0 10px;line-height:1.7;\">تنبيه: توجد علامة انقطاع أو تغير في الساعة؛ لن نعامل هذه المدة كقياس موثوق. الدقائق التي تعتمدها ستُسجّل كاعتماد يدوي مع الاحتفاظ بالمدة المسجلة منفصلة.</p>"
+      : "")
     + "<p style=\"margin:0;line-height:1.7;\">المدة الفعلية الحالية: <b>" + current + " دقيقة</b></p>";
   var footer = document.getElementById("modalFooter");
   footer.innerHTML = "";
@@ -15399,11 +15440,14 @@ function _continueFocusTimerFinish(snapshot) {
   };
   var save = document.createElement("button");
   save.className = "btn-primary";
-  save.textContent = snapshot.mode === "pomodoro" ? "حفظ الوقت المقاس" : "+ " + minutes + " د";
+  save.textContent = snapshot.mode === "pomodoro"
+    ? (snapshot.clockAdjusted ? "اعتماد " + minutes + " د يدويًا" : "حفظ الوقت المقاس")
+    : "+ " + minutes + " د";
   save.onclick = function() {
     closeModal();
     _pendingFinishDialogShown = false;
-    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot, true))
+    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot,
+      snapshot.clockAdjusted !== true))
       .then(function(ok) {
         if (!ok && _focusTimer.pendingNotificationFinish) {
           _pendingFinishDialogShown = false;
@@ -15499,21 +15543,14 @@ function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnap
   if(!snapshot||snapshot.baseElapsed!==elapsedSec||snapshot.phase!==capturedPhase)return Promise.resolve(false);
   var request = {
     snapshot:snapshot, taskId:snapshot.taskId, minutesToAdd:minutesToAdd,
-    useMeasuredCredit:useMeasuredCredit === true,
+    useMeasuredCredit:useMeasuredCredit === true && snapshot.clockAdjusted !== true,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
-  var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
-      && Number.isInteger(snapshot.elapsedRemainderMs)
-    ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
-  var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
-    ? Math.floor(measuredActiveDurationMs / 1000) : null;
-  var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
-    && Number.isSafeInteger(minutesToAdd) && minutesToAdd * 60 === measuredActiveSeconds;
-  if ((snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement)
+  if ((snapshot.mode === "pomodoro" || snapshot.mode === "stopwatch")
       && snapshot.phase === "work"
       && snapshot.taskId !== null && snapshot.taskId !== undefined
-      && task && snapshot.clockAdjusted !== true) {
-    return _commitPendingFocusSessionV2(request);
+      && task) {
+    return _commitTaskLinkedFocusSessionV2(request);
   }
   return _commitFocusTaskSession(request);
 }
@@ -15623,6 +15660,7 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
   var nextTask=tasks.find(function(t){return t.id===newTaskId;});
   var description='هناك جلسة ('+_formatDuration(elapsed)+')';
   if(currentTask)description+=' على «'+escapeHTML(currentTask.name)+'»';
+  if(snapshot.clockAdjusted)description+=' والساعة تحمل علامة انقطاع أو تغير؛ سيُسجل اعتماد الدقائق يدويًا لا كقياس موثوق';
   description+='. هل تريد حفظها قبل الانتقال إلى «'+escapeHTML(nextTask?nextTask.name:'—')+'»؟';
   var overlay=document.getElementById('customModalOverlay'),card=document.getElementById('modalCardElement');
   document.getElementById('modalTitle').textContent='جلسة جارية';
@@ -15656,9 +15694,15 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
       successToast:'⏱️ أُلغيت الجلسة القصيرة قبل الانتقال'});return;}
     var taskLinked=!!currentTask&&(mode==='stopwatch'||(mode==='pomodoro'&&phase==='work'));
     var isBreak=mode==='pomodoro'&&phase!=='work';
-    _commitFocusTaskSession({snapshot:snapshot,taskId:taskLinked?currentId:null,
-      allowUnlinkedTaskSnapshotLink:isBreak,minutesToAdd:taskLinked?Math.max(1,Math.round(elapsed/60)):0,
-      completed:true,onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
+    if (taskLinked) {
+      _commitTaskLinkedFocusSessionV2({snapshot:snapshot,taskId:currentId,
+        minutesToAdd:Math.max(1,Math.round(elapsed/60)),useMeasuredCredit:false,
+        completed:true,onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
+    } else {
+      _commitFocusTaskSession({snapshot:snapshot,taskId:null,
+        allowUnlinkedTaskSnapshotLink:isBreak,minutesToAdd:0,
+        completed:true,onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
+    }
   };
   footer.appendChild(cancel);footer.appendChild(discard);footer.appendChild(save);
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
