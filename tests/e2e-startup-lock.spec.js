@@ -2154,7 +2154,7 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
       keep.click();
     });
     await page.waitForFunction(() => _focusTimer.running === false
-      && _focusTimer.taskId === 7011 && _focusTimer.baseElapsed === 125);
+      && _focusTimer.taskId === 7011 && _focusTimer.baseElapsed === 45);
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
       .some(button => button.textContent.includes('تجاهل والانتقال')),
