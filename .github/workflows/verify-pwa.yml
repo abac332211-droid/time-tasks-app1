@@ -14,6 +14,11 @@ on:
       - codex/pomodoro-pwa-conservative-lifecycle
       - codex/pomodoro-credit-migration-gate
       - codex/pomodoro-storage-gates-pwa-integration
+      - codex/pomodoro-credit-schema-v2
+      - codex/pomodoro-credit-operation-ledger-v1
+      - codex/pending-focus-commit-v1
+      - codex/pending-focus-commit-integrated-v1
+      - codex/pending-focus-v2-writer-unification
   pull_request:
     branches:
       - main
@@ -25,6 +30,9 @@ on:
       - codex/pomodoro-pwa-conservative-lifecycle
       - codex/pomodoro-credit-migration-gate
       - codex/pomodoro-storage-gates-pwa-integration
+      - codex/pomodoro-credit-schema-v2
+      - codex/pomodoro-credit-operation-ledger-v1
+      - codex/pending-focus-commit-integrated-fix-v1
 
 concurrency:
   group: verify-pwa-${{ github.ref }}
