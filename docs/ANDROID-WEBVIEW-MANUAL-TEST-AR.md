@@ -412,3 +412,49 @@ No claim is made that SHA `c3b7d9404fa0912681b32627ea01258a513bde31` was install
 The following device checks remain outstanding for this exact APK/head: Web Locks availability, Pomodoro then adjusted Stopwatch on the same migrated task, Stopwatch save through the reset dialog, Pomodoro save-and-switch, and reopen verification for duplicate credit/session prevention. Record the device model, Android version, WebView version, installed APK build, and observations when those checks are actually run.
 
 **Status:** automated PWA and APK workflows passed; Android field verification remains unperformed. PR #27 remains Draft and must not be described as field-tested.
+
+
+### متابعة الاختبار الميداني بعد Force Stop — 27 نوفمبر 2026
+
+> **مصدر النتائج:** نص الإحصائيات المرسل من المختبِر، وصورة معلومات Android System WebView، وتأكيده أن APK نُزّل من رابط artifact الذي زُوّد به سابقًا. لا تتوفر قراءة مباشرة لسجلات الجهاز أو قاعدة بيانات التطبيق.
+
+#### هوية النسخة المختبرة
+
+| البيان | القيمة |
+|---|---|
+| PR المرتبط بالنسخة | #27 |
+| فرع PR | `codex/pending-focus-v2-writer-unification` |
+| رأس المصدر الذي بُني منه APK المختبر | `cf22b2e2e5d5f55fe3d146bc23cf27bd0da72351` |
+| تشغيل Build APK | [46026764736](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46026764736) |
+| Artifact ID | [15211034443](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46026764736/artifacts/15211034443) |
+| SHA-256 للأثر المرفوع | `c24c7a49c5933fea2da75802303a429e9109b4d7913c01cc272fe2b0a7d212b3` |
+| Android System WebView الظاهر في الصورة | `157.0.8103.50` |
+| طراز الهاتف / إصدار Android | لم يُعاد تأكيدهما في هذه الجولة |
+
+أكد المختبِر أن النسخة المثبتة نُزّلت من رابط artifact أعلاه. لذلك تُنسب النتيجة إلى APK المبني من SHA `cf22b2e...`، **ولا تُنسب إلى رأس PR الأحدث** `32df015d583a373669d35c47a11a2ffd511b584c` الذي أُنشئ بعد مزامنة قاعدة الاعتماد.
+
+#### ما أظهرته الواجهة
+
+| المرحلة | جلسات التركيز | الزمن |
+|---|---:|---:|
+| بعد جلسة Pomodoro الأولى | 1 | 1 دقيقة و49 ثانية (109 ثوانٍ) |
+| بعد الجلسة الثانية | 2 | 2 دقيقة و56 ثانية (176 ثانية) |
+| بعد Force Stop من إعدادات Android ثم إعادة الفتح | 2 | 2 دقيقة و56 ثانية (176 ثانية) |
+
+- سجل الجلستين بعد الجلسة الثانية: 1:07 (67 ثانية) و1:49 (109 ثوانٍ).
+- مجموعهما: 67 + 109 = 176 ثانية، أي 2:56.
+- الزمن المخطط للمهمة: 3:00 (180 ثانية). الفرق: 4 ثوانٍ أقل، أي نحو ‎-2.22%، بما يتوافق مع الفجوة المعروضة ‎-2% والمعامل المقترح 0.98.
+- بقيت المهمة واحدة، غير منجزة وقيد الانتظار؛ لم يظهر تكرار للجلسة أو زيادة في الإجمالي بعد Force Stop وإعادة الفتح.
+- صورة معلومات WebView تعرض الإصدار 157.0.8103.50؛ ولا تكفي وحدها لتحديد طراز الهاتف أو إصدار Android.
+
+#### الحكم وحدود الإثبات
+
+**نجاح ميداني مُبلّغ عنه:** ثبات عدّاد الجلسات ومجموع 176 ثانية بعد تنفيذ Force Stop من إعدادات Android عقب اكتمال الحفظ، ثم إعادة فتح التطبيق. هذه نتيجة أقوى من مجرد إزالة التطبيق من قائمة التطبيقات الأخيرة.
+
+لا تثبت هذه التجربة:
+- التعافي من إيقاف التطبيق أثناء تنفيذ معاملة الحفظ أو بين مراحل كتابتها.
+- التنافس الحصري بين سياقين مستقلين على Web Lock.
+- اختبارات Stopwatch المعدّل، أو نافذة إعادة التعيين، أو Pomodoro save-and-switch.
+- أن رأس PR الحالي `32df015d583a373669d35c47a11a2ffd511b584c` قد اختُبر ميدانيًا؛ النسخة المؤكدة هي artifact المبني من `cf22b2e...`.
+
+**الحالة الحالية:** أُضيف هذا السجل لتوثيق نتيجة Force Stop على artifact محدد. يلزم إعادة الاختبار على APK مبني من رأس PR الحالي بعد انتهاء مزامنته، قبل وصف الرأس الحالي بأنه مختبر ميدانيًا.
