@@ -1883,6 +1883,12 @@ function transitionDialogHarness({ commitResult = true, checkpointResult = true,
         cyclePosition: timer.cyclePosition, sessionStartAt: timer.sessionStartAt,
         awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false });
     },
+    _commitTaskLinkedFocusSessionV2(params) {
+      commits.push(params);
+      if (!commitResult) return Promise.resolve(false);
+      if (typeof params.onCommitted === 'function' && params.onCommitted() !== true) return Promise.resolve(false);
+      return Promise.resolve(true);
+    },
     _commitFocusTaskSession(params) {
       commits.push(params);
       if (!commitResult) return Promise.resolve(false);
