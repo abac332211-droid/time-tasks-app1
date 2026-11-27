@@ -912,13 +912,105 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
       }
 
       const stopwatchCommitted = await commitStoppedSession('stopwatch', 125, 2, false);
+
+      // Exercise the separate reset-dialog save entry point. The task is now V2,
+      // so this path must reach the same pending-focus transaction writer.
+      const resetSnapshotSaved = await _withTaskStorageLock(function() {
+        _focusTimer.mode = 'stopwatch';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 65;
+        _focusElapsedRemainderMs = 0;
+        _focusTimer.startedAt = null;
+        _focusTimer.taskId = taskId;
+        _focusTimer.sessionStartAt = Date.now() - 65000;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        _focusTimer.pendingStopwatchTransaction = null;
+        _focusTimer.pendingFocusCommit = null;
+        _clearFocusTimerClock();
+        return _saveFocusTimer();
+      });
+      if (!resetSnapshotSaved) throw new Error('Could not persist reset-dialog Stopwatch fixture');
+      const resetSnapshot = _captureFocusTimerSnapshot();
+      const resetTask = tasks.find(row => row && row.id === taskId);
+      const resetSaveCommitted = await _applyStopwatchSave(65, resetTask, 1, resetSnapshot);
+
+      // Start a different task while a V2 task-linked Pomodoro session is paused.
+      // The real "save and switch" dialog must commit the old task through V2,
+      // then its onCommitted callback must start the next timer under the guard.
+      const secondTaskAdded = await _withTaskStorageLock(function() {
+        if (!tasks.some(row => row && row.id === 7012)) {
+          tasks.push({
+            id: 7012,
+            name: 'Next transition task',
+            type: 'معرفية',
+            status: 'pending',
+            expected: 20,
+            actual: null,
+            plannedDate: new Date().toISOString().slice(0, 10),
+            plannedTime: '',
+            completedAt: null,
+            createdAt: Date.now(),
+            projectId: null,
+            priority: null,
+            recurrence: null,
+            checklist: null
+          });
+        }
+        return saveData();
+      });
+      if (!secondTaskAdded) throw new Error('Could not persist transition target task');
+      const transitionSnapshotSaved = await _withTaskStorageLock(function() {
+        _focusTimer.mode = 'pomodoro';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 75;
+        _focusElapsedRemainderMs = 0;
+        _focusTimer.startedAt = null;
+        _focusTimer.taskId = taskId;
+        _focusTimer.sessionStartAt = Date.now() - 75000;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        _focusTimer.pendingStopwatchTransaction = null;
+        _focusTimer.pendingFocusCommit = null;
+        _clearFocusTimerClock();
+        return _saveFocusTimer();
+      });
+      if (!transitionSnapshotSaved) throw new Error('Could not persist transition Pomodoro fixture');
+      const transitionDialogOpened = await startTimerForTask(7012);
+      if (!transitionDialogOpened) throw new Error('Task transition dialog was not opened');
+
+      const mainBeforeTransitionCommit = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const previousTaskBeforeTransition = mainBeforeTransitionCommit.tasks.find(row => row.id === taskId);
+      if (!previousTaskBeforeTransition || previousTaskBeforeTransition.creditSchemaVersion !== 1) {
+        throw new Error('The transition source task lost its V2 metadata');
+      }
+      return { pomodoroCommitted, stopwatchCommitted, resetSaveCommitted, transitionDialogOpened };
+    });
+
+    if (!result.pomodoroCommitted || !result.stopwatchCommitted || !result.resetSaveCommitted
+        || !result.transitionDialogOpened) throw new Error('One of the task-linked V2 saves failed');
+    await page.waitForFunction(() => {
+      const footer = document.getElementById('modalFooter');
+      return footer && footer.children.length === 3
+        && footer.children[2].textContent.includes('حفظ والانتقال');
+    }, null, { timeout: 5000 });
+    await page.evaluate(() => document.getElementById('modalFooter').children[2].click());
+    await page.waitForFunction(() =>
+      _focusTimer.running === true && _focusTimer.taskId === 7012
+        && _focusCommitPendingPromise === null && storageRecoveryRequired === false,
+      null, { timeout: 15000 }
+    );
+
+    const resultAfterAllPaths = await page.evaluate(() => {
       const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
-      const task = main.tasks.find(row => row.id === taskId);
+      const task = main.tasks.find(row => row.id === 7011);
       const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
       const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
       return {
-        pomodoroCommitted,
-        stopwatchCommitted,
         task,
         operations: main.creditOperations,
         sessions,
@@ -926,43 +1018,57 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
         recoveryRequired: storageRecoveryRequired
       };
     });
+    });
 
-    assert.equal(result.pomodoroCommitted, true);
-    assert.equal(result.stopwatchCommitted, true);
-    assert.equal(result.task.actualSeconds, 600,
-      'initial 300s + measured Pomodoro 180s + approved Stopwatch credit 120s');
-    assert.equal(result.task.actual, 10);
-    assert.equal(result.task.creditRevision, 2);
-    assert.equal(result.operations.length, 2);
-    assert.equal(result.task.lastCreditOperationId, result.operations[1].operationId);
+    assert.equal(resultAfterAllPaths.task.actualSeconds, 720,
+      'initial 300s + measured Pomodoro 180s + approved credits 120s + 60s + 60s');
+    assert.equal(resultAfterAllPaths.task.actual, 12);
+    assert.equal(resultAfterAllPaths.task.creditRevision, 4);
+    assert.equal(resultAfterAllPaths.operations.length, 4);
+    assert.equal(resultAfterAllPaths.task.lastCreditOperationId,
+      resultAfterAllPaths.operations[3].operationId);
 
-    const stopwatchOperation = result.operations[1];
-    assert.equal(stopwatchOperation.kind, 'session');
-    assert.equal(stopwatchOperation.source, 'user_adjusted');
-    assert.equal(stopwatchOperation.measuredSeconds, 125);
-    assert.equal(stopwatchOperation.creditedSeconds, 120);
-    assert.equal(stopwatchOperation.previousSeconds, 480);
-    assert.equal(stopwatchOperation.targetSeconds, 600);
+    const expected = [
+      { mode: 'pomodoro', measured: 180, credited: 180, source: 'measured' },
+      { mode: 'stopwatch', measured: 125, credited: 120, source: 'user_adjusted' },
+      { mode: 'stopwatch', measured: 65, credited: 60, source: 'user_adjusted' },
+      { mode: 'pomodoro', measured: 75, credited: 60, source: 'user_adjusted' }
+    ];
+    assert.equal(resultAfterAllPaths.sessions.length, expected.length);
+    for (let index = 0; index < expected.length; index++) {
+      const operation = resultAfterAllPaths.operations[index];
+      const session = resultAfterAllPaths.sessions.find(row =>
+        row.sessionId === operation.sessionId);
+      assert.ok(session, 'operation ' + index + ' must have exactly one session record');
+      assert.equal(operation.kind, 'session');
+      assert.equal(operation.measuredSeconds, expected[index].measured);
+      assert.equal(operation.creditedSeconds, expected[index].credited);
+      assert.equal(operation.source, expected[index].source);
+      assert.equal(session.mode, expected[index].mode);
+      assert.equal(session.durationSec, expected[index].measured);
+      assert.equal(session.creditedSeconds, expected[index].credited);
+      assert.equal(session.creditSource, expected[index].source);
+      assert.equal(session.recordVersion, 2);
+      assert.equal(session.clockTrust, 'trusted');
+      assert.equal(session.clockAdjusted, false);
+    }
 
-    assert.equal(result.sessions.length, 2);
-    const stopwatchSession = result.sessions.find(session =>
-      session.sessionId === stopwatchOperation.sessionId);
-    assert.ok(stopwatchSession);
-    assert.equal(stopwatchSession.recordVersion, 2);
-    assert.equal(stopwatchSession.mode, 'stopwatch');
-    assert.equal(stopwatchSession.outcome, 'stopped');
-    assert.equal(stopwatchSession.durationSec, 125);
-    assert.equal(stopwatchSession.activeDurationMs, 125000);
-    assert.equal(stopwatchSession.creditedSeconds, 120);
-    assert.equal(stopwatchSession.creditSource, 'user_adjusted');
-    assert.equal(stopwatchSession.clockTrust, 'trusted');
-    assert.equal(stopwatchSession.clockAdjusted, false);
+    const adjustedStopwatchSession = resultAfterAllPaths.sessions.find(session =>
+      session.mode === 'stopwatch' && session.durationSec === 125);
+    assert.ok(adjustedStopwatchSession);
+    assert.equal(adjustedStopwatchSession.outcome, 'stopped');
+    assert.equal(adjustedStopwatchSession.activeDurationMs, 125000);
+    assert.equal(resultAfterAllPaths.sessions[3].mode, 'pomodoro',
+      'the save-and-switch path records a Pomodoro session on the prior task');
+    assert.equal(resultAfterAllPaths.sessions[3].taskId, 7011);
 
-    assert.equal(result.timer.running, false);
-    assert.equal(result.timer.baseElapsed, 0);
-    assert.equal(result.timer.pendingFocusCommit, null);
-    assert.equal(result.timer.pendingStopwatchTransaction, null);
-    assert.equal(result.recoveryRequired, false);
+    assert.equal(resultAfterAllPaths.timer.running, true,
+      'the guarded transition callback starts the next task only after V2 commit');
+    assert.equal(resultAfterAllPaths.timer.taskId, 7012);
+    assert.equal(resultAfterAllPaths.timer.baseElapsed, 0);
+    assert.equal(resultAfterAllPaths.timer.pendingFocusCommit, null);
+    assert.equal(resultAfterAllPaths.timer.pendingStopwatchTransaction, null);
+    assert.equal(resultAfterAllPaths.recoveryRequired, false);
   } finally {
     await closeBrowserContext(runtime);
   }
