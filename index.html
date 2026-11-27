@@ -9309,7 +9309,7 @@ function renderStats() {
     const pct2 = Math.round(d / subset.length * 100);
     // FIX W7/B9 (G5): توافق مع computeWeeklyReport — استثناء expected=0
     const withActual = subset.filter(function(t) {
-      return t.actual !== null && t.actual !== undefined && t.expected > 0;
+      return getTaskActualMinutes(t) !== null && t.expected > 0;
     });
     let gapLine = "";
     if (withActual.length > 0) {
