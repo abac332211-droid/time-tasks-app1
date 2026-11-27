@@ -832,6 +832,21 @@ test('clock-adjusted task-linked sessions fail closed and never reach either wri
   assert.match(runtime.calls[0].message, /بقيت الجلسة متوقفة/);
 });
 
+test('a mismatched explicit task ID cannot divert a linked work session to the legacy writer', async () => {
+  const snapshot = {
+    mode: 'pomodoro', phase: 'work', running: false,
+    baseElapsed: 1500, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  assert.equal(await runtime.app._commitFocusTaskSession({
+    snapshot, taskId: null, minutesToAdd: 25, completed: true
+  }), false);
+  assert.deepEqual(runtime.calls.map(call => call.writer), ['blocked']);
+  assert.match(runtime.calls[0].message, /تعارض ربط المهمة/);
+});
+
 test('all linked work-session entry points delegate to the V2 dispatch boundary', () => {
   for (const name of [
     '_applyTimerFinish',
