@@ -233,6 +233,16 @@ function createRuntime(storage, options = {}) {
   return { sandbox, storage, alerts, toasts, rollingSnapshots };
 }
 
+function saveViaLegacyStopwatchRecovery(runtime, minutesToAdd = 3) {
+  const snapshot = runtime.sandbox._captureFocusTimerSnapshot();
+  return runtime.sandbox._commitFocusTaskSession({
+    snapshot,
+    taskId: snapshot.taskId,
+    minutesToAdd,
+    completed: true
+  });
+}
+
 function initialStorage() {
   const sessionStartAt = Date.now() - 600_000;
   const main = {
@@ -302,7 +312,7 @@ test('process restart after task commit but before session logging resumes witho
     throw new Error('simulated process death after the main task commit');
   };
 
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
 
   const afterInterruptedCommit = JSON.parse(storage.getItem('main'));
   const interruptedTimer = JSON.parse(storage.getItem('focus-timer'));
@@ -350,7 +360,7 @@ test('a durable timer journal can finish the task update when the first main wri
   const storage = initialStorage();
   const first = createRuntime(storage, { failMainWriteOnce: true });
 
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
 
   const beforeRestart = JSON.parse(storage.getItem('main'));
   const timerBeforeRestart = JSON.parse(storage.getItem('focus-timer'));
@@ -378,7 +388,7 @@ test('restart after session write but before timer reset is idempotent', async (
     throw new Error('simulated process death after the session was stored');
   };
 
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
 
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 1);
@@ -403,7 +413,7 @@ test('recovery refuses to overwrite a task value that is neither the pre-commit 
   first.sandbox._logSession = () => {
     throw new Error('interrupt before session save');
   };
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
 
   const externallyChanged = JSON.parse(storage.getItem('main'));
   externallyChanged.tasks[0].actual = 17;
@@ -424,7 +434,7 @@ test('recovery rejects targetActual without the matching task transaction marker
   const storage = initialStorage();
   const first = createRuntime(storage);
   first.sandbox._logSession = () => { throw new Error('interrupt before session save'); };
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
   const changed = JSON.parse(storage.getItem('main'));
   delete changed.tasks[0].lastStopwatchTransactionId;
   changed.tasks[0].actual = 8;
@@ -443,7 +453,7 @@ test('session recovery rejects the same identity when duration differs', async (
   const storage = initialStorage();
   const first = createRuntime(storage);
   first.sandbox._logSession = () => { throw new Error('interrupt before session save'); };
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
   const tx = JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction;
   storage.setItem('focus-sessions', JSON.stringify([{
     id: 1, mode: 'stopwatch', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
@@ -507,7 +517,7 @@ test('linked legacy session without transaction ID is held for review when task 
     durationSec: 125, completed: true
   }]));
   const runtime = createRuntime(storage);
-  await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(runtime, 3);
   assert.equal(runtime.sandbox.tasks[0].actual, 5);
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 5);
   assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125);
@@ -529,7 +539,7 @@ test('linked legacy session without transaction ID stays ambiguous when task.act
     durationSec: 125, completed: true
   }]));
   const runtime = createRuntime(storage);
-  await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(runtime, 3);
   assert.equal(runtime.sandbox.tasks[0].actual, 8);
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
   assert.equal(runtime.sandbox._focusTimer.baseElapsed, 125);
@@ -542,7 +552,7 @@ test('invalid present task transaction marker is not treated as an absent legacy
   const storage = initialStorage();
   const first = createRuntime(storage);
   first.sandbox._logSession = () => { throw new Error('interrupt before session save'); };
-  await first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(first, 3);
   const main = JSON.parse(storage.getItem('main'));
   main.tasks[0].lastStopwatchTransactionId = "";
   storage.setItem('main', JSON.stringify(main));
@@ -796,7 +806,7 @@ test('task-linked Stopwatch save fails closed when Web Locks is unavailable', as
   const storage = initialStorage();
   const runtime = createRuntime(storage);
   runtime.sandbox.navigator.locks = null;
-  await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 3);
+  await saveViaLegacyStopwatchRecovery(runtime, 3);
   assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 5);
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
@@ -810,7 +820,7 @@ test('zero-minute task-linked commit creates a transaction and preserves actual:
   main.tasks[0].actual = null;
   storage.setItem('main', JSON.stringify(main));
   const runtime = createRuntime(storage);
-  assert.equal(await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], 0), true);
+  assert.equal(await saveViaLegacyStopwatchRecovery(runtime, 0), true);
   const saved = JSON.parse(storage.getItem('main')).tasks[0];
   const sessions = JSON.parse(storage.getItem('focus-sessions'));
   assert.equal(saved.actual, null, 'zero minutes must not turn actual:null into zero');
@@ -825,7 +835,7 @@ test('invalid negative or fractional task minutes are rejected before writes', a
     const beforeMain = storage.getItem('main');
     const beforeTimer = storage.getItem('focus-timer');
     const runtime = createRuntime(storage);
-    assert.equal(await runtime.sandbox._applyStopwatchSave(125, runtime.sandbox.tasks[0], minutes), false);
+    assert.equal(await saveViaLegacyStopwatchRecovery(runtime, minutes), false);
     assert.equal(storage.getItem('main'), beforeMain);
     assert.equal(storage.getItem('focus-timer'), beforeTimer);
     assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
@@ -1010,6 +1020,13 @@ function installFinishTimer(runtime) {
   sandbox._pendingFinishDialogShown = false;
   sandbox._cancelPendingNotificationFinish = () => true;
   sandbox.closeModal = () => {};
+  sandbox.v2CommitCalls = [];
+  sandbox._commitTaskLinkedFocusSessionV2 = request => {
+    sandbox.v2CommitCalls.push(request);
+    const pending = Promise.resolve(true);
+    sandbox._focusCommitPendingPromise = pending;
+    return pending;
+  };
   vm.runInNewContext(
     [extractFunction('_freezeFocusTimerForDecision'),
       extractFunction('_applyTimerFinish'),
@@ -1020,7 +1037,7 @@ function installFinishTimer(runtime) {
   return nodes;
 }
 
-test('finishTimer commits linked Stopwatch work through Web Locks and logs its transaction ID once', async () => {
+test('finishTimer routes linked Stopwatch work through the V2 writer and never starts the legacy journal', async () => {
   const storage = initialStorage();
   const runtime = createRuntime(storage);
   const nodes = installFinishTimer(runtime);
@@ -1030,18 +1047,22 @@ test('finishTimer commits linked Stopwatch work through Web Locks and logs its t
   assert.equal(footer.children.length, 3);
   footer.children[2].onclick();
   const commitPromise = runtime.sandbox._focusCommitPendingPromise;
-  assert.ok(commitPromise, 'finishTimer save action must enter the shared async commit engine');
+  assert.ok(commitPromise, 'finishTimer save action must enter the common async V2 writer');
   assert.equal(await commitPromise, true);
 
   const main = JSON.parse(storage.getItem('main'));
   const timer = JSON.parse(storage.getItem('focus-timer'));
   const sessions = JSON.parse(storage.getItem('focus-sessions'));
-  assert.equal(main.tasks[0].actual, 7);
-  assert.equal(typeof main.tasks[0].lastStopwatchTransactionId, 'string');
-  assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].transactionId, main.tasks[0].lastStopwatchTransactionId);
-  assert.equal(timer.pendingStopwatchTransaction, null);
-  assert.equal(timer.baseElapsed, 0);
+  assert.equal(runtime.sandbox.v2CommitCalls.length, 1);
+  assert.equal(runtime.sandbox.v2CommitCalls[0].taskId, 7);
+  assert.equal(runtime.sandbox.v2CommitCalls[0].snapshot.mode, 'stopwatch');
+  assert.equal(runtime.sandbox.v2CommitCalls[0].minutesToAdd, 3);
+  assert.equal(main.tasks[0].actual, 5,
+    'the route harness must not mutate the task outside the V2 writer');
+  assert.equal(main.tasks[0].lastStopwatchTransactionId, undefined);
+  assert.equal(sessions.length, 0);
+  assert.equal(timer.pendingStopwatchTransaction, null,
+    'new linked sessions must not create the legacy transaction journal');
 });
 
 test('finishTimer logs a Pomodoro break against its task without modifying task actual or creating a task transaction', async () => {
