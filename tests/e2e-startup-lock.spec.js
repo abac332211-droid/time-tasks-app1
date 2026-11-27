@@ -2037,8 +2037,8 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
     await migrateTaskToV2ThroughFinishButton(page);
     await addSecondTask(page);
 
-    async function startAdjustedStopwatch() {
-      await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 125 });
+    async function startAdjustedStopwatch(durationSec = 45) {
+      await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec });
       const saved = await page.evaluate(async () => _withTaskStorageLock(function() {
         _focusTimer.clockAdjusted = true;
         return _saveFocusTimer();
@@ -2089,7 +2089,7 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
         .find(button => button.textContent.includes('إبقاء متوقفة'));
       keep.click();
     });
-    await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 125);
+    await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 45);
 
     // Behaviorally prove the dispatcher never invokes either writer for V2 clock-adjusted work.
     const blocked = await page.evaluate(async () => {
@@ -2113,7 +2113,7 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
     assert.deepEqual(blocked.calls, { v2: 0, legacy: 0 });
     await page.evaluate(() => closeModal());
     let state = await readCreditState();
-    assertUncredited(state, 125);
+    assertUncredited(state, 45);
 
     // Reset dialog: it exposes keep/discard, never Save/Edit. Explicit discard clears only the timer.
     await page.locator('button[onclick="resetTimer()"]').click();
