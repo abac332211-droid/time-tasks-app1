@@ -13318,14 +13318,18 @@ function _commitFocusTaskSession(p) {
   if(!p||!p.snapshot)return Promise.resolve(false);
   var snapshot = p.snapshot;
   var taskId = p.taskId === undefined ? snapshot.taskId : p.taskId;
-  var linkedWorkSession = taskId !== null && taskId !== undefined
-    && taskId === snapshot.taskId
+  var snapshotHasLinkedWorkSession = snapshot.taskId !== null && snapshot.taskId !== undefined
     && snapshot.phase === "work"
     && (snapshot.mode === "stopwatch" || snapshot.mode === "pomodoro");
-  if (linkedWorkSession) {
+  if (snapshotHasLinkedWorkSession) {
+    if (taskId !== snapshot.taskId) {
+      showAlertModal("تعارض ربط المهمة",
+        "تغير معرّف المهمة في طلب الحفظ. لم نمرر الجلسة إلى أي كاتب ولم نغيّر الرصيد أو المؤقت.");
+      return Promise.resolve(false);
+    }
     if (p.completed === false) {
       showAlertModal("جلسة غير مكتملة",
-        "لم نعتمد جلسة مرتبطة بمهمة عبر الكاتب القديم؛ أنهِ قرار الجلسة أو اترك المؤقت متوقفًا.");
+        "قرار حفظ جلسة العمل غير مكتمل. بقيت الجلسة متوقفة ولم نغيّر الرصيد.");
       return Promise.resolve(false);
     }
     if (snapshot.clockAdjusted === true) {
@@ -14711,9 +14715,9 @@ function _commitFocusSessionV2(sessionFields) {
   });
 }
 
-// The PR #23 session contract supports trusted Pomodoro work sessions. Legacy
-// Stopwatch confirmation retains its minute-based writer unless a future
-// contract explicitly extends V2 to represent its user-adjusted "stopped" case.
+// All task-linked trusted work sessions use this durable V2 writer. Stopwatch
+// sessions may preserve measured duration and user-approved credit separately;
+// clock-adjusted snapshots are rejected before entering this function.
 function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasuredCredit) {
   if (!snapshot || !task || snapshot.running !== false
       || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
@@ -14765,9 +14769,8 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
   };
 }
 
-// The real finish path enters here for linked, trusted Pomodoro work sessions,
-// and for Stopwatch only when the approved seconds exactly match measurement.
-// User-adjusted Stopwatch minutes retain the legacy writer for compatibility.
+// The unified task-session dispatcher enters here for every linked, trusted
+// Pomodoro or Stopwatch work save, including user-adjusted Stopwatch minutes.
 function _commitPendingFocusSessionV2(params) {
   if (!params || !params.snapshot) return Promise.resolve(false);
   if (_focusCommitPendingPromise) return _focusCommitPendingPromise;
