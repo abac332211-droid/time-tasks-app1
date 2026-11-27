@@ -1018,7 +1018,6 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
         recoveryRequired: storageRecoveryRequired
       };
     });
-    });
 
     assert.equal(resultAfterAllPaths.task.actualSeconds, 720,
       'initial 300s + measured Pomodoro 180s + approved credits 120s + 60s + 60s');
