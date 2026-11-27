@@ -7571,10 +7571,18 @@ function _validateFocusSessionRecordV2(session) {
       && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
         || session.creditSource !== "none" || session.outcome !== "interrupted")) return false;
   if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
-  if (session.creditSource === "user_adjusted"
-      && (session.phase !== "work" || session.taskId === null
-        || session.clockTrust === "untrusted"
-        || (session.outcome !== "completed" && session.outcome !== "ended_early"))) return false;
+  if (session.creditSource === "user_adjusted") {
+    var adjustedPomodoroOutcome = session.mode === "pomodoro"
+      && (session.outcome === "completed" || session.outcome === "ended_early");
+    var adjustedStopwatchOutcome = session.mode === "stopwatch"
+      && session.outcome === "stopped";
+    // V2 Stopwatch may record a user-approved minute credit separately from
+    // measured seconds. It remains a trusted-clock session; clock-adjusted
+    // snapshots are deliberately fail-closed by the commit entry point.
+    if (session.phase !== "work" || session.taskId === null
+        || session.clockTrust !== "trusted" || session.clockAdjusted === true
+        || (!adjustedPomodoroOutcome && !adjustedStopwatchOutcome)) return false;
+  }
   return true;
 }
 
@@ -13308,6 +13316,36 @@ function _pendingTxMatchesCommitRequest(tx,p) {
 
 function _commitFocusTaskSession(p) {
   if(!p||!p.snapshot)return Promise.resolve(false);
+  var snapshot = p.snapshot;
+  var taskId = p.taskId === undefined ? snapshot.taskId : p.taskId;
+  var linkedWorkSession = taskId !== null && taskId !== undefined
+    && taskId === snapshot.taskId
+    && snapshot.phase === "work"
+    && (snapshot.mode === "stopwatch" || snapshot.mode === "pomodoro");
+  if (linkedWorkSession) {
+    if (p.completed === false) {
+      showAlertModal("جلسة غير مكتملة",
+        "لم نعتمد جلسة مرتبطة بمهمة عبر الكاتب القديم؛ أنهِ قرار الجلسة أو اترك المؤقت متوقفًا.");
+      return Promise.resolve(false);
+    }
+    if (snapshot.clockAdjusted === true) {
+      showAlertModal("جلسة تحتاج إلى مراجعة الساعة",
+        "اكتشف التطبيق تغيرًا في ساعة المؤقت. لم نعتمد الثواني المقاسة ولم نمرر الجلسة إلى الكاتب القديم. بقيت الجلسة متوقفة ببياناتها دون تغيير؛ راجعها أو تجاهلها صراحةً.");
+      return Promise.resolve(false);
+    }
+    // Every task-linked work session now crosses the durable V2 transaction
+    // boundary. This migrates legacy task metadata when needed and prevents
+    // reset, finish, or task-switch flows from reaching the V1 minute writer.
+    return _commitPendingFocusSessionV2({
+      snapshot: snapshot,
+      taskId: taskId,
+      minutesToAdd: p.minutesToAdd,
+      useMeasuredCredit: p.useMeasuredCredit === true,
+      completed: true,
+      onCommitted: p.onCommitted,
+      successToast: p.successToast
+    });
+  }
   if(_focusCommitInFlight){showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");return Promise.resolve(false);}
   if(_startupResetRecoveryInFlight||_resetRecoveryInFlight||_resetInFlight){
     showToast("⏳ هناك عملية استرداد أو حذف قيد التنفيذ");return Promise.resolve(false);
@@ -13332,7 +13370,6 @@ function _commitFocusTaskSession(p) {
     });
   _focusCommitPendingPromise=pending;return pending;
 }
-
 function _commitFocusTaskSessionLocked(p) {
   if(!p||!p.snapshot||!_stopwatchTransactionLockDepth)return false;
   if ((typeof _hasPersistedPendingFocusCommit === "function"
@@ -14699,10 +14736,6 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
       || (plannedDurationMs !== null
         && (!Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0))) return null;
 
-  // PR #23 only admits measured credit for Stopwatch's "stopped" outcome.
-  // A minute-based, user-adjusted Stopwatch value remains on the legacy writer.
-  if (snapshot.mode === "stopwatch" && creditedSeconds !== durationSec) return null;
-
   var started = new Date(snapshot.sessionStartAt);
   var endedMs = Number.isFinite(snapshot.pendingPhaseEndedAt)
     ? snapshot.pendingPhaseEndedAt : Date.now();
@@ -15321,7 +15354,7 @@ function _applyStopwatchSave(elapsedSec,task,minutesToAdd,snapshot) {
 
 function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
-  return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
+  return frozen?_commitFocusTaskSession({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
 function _cancelPendingNotificationFinish() {
   if (!_focusTimer.pendingNotificationFinish) return true;
@@ -15502,19 +15535,9 @@ function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnap
     useMeasuredCredit:useMeasuredCredit === true,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
-  var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
-      && Number.isInteger(snapshot.elapsedRemainderMs)
-    ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
-  var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
-    ? Math.floor(measuredActiveDurationMs / 1000) : null;
-  var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
-    && Number.isSafeInteger(minutesToAdd) && minutesToAdd * 60 === measuredActiveSeconds;
-  if ((snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement)
-      && snapshot.phase === "work"
-      && snapshot.taskId !== null && snapshot.taskId !== undefined
-      && task && snapshot.clockAdjusted !== true) {
-    return _commitPendingFocusSessionV2(request);
-  }
+  // _commitFocusTaskSession is the single dispatch boundary: linked work
+  // sessions go to V2, clock-adjusted sessions fail closed, and only
+  // unlinked/break records retain the legacy non-credit path.
   return _commitFocusTaskSession(request);
 }
 function _resetAfterSession() {
