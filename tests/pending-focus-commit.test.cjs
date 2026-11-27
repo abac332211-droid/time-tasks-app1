@@ -757,7 +757,8 @@ function sessionFinishRoutingContext(snapshot) {
       calls.push({ writer: 'legacy', request });
       return Promise.resolve('legacy');
     },
-    showAlertModal: (title, message) => calls.push({ writer: 'blocked', title, message })
+    showAlertModal: (title, message) => calls.push({ writer: 'blocked', title, message }),
+    tasks: [migratedTask]
   };
   vm.runInNewContext([
     extractFunction('_buildPendingFocusSessionFields'),
