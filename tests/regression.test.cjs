@@ -990,6 +990,87 @@ test('weekly and task-type gap metrics use measured seconds consistently', () =>
     'type-analysis average, aggregate, and median must render -23%');
 });
 
+test('credit provenance disclosure separates migrated opening balance from later focus-session credits', () => {
+  const sandbox = {};
+  vm.runInNewContext([
+    extractFunction('_validateTaskCreditFields'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('computeTaskCreditDisclosure')
+  ].join('\\n'), sandbox);
+
+  const ids = [
+    '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000002',
+    '00000000-0000-4000-8000-000000000003'
+  ];
+  const createdAt = '2026-11-27T00:00:00.000Z';
+  const operations = [
+    {
+      recordVersion: 1, operationId: ids[0], kind: 'session', taskId: 44,
+      revision: 1, previousSeconds: 3648, targetSeconds: 3752,
+      source: 'measured', sessionId: ids[0], createdAt,
+      measuredSeconds: 104, creditedSeconds: 104
+    },
+    {
+      recordVersion: 1, operationId: ids[1], kind: 'session', taskId: 44,
+      revision: 2, previousSeconds: 3752, targetSeconds: 3840,
+      source: 'measured', sessionId: ids[1], createdAt,
+      measuredSeconds: 88, creditedSeconds: 88
+    }
+  ];
+  const task = {
+    id: 44, actual: 64, actualSeconds: 3840,
+    creditRevision: 2, creditSchemaVersion: 1,
+    lastCreditOperationId: ids[1]
+  };
+
+  const disclosure = sandbox.computeTaskCreditDisclosure([task], operations);
+  assert.equal(disclosure.available, true);
+  assert.equal(disclosure.legacyOpeningSeconds, 3648,
+    'the opening balance before the ledger is disclosed rather than attributed to the two sessions');
+  assert.equal(disclosure.legacyTaskCount, 1);
+  assert.equal(disclosure.sessionCreditedSeconds, 192,
+    '104 + 88 seconds are the only post-migration session credits in this fixture');
+  assert.equal(disclosure.manualAdjustmentNetSeconds, 0);
+
+  const manualOperation = {
+    recordVersion: 1, operationId: ids[2], kind: 'manual_adjustment', taskId: 44,
+    revision: 3, previousSeconds: 3840, targetSeconds: 3000,
+    source: 'manual_adjustment', sessionId: null, createdAt
+  };
+  const manuallyAdjustedTask = {
+    id: 44, actual: 50, actualSeconds: 3000,
+    creditRevision: 3, creditSchemaVersion: 1,
+    lastCreditOperationId: ids[2]
+  };
+  const adjusted = sandbox.computeTaskCreditDisclosure(
+    [manuallyAdjustedTask], operations.concat(manualOperation));
+  assert.equal(adjusted.available, true);
+  assert.equal(adjusted.legacyOpeningSeconds, 3648);
+  assert.equal(adjusted.sessionCreditedSeconds, 192);
+  assert.equal(adjusted.manualAdjustmentNetSeconds, -840,
+    'later manual adjustments are kept separate from the historical opening balance');
+
+  const legacyTask = {
+    id: 45, actual: 64, actualSeconds: 3840,
+    creditRevision: 0, creditSchemaVersion: 1,
+    lastCreditOperationId: null
+  };
+  const legacyOnly = sandbox.computeTaskCreditDisclosure([legacyTask], []);
+  assert.equal(legacyOnly.available, true);
+  assert.equal(legacyOnly.legacyOpeningSeconds, 3840,
+    'a migrated revision-zero balance is identified as pre-ledger, without inventing a source');
+
+  const incomplete = sandbox.computeTaskCreditDisclosure([task], [operations[1]]);
+  assert.equal(incomplete.available, false,
+    'an incomplete history must suppress the disclosure instead of reporting a misleading breakdown');
+
+  assert.match(extractFunction('renderWeeklyReport'), /renderTaskCreditDisclosure\\(_weeklyDisclosureTasks\\)/,
+    'the weekly report surfaces legacy opening-balance provenance');
+  assert.match(extractFunction('renderTypeGapAnalysis'), /renderTaskCreditDisclosure\\(typeTasksForDisclosure\\)/,
+    'the type report surfaces legacy opening-balance provenance');
+});
+
 test('focus-session commits refresh all task-gap views after the measured balance is saved', () => {
   const commit = appScript.match(
     /function\s+_commitPendingFocusSessionV2\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
