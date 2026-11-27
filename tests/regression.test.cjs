@@ -990,6 +990,51 @@ test('weekly and task-type gap metrics use measured seconds consistently', () =>
     'type-analysis average, aggregate, and median must render -23%');
 });
 
+test('type gap analysis separates measured task totals from the standardized projection', () => {
+  const task = {
+    id: 9201,
+    type: 'معرفية',
+    status: 'pending',
+    expected: 5,
+    actual: 2,
+    actualSeconds: 139,
+    plannedDate: '2026-11-27',
+    completedAt: null,
+    recurrence: null
+  };
+  const element = { innerHTML: '' };
+  const sandbox = {
+    tasks: [task],
+    document: { getElementById: id => id === 'typeGapAnalysis' ? element : null },
+    isTaskCancelled: row => row.status === 'cancelled',
+    isTaskDone: row => row.status === 'done',
+    gapText: value => Math.round(value * 100) + '%',
+    gapMetricClass: () => '',
+    sampleWarning: () => ({ cls: 'warn', text: 'sample' }),
+    renderTaskCreditDisclosure: () => ''
+  };
+
+  vm.runInNewContext([
+    extractFunction('computeGap'),
+    extractFunction('getTaskActualMinutes'),
+    extractFunction('computeTaskGapMetrics'),
+    extractFunction('computeTypeAnalysis'),
+    extractFunction('_formatFocusSessionDuration'),
+    extractFunction('renderTypeGapAnalysis')
+  ].join('\\n'), sandbox);
+
+  sandbox.renderTypeGapAnalysis();
+
+  assert.match(element.innerHTML,
+    /5 د تقدير ← 2 د 19 ث فعلي/,
+    'the type card must show actual measured task totals, including leftover seconds');
+  assert.match(element.innerHTML,
+    /مثال قياسي[^<]*<\\/span><span[^>]*>تقدير 60 دقيقة ← المتوقع 28 دقيقة/,
+    'the 60-minute figure must be explicitly presented as a standard projection, not actual task time');
+  assert.doesNotMatch(element.innerHTML, /60 دقيقة تقدير ←/,
+    'the old ambiguous label must no longer appear');
+});
+
 test('credit provenance disclosure separates migrated opening balance from later focus-session credits', () => {
   const sandbox = {};
   vm.runInNewContext([
