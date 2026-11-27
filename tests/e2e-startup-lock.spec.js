@@ -1941,7 +1941,8 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
         task: main.tasks.find(row => row.id === 7011),
         operations: main.creditOperations || [],
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
-        timer
+        timer,
+        recoveryRequired: storageRecoveryRequired
       };
     });
     assert.equal(afterDiscard.task.actualSeconds, 660);
@@ -1950,7 +1951,7 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
     assert.equal(afterDiscard.sessions.length, 2);
     assert.equal(afterDiscard.timer.pendingFocusCommit, null);
     assert.equal(afterDiscard.timer.pendingStopwatchTransaction, null);
-    assert.equal(storageRecoveryRequired, false);
+    assert.equal(afterDiscard.recoveryRequired, false);
   } finally {
     await closeBrowserContext(runtime);
   }
@@ -1987,7 +1988,8 @@ test('V2 Stopwatch finish button records 125 measured seconds and 120 approved s
       const task = main.tasks.find(row => row.id === 7011);
       const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
       const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
-      return { task, operations: main.creditOperations || [], sessions, timer };
+      return { task, operations: main.creditOperations || [], sessions, timer,
+        recoveryRequired: storageRecoveryRequired };
     });
     assert.equal(result.task.actualSeconds, 600);
     assert.equal(result.task.actual, 10);
@@ -2017,7 +2019,7 @@ test('V2 Stopwatch finish button records 125 measured seconds and 120 approved s
     assert.equal(result.timer.baseElapsed, 0);
     assert.equal(result.timer.pendingFocusCommit, null);
     assert.equal(result.timer.pendingStopwatchTransaction, null);
-    assert.equal(storageRecoveryRequired, false);
+    assert.equal(result.recoveryRequired, false);
   } finally {
     await closeBrowserContext(runtime);
   }
@@ -2052,7 +2054,8 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
           task,
           operations: main.creditOperations || [],
           sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
-          timer
+          timer,
+          recoveryRequired: storageRecoveryRequired
         };
       });
     }
@@ -2172,7 +2175,7 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
     assert.equal(state.sessions.length, 1);
     assert.equal(state.timer.pendingFocusCommit, null);
     assert.equal(state.timer.pendingStopwatchTransaction, null);
-    assert.equal(storageRecoveryRequired, false);
+    assert.equal(state.recoveryRequired, false);
   } finally {
     await closeBrowserContext(runtime);
   }
@@ -2230,6 +2233,7 @@ test('V2 resetTimer UI reports failure without credit, session, timer reset, or 
         operations: main.creditOperations || [],
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
         timer,
+        recoveryRequired: storageRecoveryRequired,
         successToastShown: window.__v2ResetToasts.some(message =>
           message.includes('أُنهِيَت جلسة Stopwatch وسُجلت مرة واحدة'))
       };
@@ -2246,7 +2250,7 @@ test('V2 resetTimer UI reports failure without credit, session, timer reset, or 
     assert.equal(result.timer.running, false);
     assert.equal(result.timer.baseElapsed, 180);
     assert.equal(result.successToastShown, false);
-    assert.equal(storageRecoveryRequired, true);
+    assert.equal(result.recoveryRequired, true);
   } finally {
     await closeBrowserContext(runtime);
   }
