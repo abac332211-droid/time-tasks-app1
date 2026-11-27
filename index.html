@@ -9840,7 +9840,7 @@ function _hasAmbiguousLegacyFocusSession(phase) {
 
 
 
-function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
+function _recoverPendingStopwatchSaveLocked(holdAlreadyAcquired) {
   var tx = _focusTimer && _focusTimer.pendingStopwatchTransaction;
   if (!tx) return true;
   if (!_validatePendingStopwatchTransaction(tx)) {
@@ -9895,6 +9895,9 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
     _focusTimer.clockAdjusted = tx.clockAdjusted;
     _focusElapsedRemainderMs = Number.isInteger(tx.elapsedRemainderMs) ? tx.elapsedRemainderMs : 0;
 
+    if (tx.version === 1 && _hasAmbiguousLegacyFocusSession(tx.phase)) {
+      throw new Error("A matching legacy session has no transaction identity; manual reconciliation is required before replay.");
+    }
     if (!_logSession(tx.phase, tx.durationSec, true, undefined,
         tx.version === 2 ? tx.id : undefined)) {
       throw new Error("The focus session could not be written or verified.");
@@ -9930,9 +9933,24 @@ function _recoverPendingStopwatchSave(holdAlreadyAcquired) {
 
 
 
+function _recoverPendingStopwatchSave(holdAlreadyAcquired, lockAlreadyAcquired) {
+  if (lockAlreadyAcquired) {
+    return _recoverPendingStopwatchSaveLocked(holdAlreadyAcquired);
+  }
+  return _withFocusTaskCommitLock(function() {
+    return _recoverPendingStopwatchSaveLocked(holdAlreadyAcquired);
+  }).catch(function(error) {
+    storageRecoveryRequired = true;
+    console.error("Pending focus recovery lock acquisition failed:", error);
+    showAlertModal("تعذر تأمين استرداد جلسة التركيز",
+      "لم نبدأ تعديل المهمة لأن قفل الاسترداد لم يتوفر. أبقينا سجل العملية كما هو وأوقفنا الكتابة لحماية الرصيد؛ أعد المحاولة في نافذة واحدة.");
+    return false;
+  });
+}
+
 function _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd) {
   if (_focusTimer.pendingStopwatchTransaction) {
-    if (_recoverPendingStopwatchSave(false)) {
+    if (_recoverPendingStopwatchSave(false, true)) {
       renderAll();
       showToast("✅ استُكملت معاملة جلسة التركيز المحفوظة دون تكرار دقائق المهمة");
       return true;
@@ -10008,7 +10026,7 @@ function _applyStopwatchSaveLocked(elapsedSec, task, minutesToAdd) {
         return false;
       }
 
-      if (!_recoverPendingStopwatchSave(true)) return false;
+      if (!_recoverPendingStopwatchSave(true, true)) return false;
       releaseHold();
       if (!_completeRollingRecoveryCheckpoint("focus-session-commit",
         "سُجلت الجلسة",
@@ -11146,7 +11164,14 @@ document.getElementById("taskDate").value = todayStr();
 
 _loadFocusTimer();
 _loadFocusSettings();
-if (_focusTimer.pendingStopwatchTransaction) _recoverPendingStopwatchSave(false);
+if (_focusTimer.pendingStopwatchTransaction) {
+  _recoverPendingStopwatchSave(false).then(function(recovered) {
+    if (recovered) {
+      _renderFocusTimer();
+      renderAll();
+    }
+  });
+}
 _finalizeFocusTimerColdStartRestore();
 renderAll();
 
