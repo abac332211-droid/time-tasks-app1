@@ -44,6 +44,13 @@ function extractFunction(name) {
     assert.ok(actualMinutesHelper, 'getTaskActualMinutes helper exists in index.html');
     helpers.push(actualMinutesHelper[0]);
   }
+  if (/\bcomputeTaskGapMetrics\s*\(/.test(source)) {
+    const gapMetricsHelper = appScript.match(
+      /function\s+computeTaskGapMetrics\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(gapMetricsHelper, 'computeTaskGapMetrics helper exists in index.html');
+    helpers.push(gapMetricsHelper[0]);
+  }
   return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
@@ -888,6 +895,72 @@ test('weekly report separates planned cohort from actual completion dates', () =
   assert.equal(report.completedThisWeek, 1, 'actual weekly completions follow completedAt, even for older planned tasks');
 });
 
+
+test('weekly and task-type gap metrics use measured seconds consistently', () => {
+  const task = {
+    id: 9101,
+    type: 'معرفية',
+    status: 'pending',
+    expected: 3,
+    actual: 2,
+    actualSeconds: 139,
+    plannedDate: '2026-11-27',
+    completedAt: null,
+    recurrence: null
+  };
+  const sandbox = {
+    tasks: [task],
+    STORAGE_KEY: 'test-storage',
+    VALID_ENERGY: [],
+    getLast7OperationalDays: () => ['2026-11-27'],
+    localStorage: { getItem: () => JSON.stringify({ dailyLogs: [] }) },
+    isTaskCancelled: (row) => row.status === 'cancelled',
+    isTaskDone: (row) => row.status === 'done',
+    _operationalDateFromIso: (value) => String(value).slice(0, 10)
+  };
+
+  vm.runInNewContext([
+    extractFunction('computeWeeklyReport'),
+    extractFunction('computeTypeAnalysis')
+  ].join('\n'), sandbox);
+
+  const weekly = sandbox.computeWeeklyReport();
+  const byType = sandbox.computeTypeAnalysis('معرفية');
+  const direct = sandbox.computeTaskGapMetrics(sandbox.tasks);
+  const expectedGap = (139 / 60 - 3) / 3;
+
+  for (const metrics of [weekly, byType, direct]) {
+    assert.equal(metrics.gapCount, 1);
+    for (const key of ['avgGap', 'aggGap', 'medianGap']) {
+      assert.ok(Math.abs(metrics[key] - expectedGap) < 1e-12,
+        key + ' must use 139 measured seconds rather than the floored 2-minute legacy value');
+    }
+  }
+  assert.equal(Math.round(weekly.avgGap * 100), -23);
+  assert.equal(Math.round(byType.avgGap * 100), -23);
+  assert.equal(Math.round(direct.avgGap * 100), -23);
+  assert.equal(Math.round(((task.actual - task.expected) / task.expected) * 100), -33,
+    'the regression fixture must distinguish stale legacy minutes from measured seconds');
+});
+
+test('focus-session commits refresh all task-gap views after the measured balance is saved', () => {
+  const commit = appScript.match(
+    /function\\s+_commitPendingFocusSessionV2\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}/
+  );
+  assert.ok(commit, '_commitPendingFocusSessionV2 exists');
+  for (const renderCall of [
+    'renderWeeklyReport',
+    'renderStats',
+    'renderTypeGapAnalysis'
+  ]) {
+    assert.match(commit[0], new RegExp(renderCall + '\\s*\\('),
+      renderCall + ' must refresh after a focus-session commit');
+  }
+  assert.match(extractFunction('renderStats'), /computeTaskGapMetrics\\(subset\\)/,
+    'the type summary must use the shared gap-metrics implementation');
+  assert.match(extractFunction('renderTypeGapAnalysis'), /computeTypeAnalysis\\(tp\\)/,
+    'the type analysis card must use the shared type calculation');
+});
 
 test('restored notebook records normalize imported IDs before inline event handlers use them', () => {
   const thoughtsSandbox = {
