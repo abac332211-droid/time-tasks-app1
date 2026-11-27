@@ -1902,7 +1902,11 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
     await migrateTaskToV2ThroughFinishButton(page);
 
     await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
-    await page.locator('button[onclick="resetTimer()"]').click();
+    await page.evaluate(() => {
+      const reset = document.querySelector('button[onclick="resetTimer()"]');
+      if (!reset) throw new Error('resetTimer control was not rendered');
+      reset.click();
+    });
     await page.waitForFunction(() =>
       Array.from(document.getElementById('modalFooter').children).some(button =>
         button.textContent.includes('حفظ وإضافة 3 د')),
@@ -1954,7 +1958,11 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
 
     // Cancel/keep-paused: the elapsed Stopwatch remains available, with no new credit or session.
     await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 90 });
-    await page.locator('button[onclick="resetTimer()"]').click();
+    await page.evaluate(() => {
+      const reset = document.querySelector('button[onclick="resetTimer()"]');
+      if (!reset) throw new Error('resetTimer control was not rendered');
+      reset.click();
+    });
     await page.waitForFunction(() =>
       Array.from(document.getElementById('modalFooter').children).some(button =>
         button.textContent.includes('إبقاء متوقفة')),
@@ -1984,7 +1992,11 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
     assert.equal(afterKeep.sessions.length, 2);
 
     // Explicit ignore/reset: clear the paused timer without writing task credit or a session.
-    await page.locator('button[onclick="resetTimer()"]').click();
+    await page.evaluate(() => {
+      const reset = document.querySelector('button[onclick="resetTimer()"]');
+      if (!reset) throw new Error('resetTimer control was not rendered');
+      reset.click();
+    });
     await page.waitForFunction(() =>
       Array.from(document.getElementById('modalFooter').children).some(button =>
         button.textContent.includes('تجاهل وتصفير')),
@@ -2330,6 +2342,21 @@ test('V2 save-and-switch failure keeps the old task paused and never starts the 
     await waitForStartupSuccess(page);
     await migrateTaskToV2ThroughFinishButton(page);
     await addSecondTask(page);
+    // V2 commit performs a metadata-only migration across every legacy task
+    // before creating its journal. Migrate the newly-created target task now,
+    // so the injected main-record fault lands at the session ledger write,
+    // not at unrelated pre-journal migration.
+    const allTasksMigrated = await page.evaluate(async () => {
+      return _withStopwatchTransactionLock(function() {
+        const migration = _migrateLegacyTaskCreditMetadataLocked();
+        if (!migration || migration.ok !== true) return false;
+        const nextTask = tasks.find(row => row && row.id === 7012);
+        return !!nextTask && nextTask.creditSchemaVersion === 1
+          && nextTask.creditRevision === 0
+          && nextTask.actualSeconds === null;
+      });
+    });
+    if (!allTasksMigrated) throw new Error('Could not migrate the transition target task before fault injection');
     await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
