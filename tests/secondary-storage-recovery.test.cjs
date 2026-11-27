@@ -44,7 +44,7 @@ function storageHarness(seed = {}) {
     _validatePendingStopwatchTransaction: () => true,
     _validateFocusSessionRecord: row => !!row && Number.isInteger(row.id) && Number.isFinite(row.durationSec),
     validateV2: data => !!data && data.schemaVersion === 2 && Array.isArray(data.tasks),
-    _invalidateProjectsCache() { this._projectsCache = null; },
+    _invalidateProjectsCache() { sandbox._projectsCache = null; },
     localStorage
   };
   vm.runInNewContext([
