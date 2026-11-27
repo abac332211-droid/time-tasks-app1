@@ -45,7 +45,12 @@ function loadTopLevelFunction(name) {
   assert.notEqual(start, -1, `Missing function ${name}`);
   const end = html.indexOf('\n}', start);
   assert.notEqual(end, -1, `Could not find end of function ${name}`);
-  return vm.runInNewContext(`(${html.slice(start, end + 2)})`);
+  const helperStart = html.indexOf('function _validateTaskCreditFields(');
+  assert.notEqual(helperStart, -1, 'task credit validator exists');
+  const helperEnd = html.indexOf('\n}', helperStart);
+  assert.notEqual(helperEnd, -1, 'task credit validator closes');
+  const helper = html.slice(helperStart, helperEnd + 2);
+  return vm.runInNewContext(helper + '\n(' + html.slice(start, end + 2) + ')');
 }
 
 const buildSnapshot = loadTopLevelFunction('_buildFocusTimerBackupSnapshot');
@@ -320,7 +325,8 @@ test('backup validator is wired to focus-timer validation', () => {
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true,
-    _validateFocusTimerBackupSnapshot: validateSnapshot
+    _validateFocusTimerBackupSnapshot: validateSnapshot,
+    _validateTaskCreditFields: vm.runInNewContext('(' + extractTopLevelSource('_validateTaskCreditFields') + ')')
   };
   const validateBackup = vm.runInNewContext(`(${html.slice(sourceStart, sourceEnd + 2)})`, context);
   const paused = buildSnapshot(timer(), 9_000, 300, 1_500, new Set([10]));
@@ -1197,7 +1203,8 @@ function backupValidationContext() {
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true,
-    _validateFocusTimerBackupSnapshot: () => ({ valid: true })
+    _validateFocusTimerBackupSnapshot: () => ({ valid: true }),
+    _validateTaskCreditFields: vm.runInNewContext('(' + extractTopLevelSource('_validateTaskCreditFields') + ')')
   };
 }
 

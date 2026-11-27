@@ -2446,6 +2446,33 @@ function _validateLastRecurringDates(value) {
   return true;
 }
 
+function _validateTaskCreditFields(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+  var fields = ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"];
+  var hasAny = fields.some(function(key) {
+    return Object.prototype.hasOwnProperty.call(task, key);
+  });
+  if (!hasAny) return true; // Legacy task: retain V1/V2-without-credit-fields compatibility.
+
+  for (var i = 0; i < fields.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(task, fields[i])) return false;
+  }
+  if (task.actualSeconds === null) {
+    if (task.actual !== null) return false;
+  } else {
+    if (!Number.isSafeInteger(task.actualSeconds) || task.actualSeconds < 0) return false;
+    if (task.actual === null || task.actual === undefined
+        || typeof task.actual !== "number" || !Number.isFinite(task.actual) || task.actual < 0
+        || Math.floor(task.actualSeconds / 60) !== task.actual) return false;
+  }
+  if (!Number.isSafeInteger(task.creditRevision) || task.creditRevision < 0) return false;
+  if (task.creditSchemaVersion !== 1) return false;
+  if (task.lastCreditOperationId !== null
+      && (typeof task.lastCreditOperationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.lastCreditOperationId))) return false;
+  return true;
+}
+
 function validateV2(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) return false;
@@ -2480,6 +2507,7 @@ function validateV2(data) {
     if (typeof t.type !== "string" || !VALID_TYPES.includes(t.type)) return false;
     if (typeof t.expected !== "number" || !Number.isFinite(t.expected) || t.expected < 0) return false;
     if (t.actual !== null && (typeof t.actual !== "number" || !Number.isFinite(t.actual) || t.actual < 0)) return false;
+    if (!_validateTaskCreditFields(t)) return false;
     if (typeof t.plannedDate !== "string" || !isValidCalendarDate(t.plannedDate)) return false;
     if (typeof t.plannedTime !== "string" || !isValidLocalTime(t.plannedTime)) return false;
     if (t.completedAt !== null && !isValidLocalDateTime(t.completedAt)) return false;
@@ -6537,7 +6565,78 @@ function _parseStrictFocusSessionTimestamp(value) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+function _validateFocusSessionRecordV2(session) {
+  if (!session || typeof session !== "object" || Array.isArray(session)) return false;
+  if (session.recordVersion !== 2) return false;
+  if (!Number.isSafeInteger(session.id) || session.id <= 0) return false;
+  if (typeof session.sessionId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.sessionId)) return false;
+  if (session.transactionId !== undefined && (typeof session.transactionId !== "string"
+      || session.transactionId.length < 8 || session.transactionId.length > 160)) return false;
+  if (session.mode !== "pomodoro" && session.mode !== "stopwatch") return false;
+  if (!["work", "short-break", "long-break"].includes(session.phase)) return false;
+  if (session.mode === "stopwatch" && session.phase !== "work") return false;
+  if (session.taskId !== undefined && session.taskId !== null
+      && (!Number.isSafeInteger(session.taskId) || session.taskId <= 0)) return false;
+  if (session.taskName !== undefined && session.taskName !== null && typeof session.taskName !== "string") return false;
+
+  if (!Number.isSafeInteger(session.activeDurationMs) || session.activeDurationMs < 0) return false;
+  if (session.plannedDurationMs !== null
+      && (!Number.isSafeInteger(session.plannedDurationMs) || session.plannedDurationMs <= 0)) return false;
+  if (session.mode === "pomodoro" && session.plannedDurationMs === null) return false;
+  if (session.mode === "stopwatch" && session.plannedDurationMs !== null) return false;
+  if (!Number.isSafeInteger(session.durationSec) || session.durationSec < 0
+      || session.durationSec !== Math.floor(session.activeDurationMs / 1000)) return false;
+
+  if (!Number.isSafeInteger(session.creditedSeconds) || session.creditedSeconds < 0) return false;
+  if (!["measured", "user_adjusted", "none"].includes(session.creditSource)) return false;
+  if (!["completed", "ended_early", "stopped", "skipped", "discarded", "interrupted"].includes(session.outcome)) return false;
+  if (!["android_elapsed_realtime", "performance_now", "mixed"].includes(session.clockSource)) return false;
+  if (!["trusted", "partial", "untrusted"].includes(session.clockTrust)) return false;
+  if (typeof session.clockAdjusted !== "boolean") return false;
+
+  if (session.startedAt !== null && _parseStrictFocusSessionTimestamp(session.startedAt) === null) return false;
+  if (session.endedAt !== null && _parseStrictFocusSessionTimestamp(session.endedAt) === null) return false;
+  if (session.startedAt === null && session.endedAt !== null && session.clockTrust === "trusted") return false;
+  if (session.startedAt !== null && session.endedAt !== null) {
+    var startMs = _parseStrictFocusSessionTimestamp(session.startedAt);
+    var endMs = _parseStrictFocusSessionTimestamp(session.endedAt);
+    if (endMs < startMs && !session.clockAdjusted) return false;
+  }
+
+  if (session.completed !== undefined && typeof session.completed !== "boolean") return false;
+  if (session.completed !== (session.outcome === "completed")) return false;
+
+  if (session.outcome === "completed") {
+    if (session.plannedDurationMs === null
+        || session.activeDurationMs < session.plannedDurationMs
+        || session.clockTrust !== "trusted") return false;
+  }
+  if (session.outcome === "ended_early") {
+    if (session.plannedDurationMs === null
+        || session.activeDurationMs >= session.plannedDurationMs) return false;
+  }
+  if (session.outcome === "stopped"
+      && (session.mode !== "stopwatch" || session.plannedDurationMs !== null)) return false;
+  if ((session.outcome === "skipped" || session.outcome === "discarded")
+      && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
+  if (session.creditSource === "none" && session.creditedSeconds !== 0) return false;
+  if (session.creditSource === "measured"
+      && session.creditedSeconds !== Math.floor(session.activeDurationMs / 1000)) return false;
+  if ((session.phase !== "work" || session.taskId === null || session.taskId === undefined)
+      && (session.creditedSeconds !== 0 || session.creditSource !== "none")) return false;
+  if (session.clockTrust === "untrusted"
+      && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
+        || session.creditSource !== "none" || session.outcome !== "interrupted")) return false;
+  if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
+  if ((session.phase !== "work" || session.taskId === null || session.taskId === undefined)
+      && session.creditSource !== "none") return false;
+  return true;
+}
+
 function _validateFocusSessionRecord(session) {
+  if (session && session.recordVersion === 2) return _validateFocusSessionRecordV2(session);
+  if (session && session.recordVersion !== undefined) return false;
   if (!session || typeof session !== "object" || Array.isArray(session)) return false;
   if (session.id !== undefined && (!Number.isSafeInteger(session.id) || session.id <= 0)) return false;
   if (session.transactionId !== undefined && (typeof session.transactionId !== "string"
@@ -6936,6 +7035,8 @@ function validateBackup(obj) {
       return { valid: false, reason: "الزمن المتوقع غير صالح (" + (i+1) + ")." };
     if (t.actual !== null && (typeof t.actual !== "number" || !Number.isFinite(t.actual) || t.actual < 0))
       return { valid: false, reason: "المدة الفعلية غير صالحة (" + (i+1) + ")." };
+    if (!_validateTaskCreditFields(t))
+      return { valid: false, reason: "رصيد الثواني أو إصدار اعتماد المهمة غير صالح (" + (i+1) + ")." };
     if (typeof t.plannedDate !== "string" || !isValidCalendarDate(t.plannedDate))
       return { valid: false, reason: "التاريخ غير صالح (" + (i+1) + ")." };
     if (typeof t.plannedTime !== "string" || !isValidLocalTime(t.plannedTime))
@@ -11111,7 +11212,7 @@ function _loadSessions() {
     if (raw === null) { _sessionsCache = []; return []; }
     var arr = JSON.parse(raw);
     if (!Array.isArray(arr)) throw new Error("focus sessions root is not an array");
-    var invalid = [], seenIds = new Set(), seenTransactionIds = new Set(), valid = [];
+    var invalid = [], seenIds = new Set(), seenTransactionIds = new Set(), seenSessionIds = new Set(), valid = [];
     for (var i = 0; i < arr.length; i++) {
       var session = arr[i], sessionValid = _validateFocusSessionRecord(session);
       if (sessionValid && session.id !== undefined) {
@@ -11121,6 +11222,10 @@ function _loadSessions() {
       if (sessionValid && session.transactionId !== undefined) {
         if (seenTransactionIds.has(session.transactionId)) sessionValid = false;
         else seenTransactionIds.add(session.transactionId);
+      }
+      if (sessionValid && session.recordVersion === 2) {
+        if (seenSessionIds.has(session.sessionId)) sessionValid = false;
+        else seenSessionIds.add(session.sessionId);
       }
       if (sessionValid) valid.push(session); else invalid.push(i + 1);
     }
@@ -11155,7 +11260,7 @@ function _saveSessions(arr) {
   if (typeof _storageWriteAllowed === "function" && !_storageWriteAllowed()) return false;
   try {
     if (!Array.isArray(arr) || arr.length > FOCUS_MAX_SESSIONS) return false;
-    var ids = new Set(), transactionIds = new Set();
+    var ids = new Set(), transactionIds = new Set(), sessionIds = new Set();
     for (var i = 0; i < arr.length; i++) {
       if (!_validateFocusSessionRecord(arr[i])) return false;
       if (arr[i].id !== undefined) {
@@ -11165,6 +11270,10 @@ function _saveSessions(arr) {
       if (arr[i].transactionId !== undefined) {
         if (transactionIds.has(arr[i].transactionId)) return false;
         transactionIds.add(arr[i].transactionId);
+      }
+      if (arr[i].recordVersion === 2) {
+        if (sessionIds.has(arr[i].sessionId)) return false;
+        sessionIds.add(arr[i].sessionId);
       }
     }
     if (!_writeSecondaryStorageVerified(FOCUS_SESSIONS_KEY, JSON.stringify(arr))) return false;
@@ -11319,10 +11428,39 @@ function _sessionsForDay(dateStr) {
   });
 }
 
+function _focusSessionStatsForList(list) {
+  var workCount = 0, workSeconds = 0, breakCount = 0, breakSeconds = 0;
+  function trustedSeconds(session) {
+    if (!session || session.clockTrust === "untrusted") return 0;
+    var seconds = session.durationSec;
+    return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : 0;
+  }
+  (Array.isArray(list) ? list : []).forEach(function(session) {
+    if (!session) return;
+    var seconds = trustedSeconds(session);
+    if (session.phase === "work") {
+      if (seconds > 0) {
+        workCount++;
+        workSeconds += seconds;
+      }
+    } else if (session.mode === "pomodoro"
+        && (session.phase === "short-break" || session.phase === "long-break")) {
+      if (seconds > 0) {
+        breakCount++;
+        breakSeconds += seconds;
+      }
+    }
+  });
+  return {
+    count: workCount,
+    totalSec: workSeconds,
+    breakCount: breakCount,
+    breakSec: breakSeconds
+  };
+}
+
 function _todaySessionsStats() {
-  var list = _sessionsForDay(todayStr());
-  var total = list.reduce(function(s, x) { return s + (x.durationSec || 0); }, 0);
-  return { count: list.length, totalSec: total };
+  return _focusSessionStatsForList(_sessionsForDay(todayStr()));
 }
 
 function _weeklySessionsStats() {
@@ -11331,8 +11469,7 @@ function _weeklySessionsStats() {
   var all = _loadSessions().filter(function(s) {
     return s.startedAt && daySet.has(_operationalDateFromIso(s.startedAt));
   });
-  var total = all.reduce(function(s, x) { return s + (x.durationSec || 0); }, 0);
-  return { count: all.length, totalSec: total };
+  return _focusSessionStatsForList(all);
 }
 
 function _formatFocusTime(sec) {
@@ -11541,6 +11678,12 @@ function renderFocusSessionsCard() {
   html += '<div class="weekly-stat"><div class="weekly-stat-label">اليوم</div><div class="weekly-stat-value">' + todayStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(todayStats.totalSec) + '</div></div>';
   html += '<div class="weekly-stat"><div class="weekly-stat-label">هذا الأسبوع</div><div class="weekly-stat-value">' + weeklyStats.count + '</div><div class="small" style="margin-top:4px;">' + _formatDuration(weeklyStats.totalSec) + '</div></div>';
   html += '</div>';
+  if (todayStats.breakCount > 0 || weeklyStats.breakCount > 0) {
+    html += '<div class="small" style="margin-top:8px;text-align:center;">الاستراحات — اليوم: '
+      + todayStats.breakCount + ' · ' + _formatDuration(todayStats.breakSec)
+      + ' | الأسبوع: ' + weeklyStats.breakCount + ' · ' + _formatDuration(weeklyStats.breakSec)
+      + '</div>';
+  }
 
   if (recent.length === 0) {
     html += '<div class="empty">لا جلسات بعد — ابدأ واحدة من مؤقت التركيز.</div>';

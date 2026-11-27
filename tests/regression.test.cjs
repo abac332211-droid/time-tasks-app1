@@ -589,7 +589,7 @@ test('backup validator accepts legacy partial for import healing', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateBackup'), sandbox);
   const backup = { backupFormatVersion: 1, schemaVersion: 2, data: {
     tasks: [{ id: 1, name: 'قديم', status: 'partial', type: 'معرفية', expected: 20, actual: null, plannedDate: '2026-11-04', plannedTime: '', completedAt: null, createdAt: 1 }],
     dailyLogs: []
@@ -733,7 +733,7 @@ test('backup validator rejects malformed version and storage settings', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateBackup'), sandbox);
   assert.equal(sandbox.validateBackup({ backupFormatVersion: 1.5, schemaVersion: 2, data: { tasks: [], dailyLogs: [] } }).valid, false);
   assert.equal(sandbox.validateBackup({ backupFormatVersion: 1, schemaVersion: 2, data: { settings: { operationalDayStart: 24 }, tasks: [], dailyLogs: [] } }).valid, false);
   assert.equal(sandbox.validateBackup({ backupFormatVersion: 1, schemaVersion: 2, data: { tasks: [], dailyLogs: [] } }).valid, true);
@@ -759,7 +759,7 @@ test('backup validator rejects malformed focus-session timestamps', () => {
         && ['work', 'short-break', 'long-break'].includes(session.phase);
     }
   };
-  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateBackup'), sandbox);
   const result = sandbox.validateBackup({
     backupFormatVersion: 1,
     schemaVersion: 2,
@@ -948,7 +948,7 @@ test('backup and stored schema reject prototype-polluting settings keys', () => 
     validateDailyLog: () => true
   };
   const unsafeSettings = JSON.parse('{"__proto__":{"polluted":true}}');
-  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateBackup'), sandbox);
   const backupResult = sandbox.validateBackup({
     backupFormatVersion: 1,
     schemaVersion: 2,
@@ -956,7 +956,7 @@ test('backup and stored schema reject prototype-polluting settings keys', () => 
   });
   assert.equal(backupResult.valid, false);
 
-  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateV2'), sandbox);
   const storedResult = sandbox.validateV2({
     schemaVersion: 2,
     settings: unsafeSettings,
@@ -977,7 +977,7 @@ test('stored schema rejects duplicate task IDs before normal app use', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateV2'), sandbox);
   const task = {
     id: 1, name: 'مهمة', status: 'pending', type: 'معرفية',
     expected: 30, actual: null, plannedDate: '2026-11-04',
@@ -3267,7 +3267,7 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
     validateDailyLog: () => true
   };
   vm.runInNewContext(
-    extractFunction('_validateLastRecurringDates') + '\n' + extractFunction('validateV2'),
+    extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('_validateLastRecurringDates') + '\n' + extractFunction('validateV2'),
     sandbox
   );
   const makeData = (lastRecurringDates) => ({
