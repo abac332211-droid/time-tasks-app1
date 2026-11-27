@@ -1851,6 +1851,7 @@ function resetAllHarness(faults = {}) {
   };
   vm.runInNewContext(
     extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_resetSecondaryStorageTracking') + '\n'
       + extractFunction('_recoverInterruptedReset') + '\n'
       + extractFunction('resetAll'),
     sandbox
