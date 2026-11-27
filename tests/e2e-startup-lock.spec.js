@@ -854,6 +854,120 @@ test('D-02 transition failure does not start the next task or report success', {
   }
 });
 
+test('a Pomodoro-migrated task commits a later adjusted Stopwatch session through the durable V2 ledger', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+
+    const result = await page.evaluate(async () => {
+      const taskId = 7011;
+      async function commitStoppedSession(mode, durationSec, approvedMinutes, useMeasuredCredit) {
+        const saved = await _withTaskStorageLock(function() {
+          _stopDisplayTick();
+          _focusTimer.mode = mode;
+          _focusTimer.phase = 'work';
+          _focusTimer.running = false;
+          _focusTimer.baseElapsed = durationSec;
+          _focusElapsedRemainderMs = 0;
+          _focusTimer.startedAt = null;
+          _focusTimer.cyclePosition = 0;
+          _focusTimer.taskId = taskId;
+          _focusTimer.sessionStartAt = Date.now() - durationSec * 1000;
+          _focusTimer.awaitingConfirmation = false;
+          _focusTimer.pendingPhaseEndedAt = null;
+          _focusTimer.clockAdjusted = false;
+          _focusTimer.nativeClockActive = false;
+          _focusTimer.nativeRestorePending = false;
+          _focusTimer.nativeBootMismatch = false;
+          _focusTimer.nativeSessionToken = null;
+          _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+          _focusTimer.nativeAnchorBootCount = null;
+          _focusTimer.nativeAnchorBaseMs = null;
+          _focusTimer.nativeAnchorWallMs = null;
+          _focusTimer.pendingNotificationFinish = null;
+          _focusTimer.pendingStopwatchTransaction = null;
+          _focusTimer.pendingFocusCommit = null;
+          _clearFocusTimerClock();
+          return _saveFocusTimer();
+        });
+        if (!saved) throw new Error('Could not persist the ' + mode + ' test snapshot');
+        const snapshot = _captureFocusTimerSnapshot();
+        const task = tasks.find(row => row && row.id === taskId);
+        if (!task) throw new Error('The linked task disappeared');
+        return await _applyTimerFinish(
+          durationSec, task, approvedMinutes, 'work', snapshot, useMeasuredCredit
+        );
+      }
+
+      const pomodoroCommitted = await commitStoppedSession('pomodoro', 180, 3, true);
+      const afterPomodoro = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const migratedTask = afterPomodoro.tasks.find(row => row.id === taskId);
+      if (!migratedTask || migratedTask.creditSchemaVersion !== 1) {
+        throw new Error('The first Pomodoro commit did not migrate the task to V2');
+      }
+
+      const stopwatchCommitted = await commitStoppedSession('stopwatch', 125, 2, false);
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === taskId);
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        pomodoroCommitted,
+        stopwatchCommitted,
+        task,
+        operations: main.creditOperations,
+        sessions,
+        timer,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+
+    assert.equal(result.pomodoroCommitted, true);
+    assert.equal(result.stopwatchCommitted, true);
+    assert.equal(result.task.actualSeconds, 600,
+      'initial 300s + measured Pomodoro 180s + approved Stopwatch credit 120s');
+    assert.equal(result.task.actual, 10);
+    assert.equal(result.task.creditRevision, 2);
+    assert.equal(result.operations.length, 2);
+    assert.equal(result.task.lastCreditOperationId, result.operations[1].operationId);
+
+    const stopwatchOperation = result.operations[1];
+    assert.equal(stopwatchOperation.kind, 'session');
+    assert.equal(stopwatchOperation.source, 'user_adjusted');
+    assert.equal(stopwatchOperation.measuredSeconds, 125);
+    assert.equal(stopwatchOperation.creditedSeconds, 120);
+    assert.equal(stopwatchOperation.previousSeconds, 480);
+    assert.equal(stopwatchOperation.targetSeconds, 600);
+
+    assert.equal(result.sessions.length, 2);
+    const stopwatchSession = result.sessions.find(session =>
+      session.sessionId === stopwatchOperation.sessionId);
+    assert.ok(stopwatchSession);
+    assert.equal(stopwatchSession.recordVersion, 2);
+    assert.equal(stopwatchSession.mode, 'stopwatch');
+    assert.equal(stopwatchSession.outcome, 'stopped');
+    assert.equal(stopwatchSession.durationSec, 125);
+    assert.equal(stopwatchSession.activeDurationMs, 125000);
+    assert.equal(stopwatchSession.creditedSeconds, 120);
+    assert.equal(stopwatchSession.creditSource, 'user_adjusted');
+    assert.equal(stopwatchSession.clockTrust, 'trusted');
+    assert.equal(stopwatchSession.clockAdjusted, false);
+
+    assert.equal(result.timer.running, false);
+    assert.equal(result.timer.baseElapsed, 0);
+    assert.equal(result.timer.pendingFocusCommit, null);
+    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
 test('D-04 V2 Pomodoro credit commit at 500 sessions evicts once and startup retry does not evict another row', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
