@@ -2288,7 +2288,7 @@ function computeTaskGapMetrics(taskList) {
   const medianGap = sorted.length === 0 ? 0
     : (sorted.length % 2 === 1
       ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2);
-  return { gapCount: gaps.length, avgGap, aggGap, medianGap };
+  return { gapCount: gaps.length, avgGap, aggGap, medianGap, sumExpected, sumActual };
 }
 
 // Explain the part of a task balance that predates the append-only credit ledger.
@@ -7411,7 +7411,9 @@ function computeTypeAnalysis(tp) {
     gapCount: gapMetrics.gapCount,
     avgGap: gapMetrics.avgGap,
     aggGap: gapMetrics.aggGap,
-    medianGap: gapMetrics.medianGap
+    medianGap: gapMetrics.medianGap,
+    sumExpected: gapMetrics.sumExpected,
+    sumActual: gapMetrics.sumActual
   };
 }
 
@@ -7451,7 +7453,8 @@ function renderTypeGapAnalysis() {
       html += '<div class="weekly-metric"><span class="weekly-metric-label">الفجوة المجمّعة</span><span class="weekly-metric-value ' + gapMetricClass(d.aggGap) + '">' + gapText(d.aggGap) + '</span></div>';
       html += '<div class="weekly-metric"><span class="weekly-metric-label">وسيط الفجوة</span><span class="weekly-metric-value ' + gapMetricClass(d.medianGap) + '">' + gapText(d.medianGap) + '</span></div>';
       html += '<div class="weekly-metric"><span class="weekly-metric-label">المعامل المقترح</span><span class="weekly-metric-value"><b>' + mult.toFixed(2) + '</b></span></div>';
-      html += '<div class="weekly-metric"><span class="weekly-metric-label">60 دقيقة تقدير ←</span><span class="weekly-metric-value">' + Math.round(60 * mult) + ' دقيقة فعلية</span></div>';
+      html += '<div class="weekly-metric"><span class="weekly-metric-label">مجموع المهام الداخلة في حساب الفجوة</span><span class="weekly-metric-value">' + _formatFocusSessionDuration(Math.round(d.sumExpected * 60)) + ' تقدير ← ' + _formatFocusSessionDuration(Math.round(d.sumActual * 60)) + ' فعلي</span></div>';
+      html += '<div class="weekly-metric"><span class="weekly-metric-label">مثال قياسي — لتوضيح المعامل، وليس وقت مهامك الفعلي</span><span class="weekly-metric-value">تقدير 60 دقيقة ← المتوقع ' + Math.round(60 * mult) + ' دقيقة</span></div>';
     }
     if (typeof renderTaskCreditDisclosure === "function")
       html += renderTaskCreditDisclosure(typeTasksForDisclosure);
