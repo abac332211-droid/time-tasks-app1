@@ -1019,7 +1019,7 @@ test('break and unlinked finish paths request zero task credit through the share
   assert.equal(calls[0].completed, false);
   assert.equal(calls[1].taskId, null);
   assert.equal(calls[1].minutesToAdd, 0);
-  assert.equal(calls[1].allowUnlinkedTaskSnapshotLink, undefined);
+  assert.equal(calls[1].allowUnlinkedTaskSnapshotLink, false);
   assert.equal(calls[1].completed, true);
   assert.equal(task.actual, 5);
 });
