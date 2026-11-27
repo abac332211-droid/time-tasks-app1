@@ -2640,6 +2640,45 @@ test('rolling recovery refuses a mixed multi-collection snapshot when another ta
   assert.equal(projectReads, 2);
 });
 
+test('resetAll resynchronizes secondary-storage baselines and clears stale conflicts after success', async () => {
+  const harness = resetAllHarness();
+  const secondaryKeys = harness.sandbox._secondaryStorageKeys;
+
+  for (const key of secondaryKeys) {
+    harness.sandbox._secondaryStorageBaselines[key] = 'stale:' + key;
+    harness.sandbox._secondaryStorageConflicts[key] = true;
+  }
+  harness.sandbox._mainStorageExternalChangeObserved = true;
+  harness.sandbox._focusTimerExternalConflict = true;
+  harness.sandbox._focusTimerConflictNoticeShown = true;
+  harness.sandbox._invalidFocusSessionsNoticeShown = true;
+
+  assert.equal(await harness.run(), true);
+
+  for (const key of secondaryKeys) {
+    assert.equal(
+      harness.sandbox._secondaryStorageBaselines[key],
+      harness.values.has(key) ? harness.values.get(key) : null,
+      'the new baseline must match the actual stored value for ' + key
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(harness.sandbox._secondaryStorageConflicts, key),
+      false,
+      'a successful read-back must clear the old conflict for ' + key
+    );
+  }
+
+  assert.equal(harness.sandbox._mainStorageExternalChangeObserved, false);
+  assert.equal(harness.sandbox._focusTimerExternalConflict, false);
+  assert.equal(harness.sandbox._focusTimerConflictNoticeShown, false);
+  assert.equal(harness.sandbox._invalidFocusSessionsNoticeShown, false);
+  assert.equal(harness.sandbox._focusTimer.running, false);
+  assert.equal(harness.sandbox._focusTimer.baseElapsed, 0);
+  assert.equal(harness.sandbox._focusTimer.pendingStopwatchTransaction, null);
+  assert.equal(harness.sandbox._focusElapsedRemainderMs, 0);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+});
+
 test('resetAll also removes timestamped corruption snapshots from every auxiliary collection', async () => {
   const harness = resetAllHarness();
   const corruptKeys = [
