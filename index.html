@@ -13407,7 +13407,21 @@ function _commitFocusTaskSession(p) {
     var taskUsesV2CreditSchema = !!linkedTask
       && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
         .some(function(key) { return Object.prototype.hasOwnProperty.call(linkedTask, key); });
-    if (taskUsesV2CreditSchema) {
+    var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
+        && Number.isInteger(snapshot.elapsedRemainderMs)
+      ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
+    var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
+      ? Math.floor(measuredActiveDurationMs / 1000) : null;
+    var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
+      && Number.isSafeInteger(p.minutesToAdd)
+      && p.minutesToAdd * 60 === measuredActiveSeconds;
+    // First trusted linked Pomodoro commits (and exactly measured Stopwatch
+    // approvals) enter V2 here. All other legacy task saves stay on the V1
+    // transaction until a V2 commit has migrated their credit metadata.
+    var shouldEnterV2 = taskUsesV2CreditSchema
+      || (snapshot.clockAdjusted !== true
+        && (snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement));
+    if (shouldEnterV2) {
       if (p.completed === false) {
         showAlertModal("جلسة غير مكتملة",
           "قرار حفظ جلسة العمل غير مكتمل. بقيت الجلسة متوقفة ولم نغيّر الرصيد.");
@@ -15632,22 +15646,11 @@ function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnap
     useMeasuredCredit:useMeasuredCredit === true,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
-  var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
-      && Number.isInteger(snapshot.elapsedRemainderMs)
-    ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
-  var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
-    ? Math.floor(measuredActiveDurationMs / 1000) : null;
-  var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
-    && Number.isSafeInteger(minutesToAdd) && minutesToAdd * 60 === measuredActiveSeconds;
-  if ((snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement)
-      && snapshot.phase === "work"
-      && snapshot.taskId !== null && snapshot.taskId !== undefined
-      && task && snapshot.clockAdjusted !== true) {
-    return _commitPendingFocusSessionV2(request);
-  }
-  // Rounded/manual Stopwatch and every alternate save entry point pass
-  // through the schema-aware dispatcher. It forwards already-migrated V2
-  // tasks to V2 and keeps truly legacy tasks on their compatible transaction.
+  // Every linked work-session finish is routed through the shared
+  // schema-aware dispatcher. It chooses the initial V2 entry for trusted
+  // measured Pomodoro/exact Stopwatch sessions, preserves V1 compatibility
+  // for legacy adjusted/manual Stopwatch sessions, and never sends V2 tasks
+  // back to the legacy writer.
   return _commitFocusTaskSession(request);
 }
 function _resetAfterSession() {
