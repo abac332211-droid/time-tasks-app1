@@ -1105,8 +1105,8 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
       };
     });
 
-    assert.equal(resultAfterAllPaths.task.actualSeconds, 720,
-      'initial 300s + measured Pomodoro 180s + approved credits 120s + 60s + 60s');
+    assert.equal(resultAfterAllPaths.task.actualSeconds, 735,
+      'initial 300s + measured Pomodoro 180s + adjusted Stopwatch 120s + 60s + measured transition Pomodoro 75s');
     assert.equal(resultAfterAllPaths.task.actual, 12);
     assert.equal(resultAfterAllPaths.task.creditRevision, 4);
     assert.equal(resultAfterAllPaths.operations.length, 4);
@@ -1117,7 +1117,7 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
       { mode: 'pomodoro', measured: 180, credited: 180, source: 'measured' },
       { mode: 'stopwatch', measured: 125, credited: 120, source: 'user_adjusted' },
       { mode: 'stopwatch', measured: 65, credited: 60, source: 'user_adjusted' },
-      { mode: 'pomodoro', measured: 75, credited: 60, source: 'user_adjusted' }
+      { mode: 'pomodoro', measured: 75, credited: 75, source: 'measured' }
     ];
     assert.equal(resultAfterAllPaths.sessions.length, expected.length);
     for (let index = 0; index < expected.length; index++) {
