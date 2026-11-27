@@ -818,6 +818,68 @@ test('the first trusted linked Pomodoro commit enters V2 through the common disp
   assert.equal(runtime.calls[0].request.snapshot.mode, 'pomodoro');
 });
 
+test('Pomodoro transition dispatch preserves all 83 measured seconds in the V2 session and ledger request', async () => {
+  const snapshot = {
+    mode: 'pomodoro', phase: 'work', running: false,
+    baseElapsed: 83, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  const result = await runtime.app._commitFocusTaskSession({
+    snapshot, taskId: 7, minutesToAdd: 1,
+    useMeasuredCredit: true, completed: true
+  });
+  assert.equal(result, 'v2');
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(runtime.calls[0].writer, 'v2');
+  assert.equal(runtime.calls[0].request.useMeasuredCredit, true);
+
+  const fields = runtime.app._buildPendingFocusSessionFields(
+    snapshot, runtime.migratedTask, 1, runtime.calls[0].request.useMeasuredCredit
+  );
+  assert.equal(fields.durationSec, 83);
+  assert.equal(fields.creditedSeconds, 83);
+  assert.equal(fields.creditSource, 'measured');
+  assert.equal(fields.outcome, 'ended_early');
+  assert.equal(fields.completed, false);
+});
+
+test('interrupted Pomodoro break transition persists completed=false without task credit', () => {
+  const logged = [];
+  const snapshot = {
+    mode: 'pomodoro', phase: 'short-break', running: false,
+    baseElapsed: 180, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false
+  };
+  const sandbox = {
+    _stopwatchTransactionLockDepth: 1,
+    _focusTimer: { pendingStopwatchTransaction: null, pendingFocusCommit: null },
+    _hasPersistedPendingFocusCommit: () => false,
+    _focusTimerSnapshotMatchesState: () => true,
+    _focusCommitBaselinesMatch: () => ({ timerRecord: {} }),
+    _withFocusCommitWrite: callback => callback(),
+    _logSession: (...args) => { logged.push(args); return true; },
+    _resetAfterSession: () => true,
+    _verifyFocusTimerResetAfterCommit: () => true,
+    _completeRollingRecoveryCheckpoint: () => true,
+    renderFocusSessionsCard: () => {},
+    showAlertModal: () => {},
+    showToast: () => {},
+    console
+  };
+  vm.runInNewContext(extractFunction('_commitFocusTaskSessionLocked'), sandbox);
+
+  const committed = sandbox._commitFocusTaskSessionLocked({
+    snapshot, taskId: null, allowUnlinkedTaskSnapshotLink: true,
+    minutesToAdd: 0, completed: false
+  });
+  assert.equal(committed, true);
+  assert.deepEqual(logged, [['short-break', 180, false]],
+    'an interrupted break must be persisted as incomplete and must not be credited to the task');
+});
+
 test('an exactly measured first Stopwatch commit enters V2 through the common dispatcher', async () => {
   const snapshot = {
     mode: 'stopwatch', phase: 'work', running: false,
