@@ -24,11 +24,45 @@ function extractFunction(name) {
   const source = match[0];
   if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
   const helpers = [];
+  if (name !== '_isClockAdjustedV2WorkSession'
+      && /\b_isClockAdjustedV2WorkSession\s*\(/.test(source)) {
+    helpers.push(extractFunction('_isFocusTaskCreditSchemaV2'));
+    helpers.push(extractFunction('_isClockAdjustedV2WorkSession'));
+  }
   if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
     helpers.push('function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }');
   }
   if (/\b_withTaskStorageLock\s*\(/.test(source)) {
     helpers.push('function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }');
+  }
+  if (/\bcomputeGap\s*\(/.test(source)) {
+    const computeGapHelper = appScript.match(
+      /function\s+computeGap\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(computeGapHelper, 'computeGap helper exists in index.html');
+    helpers.push(computeGapHelper[0]);
+  }
+  if (/\bgetTaskActualMinutes\s*\(/.test(source)) {
+    const actualMinutesHelper = appScript.match(
+      /function\s+getTaskActualMinutes\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(actualMinutesHelper, 'getTaskActualMinutes helper exists in index.html');
+    helpers.push(actualMinutesHelper[0]);
+  }
+  if (/\bcomputeTaskGapMetrics\s*\(/.test(source)) {
+    const computeGapHelper = appScript.match(
+      /function\s+computeGap\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    const actualMinutesHelper = appScript.match(
+      /function\s+getTaskActualMinutes\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    const gapMetricsHelper = appScript.match(
+      /function\s+computeTaskGapMetrics\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(computeGapHelper, 'computeGap helper exists in index.html');
+    assert.ok(actualMinutesHelper, 'getTaskActualMinutes helper exists in index.html');
+    assert.ok(gapMetricsHelper, 'computeTaskGapMetrics helper exists in index.html');
+    helpers.push(computeGapHelper[0], actualMinutesHelper[0], gapMetricsHelper[0]);
   }
   return helpers.length ? helpers.concat(source).join('\n') : source;
 }
@@ -875,6 +909,253 @@ test('weekly report separates planned cohort from actual completion dates', () =
 });
 
 
+test('weekly and task-type gap metrics use measured seconds consistently', () => {
+  const task = {
+    id: 9101,
+    type: 'معرفية',
+    status: 'pending',
+    expected: 3,
+    actual: 2,
+    actualSeconds: 139,
+    plannedDate: '2026-11-27',
+    completedAt: null,
+    recurrence: null
+  };
+  const sandbox = {
+    tasks: [task],
+    STORAGE_KEY: 'test-storage',
+    VALID_ENERGY: [],
+    getLast7OperationalDays: () => ['2026-11-27'],
+    localStorage: { getItem: () => JSON.stringify({ dailyLogs: [] }) },
+    isTaskCancelled: (row) => row.status === 'cancelled',
+    isTaskDone: (row) => row.status === 'done',
+    _operationalDateFromIso: (value) => String(value).slice(0, 10)
+  };
+
+  vm.runInNewContext([
+    extractFunction('computeWeeklyReport'),
+    extractFunction('computeTypeAnalysis')
+  ].join('\n'), sandbox);
+
+  const weekly = sandbox.computeWeeklyReport();
+  const byType = sandbox.computeTypeAnalysis('معرفية');
+  const direct = sandbox.computeTaskGapMetrics(sandbox.tasks);
+  const expectedGap = (139 / 60 - 3) / 3;
+
+  for (const metrics of [weekly, byType, direct]) {
+    assert.equal(metrics.gapCount, 1);
+    for (const key of ['avgGap', 'aggGap', 'medianGap']) {
+      assert.ok(Math.abs(metrics[key] - expectedGap) < 1e-12,
+        key + ' must use 139 measured seconds rather than the floored 2-minute legacy value');
+    }
+  }
+  assert.equal(Math.round(weekly.avgGap * 100), -23);
+  assert.equal(Math.round(byType.avgGap * 100), -23);
+  assert.equal(Math.round(direct.avgGap * 100), -23);
+  assert.equal(Math.round(((task.actual - task.expected) / task.expected) * 100), -33,
+    'the regression fixture must distinguish stale legacy minutes from measured seconds');
+
+  const element = () => ({
+    innerHTML: '',
+    textContent: '',
+    style: {},
+    classList: { add: () => {}, remove: () => {} },
+    closest: () => ({ classList: { add: () => {}, remove: () => {} } })
+  });
+  const ids = [
+    'weeklyReport', 'statsTotal', 'statsDone', 'statsPending', 'statsLate',
+    'statsCancelled', 'homeTotal', 'homeDone', 'homePending', 'homeLate',
+    'homePercent', 'homeBar', 'typeStats', 'typeGapAnalysis'
+  ];
+  const elements = Object.fromEntries(ids.map(id => [id, element()]));
+  sandbox.document = { getElementById: id => elements[id] || null };
+  sandbox.lastPct = 0;
+  sandbox.todayStr = () => '2026-11-27';
+  sandbox.isLate = () => false;
+  sandbox.setTimeout = () => {};
+  sandbox.gapText = value => Math.round(value * 100) + '%';
+  sandbox.gapClass = () => '';
+  sandbox.gapMetricClass = () => '';
+  sandbox.sampleWarning = () => ({ cls: 'warn', text: 'sample' });
+  sandbox.computeRecommendation = () => ({ type: 'info', text: '' });
+  vm.runInNewContext([
+    extractFunction('renderWeeklyReport'),
+    extractFunction('renderStats'),
+    extractFunction('_formatFocusSessionDuration'),
+    extractFunction('renderTypeGapAnalysis')
+  ].join('\n'), sandbox);
+
+  sandbox.renderWeeklyReport();
+  sandbox.renderStats();
+  sandbox.renderTypeGapAnalysis();
+  assert.equal((elements.weeklyReport.innerHTML.match(/-23%/g) || []).length, 3,
+    'weekly card average, aggregate, and median must render -23%');
+  assert.match(elements.typeStats.innerHTML, /-23%/,
+    'the type summary card must render -23%');
+  assert.equal((elements.typeGapAnalysis.innerHTML.match(/-23%/g) || []).length, 3,
+    'type-analysis average, aggregate, and median must render -23%');
+});
+
+test('type gap analysis separates measured task totals from the standardized projection', () => {
+  const task = {
+    id: 9201,
+    type: 'معرفية',
+    status: 'pending',
+    expected: 5,
+    actual: 2,
+    actualSeconds: 139,
+    plannedDate: '2026-11-27',
+    completedAt: null,
+    recurrence: null
+  };
+  const element = { innerHTML: '' };
+  const sandbox = {
+    tasks: [task],
+    document: { getElementById: id => id === 'typeGapAnalysis' ? element : null },
+    isTaskCancelled: row => row.status === 'cancelled',
+    isTaskDone: row => row.status === 'done',
+    gapText: value => Math.round(value * 100) + '%',
+    gapMetricClass: () => '',
+    sampleWarning: () => ({ cls: 'warn', text: 'sample' }),
+    renderTaskCreditDisclosure: () => ''
+  };
+
+  vm.runInNewContext([
+    extractFunction('computeGap'),
+    extractFunction('getTaskActualMinutes'),
+    extractFunction('computeTaskGapMetrics'),
+    extractFunction('computeTypeAnalysis'),
+    extractFunction('_formatFocusSessionDuration'),
+    extractFunction('renderTypeGapAnalysis')
+  ].join('\n'), sandbox);
+
+  sandbox.renderTypeGapAnalysis();
+
+  assert.match(element.innerHTML,
+    /5 د تقدير ← 2 د 19 ث فعلي/,
+    'the type card must show actual measured task totals, including leftover seconds');
+  assert.match(element.innerHTML, /مثال قياسي/,
+    'the 60-minute line must be explicitly identified as a standard example');
+  assert.match(element.innerHTML, /ليس وقت مهامك الفعلي/,
+    'the standard example must be distinguished from actual task time');
+  assert.match(element.innerHTML, /تقدير 60 دقيقة ← المتوقع 28 دقيقة/,
+    'the standardized projection must show the expected value derived from the type factor');
+  assert.doesNotMatch(element.innerHTML, /60 دقيقة تقدير ←/,
+    'the old ambiguous label must no longer appear');
+});
+
+test('credit provenance disclosure separates migrated opening balance from later focus-session credits', () => {
+  const sandbox = {};
+  vm.runInNewContext([
+    extractFunction('_validateTaskCreditFields'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_persistedTaskCreditStateMatches'),
+    extractFunction('computeTaskCreditDisclosure')
+  ].join('\n'), sandbox);
+
+  const ids = [
+    '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000002',
+    '00000000-0000-4000-8000-000000000003'
+  ];
+  const createdAt = '2026-11-27T00:00:00.000Z';
+  const operations = [
+    {
+      recordVersion: 1, operationId: ids[0], kind: 'session', taskId: 44,
+      revision: 1, previousSeconds: 3648, targetSeconds: 3752,
+      source: 'measured', sessionId: ids[0], createdAt,
+      measuredSeconds: 104, creditedSeconds: 104
+    },
+    {
+      recordVersion: 1, operationId: ids[1], kind: 'session', taskId: 44,
+      revision: 2, previousSeconds: 3752, targetSeconds: 3840,
+      source: 'measured', sessionId: ids[1], createdAt,
+      measuredSeconds: 88, creditedSeconds: 88
+    }
+  ];
+  const task = {
+    id: 44, actual: 64, actualSeconds: 3840,
+    creditRevision: 2, creditSchemaVersion: 1,
+    lastCreditOperationId: ids[1]
+  };
+
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [Object.assign({}, task, { name: 'changed display-only field' })],
+    [Object.assign({}, task, { name: 'older display-only field' })]
+  ), true, 'unrelated task fields must not hide a verified credit disclosure');
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [Object.assign({}, task, { actualSeconds: 3839 })], [task]
+  ), false, 'a changed credit balance must suppress the disclosure');
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [task, task], [task]
+  ), false, 'duplicate task identities must fail closed');
+
+  const disclosure = sandbox.computeTaskCreditDisclosure([task], operations);
+  assert.equal(disclosure.available, true);
+  assert.equal(disclosure.legacyOpeningSeconds, 3648,
+    'the opening balance before the ledger is disclosed rather than attributed to the two sessions');
+  assert.equal(disclosure.legacyTaskCount, 1);
+  assert.equal(disclosure.sessionCreditedSeconds, 192,
+    '104 + 88 seconds are the only post-migration session credits in this fixture');
+  assert.equal(disclosure.manualAdjustmentNetSeconds, 0);
+
+  const manualOperation = {
+    recordVersion: 1, operationId: ids[2], kind: 'manual_adjustment', taskId: 44,
+    revision: 3, previousSeconds: 3840, targetSeconds: 3000,
+    source: 'manual_adjustment', sessionId: null, createdAt
+  };
+  const manuallyAdjustedTask = {
+    id: 44, actual: 50, actualSeconds: 3000,
+    creditRevision: 3, creditSchemaVersion: 1,
+    lastCreditOperationId: ids[2]
+  };
+  const adjusted = sandbox.computeTaskCreditDisclosure(
+    [manuallyAdjustedTask], operations.concat(manualOperation));
+  assert.equal(adjusted.available, true);
+  assert.equal(adjusted.legacyOpeningSeconds, 3648);
+  assert.equal(adjusted.sessionCreditedSeconds, 192);
+  assert.equal(adjusted.manualAdjustmentNetSeconds, -840,
+    'later manual adjustments are kept separate from the historical opening balance');
+
+  const legacyTask = {
+    id: 45, actual: 64, actualSeconds: 3840,
+    creditRevision: 0, creditSchemaVersion: 1,
+    lastCreditOperationId: null
+  };
+  const legacyOnly = sandbox.computeTaskCreditDisclosure([legacyTask], []);
+  assert.equal(legacyOnly.available, true);
+  assert.equal(legacyOnly.legacyOpeningSeconds, 3840,
+    'a migrated revision-zero balance is identified as pre-ledger, without inventing a source');
+
+  const incomplete = sandbox.computeTaskCreditDisclosure([task], [operations[1]]);
+  assert.equal(incomplete.available, false,
+    'an incomplete history must suppress the disclosure instead of reporting a misleading breakdown');
+
+  assert.match(extractFunction('renderWeeklyReport'), /renderTaskCreditDisclosure\(_weeklyDisclosureTasks\)/,
+    'the weekly report surfaces legacy opening-balance provenance');
+  assert.match(extractFunction('renderTypeGapAnalysis'), /renderTaskCreditDisclosure\(typeTasksForDisclosure\)/,
+    'the type report surfaces legacy opening-balance provenance');
+});
+
+test('focus-session commits refresh all task-gap views after the measured balance is saved', () => {
+  const commit = appScript.match(
+    /function\s+_commitPendingFocusSessionV2\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+  );
+  assert.ok(commit, '_commitPendingFocusSessionV2 exists');
+  for (const renderCall of [
+    'renderWeeklyReport',
+    'renderStats',
+    'renderTypeGapAnalysis'
+  ]) {
+    assert.match(commit[0], new RegExp(renderCall + '\\s*\\('),
+      renderCall + ' must refresh after a focus-session commit');
+  }
+  assert.match(extractFunction('renderStats'), /computeTaskGapMetrics\(subset\)/,
+    'the type summary must use the shared gap-metrics implementation');
+  assert.match(extractFunction('renderTypeGapAnalysis'), /computeTypeAnalysis\(tp\)/,
+    'the type analysis card must use the shared type calculation');
+});
+
 test('restored notebook records normalize imported IDs before inline event handlers use them', () => {
   const thoughtsSandbox = {
     THOUGHTS_KEY: 'thoughts',
@@ -1577,7 +1858,10 @@ test('task search ignores malformed optional tags and checklist data safely', ()
 });
 
 
-function transitionDialogHarness({ commitResult = true, checkpointResult = true, initiallyRunning = true, switchResult = true } = {}) {
+function transitionDialogHarness({
+  commitResult = true, checkpointResult = true, initiallyRunning = true, switchResult = true,
+  mode = 'stopwatch', phase = 'work', elapsed = 120
+} = {}) {
   const elements = Object.create(null);
   function element() {
     return { children: [], classList: { add() {}, remove() {}, contains() { return false; } },
@@ -1589,8 +1873,8 @@ function transitionDialogHarness({ commitResult = true, checkpointResult = true,
     querySelector() { return null; }, contains() { return true; }
   };
   const task = { id: 1, name: 'المهمة الحالية', actual: null };
-  const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: initiallyRunning,
-    baseElapsed: 120, startedAt: initiallyRunning ? 1000 : null, sessionStartAt: 1,
+  const timer = { mode, phase, taskId: 1, running: initiallyRunning,
+    baseElapsed: elapsed, startedAt: initiallyRunning ? 1000 : null, sessionStartAt: 1,
     cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false };
   const alerts = [], toasts = [], commits = [];
   let freezeCalls = 0, switchCalls = 0, renderCalls = 0;
@@ -1639,6 +1923,32 @@ test('transition save delegates a frozen snapshot and switches only after an exp
   assert.equal(h.commits[0].minutesToAdd,2);
   assert.equal(Object.isFrozen(h.commits[0].snapshot),true);
   assert.equal(h.task.actual,null,'the UI dialog must not mutate task.actual outside the transaction engine');
+  assert.equal(h.counts().switchCalls,1);
+});
+
+test('Pomodoro transition save requests exact measured-second credit', () => {
+  const h=transitionDialogHarness({mode:'pomodoro',phase:'work',elapsed:83});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,1);
+  assert.equal(h.commits[0].minutesToAdd,1,
+    'the legacy display-minute argument remains present but must not determine V2 credit');
+  assert.equal(h.commits[0].useMeasuredCredit,true,
+    'a linked Pomodoro transition must explicitly request measured-second credit');
+  assert.equal(h.commits[0].completed,true);
+  assert.equal(h.counts().switchCalls,1);
+});
+
+test('switching tasks during a Pomodoro break records an interrupted, uncredited session', () => {
+  const h=transitionDialogHarness({mode:'pomodoro',phase:'short-break',elapsed:180});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,null);
+  assert.equal(h.commits[0].allowUnlinkedTaskSnapshotLink,true);
+  assert.equal(h.commits[0].minutesToAdd,0);
+  assert.equal(h.commits[0].useMeasuredCredit,false);
+  assert.equal(h.commits[0].completed,false,
+    'leaving a break before its own completion must not mark it completed');
   assert.equal(h.counts().switchCalls,1);
 });
 
