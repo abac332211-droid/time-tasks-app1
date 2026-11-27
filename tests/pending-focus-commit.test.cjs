@@ -818,6 +818,25 @@ test('exactly measured Stopwatch credit remains measured in V2', async () => {
   assert.equal(fields.creditSource, 'measured');
 });
 
+test('clock-adjusted legacy task sessions retain their explicit V1 transaction contract', async () => {
+  const snapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: true, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  runtime.app.tasks[0] = {
+    id: 7, name: 'Legacy Task', actual: 5
+  };
+  assert.equal(await runtime.app._applyTimerFinish(
+    120, runtime.app.tasks[0], 2, 'work', snapshot, false
+  ), 'legacy');
+  assert.equal(runtime.calls[0].writer, 'legacy',
+    'legacy task data remains on its compatible V1 transaction contract');
+  assert.equal(runtime.calls[0].request.snapshot.clockAdjusted, true);
+});
+
 test('clock-adjusted task-linked sessions fail closed and never reach either writer', async () => {
   const snapshot = {
     mode: 'stopwatch', phase: 'work', running: false,
