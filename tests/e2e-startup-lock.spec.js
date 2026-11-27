@@ -325,11 +325,30 @@ async function primeLinkedWorkTimer(page, {
     if (!persisted) throw new Error('Could not persist the running timer fixture');
   }, { taskId, mode, durationSec });
   if (pauseAfterPrime) {
-    // Exercise the real Stop control, then pin the stopped measurement to an
-    // exact second so the browser test is not sensitive to CI scheduling.
+    // Ensure the real timer controls are visible. Stopwatch setup links/starts
+    // without navigating to the Tasks page, unlike startTimerForTask().
+    await page.locator('nav button[data-page="tasks"]').click();
+    await page.waitForFunction(() => {
+      const card = document.getElementById('timerCard');
+      return !!card && card.getClientRects().length > 0;
+    }, null, { timeout: 5000 });
+
+    // Exercise the real Stop control. A click dispatch does not await the
+    // asynchronous Web Lock transaction, so wait for its durable paused
+    // checkpoint and lock release before pinning the exact test measurement.
     await page.locator('#timerStartBtn').click();
+    await page.waitForFunction(() => {
+      if (!_focusTimer || _focusTimer.running !== false
+          || _stopwatchTransactionLockDepth !== 0
+          || storageRecoveryRequired === true) return false;
+      try {
+        const stored = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return !!stored && stored.running === false;
+      } catch (_error) { return false; }
+    }, null, { timeout: 10000 });
+
     const normalized = await page.evaluate(async (seconds) => _withTaskStorageLock(function() {
-      _focusTimer.running = false;
+      if (_focusTimer.running !== false) return false;
       _focusTimer.baseElapsed = seconds;
       _focusElapsedRemainderMs = 0;
       _focusTimer.startedAt = null;
