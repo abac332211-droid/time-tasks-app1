@@ -1028,9 +1028,12 @@ test('type gap analysis separates measured task totals from the standardized pro
   assert.match(element.innerHTML,
     /5 د تقدير ← 2 د 19 ث فعلي/,
     'the type card must show actual measured task totals, including leftover seconds');
-  assert.match(element.innerHTML,
-    /مثال قياسي[^<]*<\\/span><span[^>]*>تقدير 60 دقيقة ← المتوقع 28 دقيقة/,
-    'the 60-minute figure must be explicitly presented as a standard projection, not actual task time');
+  assert.match(element.innerHTML, /مثال قياسي/,
+    'the 60-minute line must be explicitly identified as a standard example');
+  assert.match(element.innerHTML, /ليس وقت مهامك الفعلي/,
+    'the standard example must be distinguished from actual task time');
+  assert.match(element.innerHTML, /تقدير 60 دقيقة ← المتوقع 28 دقيقة/,
+    'the standardized projection must show the expected value derived from the type factor');
   assert.doesNotMatch(element.innerHTML, /60 دقيقة تقدير ←/,
     'the old ambiguous label must no longer appear');
 });
