@@ -14852,7 +14852,10 @@ function _commitPendingFocusSessionV2(params) {
       storageRecoveryRequired = true;
       return false;
     }
-    if (typeof params.onCommitted === "function" && params.onCommitted() !== true) {
+    if (typeof params.onCommitted === "function"
+        && _withFocusCommitWrite(function() {
+          return params.onCommitted();
+        }) !== true) {
       showAlertModal("حُفظت الجلسة ولم يكتمل الانتقال",
         "لم يُرجع callback الانتقال true؛ لم نعلن بدء الجلسة التالية.");
       return false;
