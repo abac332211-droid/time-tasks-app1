@@ -1858,7 +1858,10 @@ test('task search ignores malformed optional tags and checklist data safely', ()
 });
 
 
-function transitionDialogHarness({ commitResult = true, checkpointResult = true, initiallyRunning = true, switchResult = true } = {}) {
+function transitionDialogHarness({
+  commitResult = true, checkpointResult = true, initiallyRunning = true, switchResult = true,
+  mode = 'stopwatch', phase = 'work', elapsed = 120
+} = {}) {
   const elements = Object.create(null);
   function element() {
     return { children: [], classList: { add() {}, remove() {}, contains() { return false; } },
@@ -1870,8 +1873,8 @@ function transitionDialogHarness({ commitResult = true, checkpointResult = true,
     querySelector() { return null; }, contains() { return true; }
   };
   const task = { id: 1, name: 'المهمة الحالية', actual: null };
-  const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: initiallyRunning,
-    baseElapsed: 120, startedAt: initiallyRunning ? 1000 : null, sessionStartAt: 1,
+  const timer = { mode, phase, taskId: 1, running: initiallyRunning,
+    baseElapsed: elapsed, startedAt: initiallyRunning ? 1000 : null, sessionStartAt: 1,
     cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false };
   const alerts = [], toasts = [], commits = [];
   let freezeCalls = 0, switchCalls = 0, renderCalls = 0;
@@ -1920,6 +1923,32 @@ test('transition save delegates a frozen snapshot and switches only after an exp
   assert.equal(h.commits[0].minutesToAdd,2);
   assert.equal(Object.isFrozen(h.commits[0].snapshot),true);
   assert.equal(h.task.actual,null,'the UI dialog must not mutate task.actual outside the transaction engine');
+  assert.equal(h.counts().switchCalls,1);
+});
+
+test('Pomodoro transition save requests exact measured-second credit', () => {
+  const h=transitionDialogHarness({mode:'pomodoro',phase:'work',elapsed:83});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,1);
+  assert.equal(h.commits[0].minutesToAdd,1,
+    'the legacy display-minute argument remains present but must not determine V2 credit');
+  assert.equal(h.commits[0].useMeasuredCredit,true,
+    'a linked Pomodoro transition must explicitly request measured-second credit');
+  assert.equal(h.commits[0].completed,true);
+  assert.equal(h.counts().switchCalls,1);
+});
+
+test('switching tasks during a Pomodoro break records an interrupted, uncredited session', () => {
+  const h=transitionDialogHarness({mode:'pomodoro',phase:'short-break',elapsed:180});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,null);
+  assert.equal(h.commits[0].allowUnlinkedTaskSnapshotLink,true);
+  assert.equal(h.commits[0].minutesToAdd,0);
+  assert.equal(h.commits[0].useMeasuredCredit,false);
+  assert.equal(h.commits[0].completed,false,
+    'leaving a break before its own completion must not mark it completed');
   assert.equal(h.counts().switchCalls,1);
 });
 
