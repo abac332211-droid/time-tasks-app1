@@ -13327,16 +13327,6 @@ function _commitFocusTaskSession(p) {
         "تغير معرّف المهمة في طلب الحفظ. لم نمرر الجلسة إلى أي كاتب ولم نغيّر الرصيد أو المؤقت.");
       return Promise.resolve(false);
     }
-    if (p.completed === false) {
-      showAlertModal("جلسة غير مكتملة",
-        "قرار حفظ جلسة العمل غير مكتمل. بقيت الجلسة متوقفة ولم نغيّر الرصيد.");
-      return Promise.resolve(false);
-    }
-    if (snapshot.clockAdjusted === true) {
-      showAlertModal("جلسة تحتاج إلى مراجعة الساعة",
-        "اكتشف التطبيق تغيرًا في ساعة المؤقت. لم نعتمد الثواني المقاسة ولم نمرر الجلسة إلى الكاتب القديم. بقيت الجلسة متوقفة ببياناتها دون تغيير؛ راجعها أو تجاهلها صراحةً.");
-      return Promise.resolve(false);
-    }
     var linkedTask = Array.isArray(tasks)
       ? tasks.find(function(row) { return row && row.id === snapshot.taskId; })
       : null;
@@ -13344,10 +13334,19 @@ function _commitFocusTaskSession(p) {
       && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
         .some(function(key) { return Object.prototype.hasOwnProperty.call(linkedTask, key); });
     if (taskUsesV2CreditSchema) {
+      if (p.completed === false) {
+        showAlertModal("جلسة غير مكتملة",
+          "قرار حفظ جلسة العمل غير مكتمل. بقيت الجلسة متوقفة ولم نغيّر الرصيد.");
+        return Promise.resolve(false);
+      }
+      if (snapshot.clockAdjusted === true) {
+        showAlertModal("جلسة تحتاج إلى مراجعة الساعة",
+          "اكتشف التطبيق تغيرًا في ساعة المؤقت. لم نعتمد الثواني المقاسة ولم نمرر المهمة V2 إلى الكاتب القديم. بقيت الجلسة متوقفة ببياناتها دون تغيير؛ راجعها أو تجاهلها صراحةً.");
+        return Promise.resolve(false);
+      }
       // Once a task has entered V2, every finish/reset/task-switch save must
-      // use the same durable writer. Legacy tasks remain on their existing
-      // transaction contract until a V2-eligible Pomodoro or measured
-      // Stopwatch commit migrates them.
+      // use the same durable writer. Legacy tasks retain their established
+      // V1 transaction contract until they are migrated by a V2 commit.
       return _commitPendingFocusSessionV2({
         snapshot: snapshot,
         taskId: taskId,
