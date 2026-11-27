@@ -996,7 +996,7 @@ test('credit provenance disclosure separates migrated opening balance from later
     extractFunction('_validateTaskCreditFields'),
     extractFunction('_validateCreditOperationRecord'),
     extractFunction('computeTaskCreditDisclosure')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
 
   const ids = [
     '00000000-0000-4000-8000-000000000001',
