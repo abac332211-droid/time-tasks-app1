@@ -2407,7 +2407,7 @@ function renderTaskCreditDisclosure(taskList) {
       + _formatCreditDisclosureSeconds(disclosure.sessionCreditedSeconds) + '</b>.';
   }
   if (disclosure.manualAdjustmentNetSeconds !== 0) {
-    var manualText = (disclosure.manualAdjustmentNetSeconds > 0 ? "+" : "")
+    var manualText = (disclosure.manualAdjustmentNetSeconds > 0 ? "+" : "-")
       + _formatCreditDisclosureSeconds(Math.abs(disclosure.manualAdjustmentNetSeconds));
     html += ' صافي تعديلات الرصيد اليدوية اللاحقة: <b>' + manualText + '</b>.';
   }
@@ -7345,7 +7345,8 @@ function renderWeeklyReport() {
   var _weeklyDisclosureTasks = tasks.filter(function(t) {
     return t && _weeklyDisclosureDays.has(t.plannedDate) && !isTaskCancelled(t);
   });
-  html += renderTaskCreditDisclosure(_weeklyDisclosureTasks);
+  if (typeof renderTaskCreditDisclosure === "function")
+    html += renderTaskCreditDisclosure(_weeklyDisclosureTasks);
   if (report.recurringTotal > 0) {
     var rpct = Math.round(report.recurringDone / report.recurringTotal * 100);
     var rclass = rpct >= 80 ? 'high' : (rpct >= 50 ? 'mid' : 'low');
@@ -7422,7 +7423,8 @@ function renderTypeGapAnalysis() {
       html += '<div class="weekly-metric"><span class="weekly-metric-label">المعامل المقترح</span><span class="weekly-metric-value"><b>' + mult.toFixed(2) + '</b></span></div>';
       html += '<div class="weekly-metric"><span class="weekly-metric-label">60 دقيقة تقدير ←</span><span class="weekly-metric-value">' + Math.round(60 * mult) + ' دقيقة فعلية</span></div>';
     }
-    html += renderTaskCreditDisclosure(typeTasksForDisclosure);
+    if (typeof renderTaskCreditDisclosure === "function")
+      html += renderTaskCreditDisclosure(typeTasksForDisclosure);
     html += '<div class="type-sample-warning ' + warn.cls + '">' + warn.text + ' (' + d.gapCount + ' مهمة)</div>';
     html += '</div>';
   });
