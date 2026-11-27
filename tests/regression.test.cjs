@@ -945,7 +945,7 @@ test('weekly and task-type gap metrics use measured seconds consistently', () =>
 
 test('focus-session commits refresh all task-gap views after the measured balance is saved', () => {
   const commit = appScript.match(
-    /function\\s+_commitPendingFocusSessionV2\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}/
+    /function\s+_commitPendingFocusSessionV2\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
   );
   assert.ok(commit, '_commitPendingFocusSessionV2 exists');
   for (const renderCall of [
@@ -956,9 +956,9 @@ test('focus-session commits refresh all task-gap views after the measured balanc
     assert.match(commit[0], new RegExp(renderCall + '\\s*\\('),
       renderCall + ' must refresh after a focus-session commit');
   }
-  assert.match(extractFunction('renderStats'), /computeTaskGapMetrics\\(subset\\)/,
+  assert.match(extractFunction('renderStats'), /computeTaskGapMetrics\(subset\)/,
     'the type summary must use the shared gap-metrics implementation');
-  assert.match(extractFunction('renderTypeGapAnalysis'), /computeTypeAnalysis\\(tp\\)/,
+  assert.match(extractFunction('renderTypeGapAnalysis'), /computeTypeAnalysis\(tp\)/,
     'the type analysis card must use the shared type calculation');
 });
 
