@@ -13065,6 +13065,11 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
       });
     });
 }
+function _isFocusTaskCreditSchemaV2(task) {
+  return !!task && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+    .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); });
+}
+
 function _showStopwatchSaveDialog(elapsedSec) {
   if (!_isTaskStorageLockHeld()) {
     return _withTaskStorageLock(function() { return _showStopwatchSaveDialog(elapsedSec); });
@@ -13092,7 +13097,12 @@ function _showStopwatchSaveDialog(elapsedSec) {
     if(!Number.isInteger(amount)||amount<0){showToast('⚠️ قيمة غير صالحة؛ أدخل عددًا صحيحًا غير سالب');return Promise.resolve(false);}
     return _applyStopwatchSave(elapsedSec,task,amount,snapshot);
   }
-  if(task){
+  if(task && snapshot.clockAdjusted === true && _isFocusTaskCreditSchemaV2(task)){
+    body.innerHTML='<p style="margin:0 0 10px;line-height:1.7;">اكتشف التطبيق تغيرًا في ساعة المؤقت. جلسة V2 محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>'+
+      '<p style="margin:0;line-height:1.7;">لا يمكن اعتماد هذه الجلسة بعد تعديل الساعة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً وتصفير المؤقت.</p>';
+    cancel.textContent='إبقاء متوقفة';
+    discard.textContent='تجاهل وتصفير';
+  }else if(task){
     var current=task.actual==null?0:task.actual;
     var edit=document.createElement('button');edit.className='btn-ghost';edit.textContent='✏️ تعديل الدقائق';
     edit.onclick=function(){closeModal();showPromptModal('القيمة المضافة','أدخل عدد الدقائق المراد إضافتها إلى المدة الفعلية:',
@@ -15405,6 +15415,47 @@ function _continueFocusTimerFinish(snapshot) {
         : "✅ حُفظت الجلسة (" + _formatDuration(elapsed) + ")"
     });
   }
+  if (snapshot.clockAdjusted === true && _isFocusTaskCreditSchemaV2(task)) {
+    var reviewOverlay = document.getElementById("customModalOverlay");
+    var reviewCard = document.getElementById("modalCardElement");
+    document.getElementById("modalTitle").textContent = "جلسة تحتاج إلى مراجعة الساعة";
+    var reviewBody = document.getElementById("modalBody");
+    reviewBody.innerHTML = "<p style=\"margin:0 0 10px;line-height:1.7;\">اكتشف التطبيق تغيرًا في ساعة المؤقت. الجلسة محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>"
+      + "<p style=\"margin:0;line-height:1.7;\">لا يمكن حفظ جلسة مهمة V2 بعد تعديل الساعة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً وتصفير المؤقت.</p>";
+    var reviewFooter = document.getElementById("modalFooter");
+    reviewFooter.innerHTML = "";
+    var keepPaused = document.createElement("button");
+    keepPaused.className = "btn-ghost";
+    keepPaused.textContent = "إبقاء متوقفة";
+    keepPaused.onclick = function() {
+      closeModal();
+      _pendingFinishDialogShown = false;
+      _renderFocusTimer();
+    };
+    var discardAdjusted = document.createElement("button");
+    discardAdjusted.className = "btn-danger";
+    discardAdjusted.textContent = "تجاهل وتصفير";
+    discardAdjusted.onclick = function() {
+      closeModal();
+      _pendingFinishDialogShown = false;
+      _discardShortFocusSession({
+        snapshot: snapshot,
+        allowLong: true,
+        successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+      });
+    };
+    reviewFooter.appendChild(keepPaused);
+    reviewFooter.appendChild(discardAdjusted);
+    reviewOverlay.classList.remove("hidden");
+    const reviewTrap = _setupModalFocusTrap(reviewCard);
+    if (_modalKeyHandler) document.removeEventListener("keydown", _modalKeyHandler);
+    _modalKeyHandler = function(e) {
+      if (e.key === "Escape") { e.preventDefault(); keepPaused.click(); }
+      else reviewTrap(e);
+    };
+    document.addEventListener("keydown", _modalKeyHandler);
+    return true;
+  }
   var minutes = Math.max(1, Math.round(elapsed / 60)), current = task.actual == null ? 0 : task.actual;
   var overlay = document.getElementById("customModalOverlay"), card = document.getElementById("modalCardElement");
   document.getElementById("modalTitle").textContent = "⏹ إنهاء الجلسة";
@@ -15450,7 +15501,9 @@ function _continueFocusTimerFinish(snapshot) {
   save.onclick = function() {
     closeModal();
     _pendingFinishDialogShown = false;
-    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot, true))
+    Promise.resolve(_applyTimerFinish(
+        elapsed, task, minutes, snapshot.phase, snapshot, snapshot.mode === "pomodoro"
+      ))
       .then(function(ok) {
         if (!ok && _focusTimer.pendingNotificationFinish) {
           _pendingFinishDialogShown = false;
@@ -15679,6 +15732,22 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
   document.getElementById('modalBody').innerHTML='<p style="margin:0;line-height:1.7;">'+description+'</p>';
   var footer=document.getElementById('modalFooter');footer.innerHTML='';
   function switchNext(){return typeof onSwitch==="function"&&onSwitch()===true;}
+  if (currentTask && snapshot.clockAdjusted === true && _isFocusTaskCreditSchemaV2(currentTask)) {
+    document.getElementById('modalTitle').textContent='جلسة تحتاج إلى مراجعة الساعة';
+    document.getElementById('modalBody').innerHTML='<p style="margin:0 0 10px;line-height:1.7;">اكتشف التطبيق تغيرًا في ساعة المؤقت. الجلسة محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>'+
+      '<p style="margin:0;line-height:1.7;">لا يمكن حفظ الجلسة أو بدء المهمة التالية عبر الحفظ. أبق الجلسة متوقفة للمراجعة أو تجاهلها صراحةً للانتقال.</p>';
+    var keepPaused=document.createElement('button');keepPaused.className='btn-ghost';keepPaused.textContent='إبقاء متوقفة';
+    keepPaused.onclick=function(){closeModal();_renderFocusTimer();};
+    var discardAdjusted=document.createElement('button');discardAdjusted.className='btn-danger';discardAdjusted.textContent='تجاهل والانتقال';
+    discardAdjusted.onclick=function(){closeModal();_discardShortFocusSession({snapshot:snapshot,allowLong:true,
+      onDiscarded:switchNext,successToast:'⚪ أُلغيت الجلسة غير الموثوقة دون اعتمادها'});};
+    footer.appendChild(keepPaused);footer.appendChild(discardAdjusted);
+    overlay.classList.remove('hidden');const reviewTrap=_setupModalFocusTrap(card);
+    if (_modalKeyHandler) { document.removeEventListener('keydown', _modalKeyHandler); }
+    _modalKeyHandler=function(e){if(e.key==='Escape'){e.preventDefault();keepPaused.click();}else reviewTrap(e);};
+    document.addEventListener('keydown',_modalKeyHandler);
+    return true;
+  }
   var cancel=document.createElement('button');cancel.className='btn-ghost';cancel.textContent='إلغاء';
   cancel.onclick=function(){
     closeModal();
