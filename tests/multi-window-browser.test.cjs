@@ -3344,7 +3344,10 @@ test('gap analytics use measured seconds consistently across weekly, type, and s
     assert.match(rendered.typeText, /متوسط فجوة المهام[\s\S]*-23%/);
     assert.match(rendered.typeText, /الفجوة المجمّعة[\s\S]*-23%/);
     assert.match(rendered.typeText, /وسيط الفجوة[\s\S]*-23%/);
-    assert.match(rendered.typeText, /46 دقيقة فعلية/);
+    assert.match(rendered.typeText, /3 د تقدير ← 2 د 19 ث فعلي/);
+    assert.match(rendered.typeText, /مثال قياسي/);
+    assert.match(rendered.typeText, /تقدير 60 دقيقة ← المتوقع 46 دقيقة/);
+    assert.doesNotMatch(rendered.typeText, /46 دقيقة فعلية/);
   } finally {
     if (context) await context.close();
     if (browser) await browser.close();
