@@ -168,6 +168,7 @@ function createRuntime(storage, options = {}) {
     '_sessionAlreadyLogged',
     '_logSession',
     '_validatePendingStopwatchTransaction',
+    '_hasAmbiguousLegacyFocusSession',
     '_saveFocusTimer',
     '_loadFocusTimer',
     '_resetAfterSession',
@@ -327,4 +328,85 @@ test('recovery refuses to overwrite a task value that is neither the pre-commit 
   assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
   assert.ok(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction);
   assert.equal(restarted.sandbox.storageRecoveryRequired, true);
+});
+
+
+test('Pomodoro work-session commit replays a version-2 task/session identity after process death', () => {
+  const storage = initialStorage();
+  const storedTimer = JSON.parse(storage.getItem('focus-timer'));
+  storedTimer.mode = 'pomodoro';
+  storage.setItem('focus-timer', JSON.stringify(storedTimer));
+
+  const first = createRuntime(storage);
+  assert.equal(first.sandbox._focusTimer.mode, 'pomodoro');
+  first.sandbox._logSession = () => {
+    throw new Error('simulated process death after task actual and marker were committed');
+  };
+  assert.equal(first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3), false);
+
+  const committedMain = JSON.parse(storage.getItem('main'));
+  const pendingTimer = JSON.parse(storage.getItem('focus-timer'));
+  const tx = pendingTimer.pendingStopwatchTransaction;
+  assert.equal(tx.version, 2);
+  assert.equal(tx.mode, 'pomodoro');
+  assert.equal(committedMain.tasks[0].actual, 8);
+  assert.equal(committedMain.tasks[0].lastFocusTransactionId, tx.id);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 0);
+
+  const restarted = createRuntime(storage);
+  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), true);
+  const recoveredMain = JSON.parse(storage.getItem('main'));
+  const recoveredSessions = JSON.parse(storage.getItem('focus-sessions'));
+  const recoveredTimer = JSON.parse(storage.getItem('focus-timer'));
+  assert.equal(recoveredMain.tasks[0].actual, 8, 'replay must not add committed minutes twice');
+  assert.equal(recoveredMain.tasks[0].lastFocusTransactionId, tx.id);
+  assert.equal(recoveredSessions.length, 1);
+  assert.equal(recoveredSessions[0].mode, 'pomodoro');
+  assert.equal(recoveredSessions[0].transactionId, tx.id);
+  assert.equal(recoveredSessions[0].durationSec, 125);
+  assert.equal(recoveredTimer.pendingStopwatchTransaction, null);
+});
+
+test('version-2 replay recognizes its transaction-tagged session after reset interruption', () => {
+  const storage = initialStorage();
+  const storedTimer = JSON.parse(storage.getItem('focus-timer'));
+  storedTimer.mode = 'pomodoro';
+  storage.setItem('focus-timer', JSON.stringify(storedTimer));
+  const first = createRuntime(storage);
+  first.sandbox._resetAfterSession = () => {
+    throw new Error('simulated process death after transaction-tagged session storage');
+  };
+
+  assert.equal(first.sandbox._applyStopwatchSave(125, first.sandbox.tasks[0], 3), false);
+  const beforeRestartSessions = JSON.parse(storage.getItem('focus-sessions'));
+  const beforeRestartTimer = JSON.parse(storage.getItem('focus-timer'));
+  assert.equal(beforeRestartSessions.length, 1);
+  assert.equal(beforeRestartSessions[0].transactionId, beforeRestartTimer.pendingStopwatchTransaction.id);
+
+  const restarted = createRuntime(storage);
+  assert.equal(restarted.sandbox._recoverPendingStopwatchSave(false), true);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 1);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 8);
+  assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
+});
+
+test('matching legacy session without a transaction ID is not adopted as a new version-2 commit', () => {
+  const storage = initialStorage();
+  const timer = JSON.parse(storage.getItem('focus-timer'));
+  timer.mode = 'pomodoro';
+  storage.setItem('focus-timer', JSON.stringify(timer));
+  const startedAt = new Date(timer.sessionStartAt).toISOString();
+  storage.setItem('focus-sessions', JSON.stringify([{
+    id: 1, mode: 'pomodoro', phase: 'work', taskId: 7, taskName: 'Stopwatch task',
+    startedAt, endedAt: new Date(timer.sessionStartAt + 125000).toISOString(),
+    durationSec: 125, completed: true
+  }]));
+
+  const h = createRuntime(storage);
+  h.sandbox._focusTimer.mode = 'pomodoro';
+  assert.equal(h.sandbox._applyStopwatchSave(125, h.sandbox.tasks[0], 3), false);
+  assert.equal(JSON.parse(storage.getItem('main')).tasks[0].actual, 5);
+  assert.equal(JSON.parse(storage.getItem('focus-sessions')).length, 1);
+  assert.equal(JSON.parse(storage.getItem('focus-timer')).pendingStopwatchTransaction, null);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
 });

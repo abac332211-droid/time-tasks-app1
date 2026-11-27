@@ -1259,7 +1259,9 @@ test('task deletion restores the task and linked focus timer when persistence fa
   const sandbox = {
     tasks: [task],
     editingId: null,
-    _focusTimer: { taskId: 12 },
+    _focusTimer: { taskId: 12, running: false, baseElapsed: 0, pendingStopwatchTransaction: null },
+    _focusElapsedRemainderMs: 0,
+    storageRecoveryRequired: false,
     showConfirmModal: (title, body, callback) => callback(),
     _saveFocusTimer: () => { timerSaveCalls++; return true; },
     _renderFocusTimer: () => {},
@@ -1331,7 +1333,7 @@ test('task completion and undo rely on one centralized full reminder sync per sa
 
   sandbox.toggleTask(19);
   assert.equal(task.status, 'pending');
-  assert.equal(task.actual, null);
+  assert.equal(task.actual, 30, 'undoing completion must preserve the stored actual minutes');
   assert.equal(fullSyncs, 2);
   assert.deepEqual(singleSyncs, []);
 });
@@ -1343,7 +1345,9 @@ test('task deletion does not cancel a derived reminder ID directly', () => {
   const sandbox = {
     tasks: [task],
     editingId: null,
-    _focusTimer: { taskId: null },
+    _focusTimer: { taskId: null, running: false, baseElapsed: 0, pendingStopwatchTransaction: null },
+    _focusElapsedRemainderMs: 0,
+    storageRecoveryRequired: false,
     showConfirmModal: (_title, _body, callback) => callback(),
     saveData: () => { persistenceCalls++; return true; },
     renderAll: () => {},
@@ -1543,6 +1547,33 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
       if (sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('session-save');
       return logResult;
     },
+    _applyStopwatchSave(elapsedSec, linkedTask, minutesToAdd) {
+      const oldActual = linkedTask.actual;
+      const tx = {
+        version: 2, id: 'focus-test-transaction-0001', taskId: linkedTask.id,
+        previousTaskTransactionId: null, previousActual: oldActual,
+        targetActual: (oldActual || 0) + minutesToAdd,
+        minutesToAdd, durationSec: elapsedSec, sessionStartAt: timer.sessionStartAt,
+        mode: timer.mode, phase: timer.phase, clockAdjusted: false,
+        elapsedRemainderMs: 0, createdAt: 1
+      };
+      timer.pendingStopwatchTransaction = tx;
+      linkedTask.actual = tx.targetActual;
+      if (!sandbox.saveData()) {
+        linkedTask.actual = oldActual;
+        sandbox.storageRecoveryRequired = true;
+        return false;
+      }
+      if (!sandbox._logSession(tx.phase, tx.durationSec, true)) {
+        sandbox.storageRecoveryRequired = true;
+        alerts.push(["لم يكتمل استرداد جلسة التركيز", "بقي سجل المعاملة"]);
+        return false;
+      }
+      if (!sandbox._resetAfterSession()) return false;
+      timer.pendingStopwatchTransaction = null;
+      if (!sandbox._completeRollingRecoveryCheckpoint("focus-session-commit")) return false;
+      return true;
+    },
     _storeRollingRecoveryBackup(reason) {
       checkpoints.push(reason);
       return checkpointResult;
@@ -1564,30 +1595,31 @@ function transitionDialogHarness({ saveResults = [true, true], logResult = false
   };
 }
 
-test('failed session logging rolls task.actual back even when its old value is null and keeps the session for retry', () => {
-  const harness = transitionDialogHarness({ saveResults: [true, true], logResult: false });
-  assert.equal(harness.footer.children.length, 3);
+test('failed session logging keeps committed task minutes and a pending recovery journal', () => {
+  const harness = transitionDialogHarness({ saveResults: [true], logResult: false });
   harness.footer.children[2].onclick();
 
-  assert.equal(harness.task.actual, null);
+  assert.equal(harness.task.actual, 2, 'verified task minutes remain committed while the journal is pending');
+  assert.ok(harness.timer.pendingStopwatchTransaction, 'the durable transaction remains for recovery');
   assert.equal(harness.timer.running, false);
   assert.equal(harness.timer.baseElapsed, 120);
-  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
-  assert.match(harness.alerts[0][0], /تعذر تسجيل الجلسة/);
+  assert.deepEqual(harness.counts(), { saveCalls: 1, resetCalls: 0, switchCalls: 0, renderCalls: 0 });
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.match(harness.alerts[0][0], /لم يكتمل استرداد جلسة التركيز/);
 });
 
-test('failed session logging reports inconsistency if rollback persistence also fails', () => {
-  const harness = transitionDialogHarness({ saveResults: [true, false], logResult: false });
+test('failed task persistence retains the prior actual balance and pending journal', () => {
+  const harness = transitionDialogHarness({ saveResults: [false], logResult: true });
   harness.footer.children[2].onclick();
 
-  assert.equal(harness.task.actual, null, 'the in-memory value is still restored');
-  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
-  assert.match(harness.alerts[0][0], /فشل تسجيل الجلسة والتراجع/);
-  assert.equal(harness.sandbox.storageRecoveryRequired, true,
-    'normal writes must be blocked when task compensation failed');
-  assert.deepEqual(harness.checkpoints, [],
-    'the intermediate task write must not become a rolling recovery checkpoint');
+  assert.equal(harness.task.actual, null, 'an unverified task update must be rolled back in memory');
+  assert.ok(harness.timer.pendingStopwatchTransaction);
+  assert.deepEqual(harness.counts(), { saveCalls: 1, resetCalls: 0, switchCalls: 0, renderCalls: 0 });
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.checkpoints.includes('session-save'), false);
 });
+
+
 
 test('transition dialog is not opened when the initial paused-timer checkpoint fails', () => {
   const harness = transitionDialogHarness({ checkpointResult: false });
@@ -2903,7 +2935,7 @@ test('successful focus-session transaction checkpoints only after task and sessi
   const harness = transitionDialogHarness({ saveResults: [true], logResult: true });
   harness.footer.children[2].onclick();
 
-  assert.deepEqual(harness.checkpoints, ['focus-session-transition-commit']);
+  assert.deepEqual(harness.checkpoints, ['main-save', 'session-save', 'focus-session-commit']);
   assert.equal(harness.sandbox._rollingRecoveryCheckpointHold, 0);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });

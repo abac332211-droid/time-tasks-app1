@@ -5115,12 +5115,19 @@ function toggleTask(id) {
 function deleteTask(id) {
   const task = tasks.find(function(item) { return item.id === id; });
   if (!task) return;
-  if (_focusTimer.taskId === id
-      && (_focusTimer.running || _getElapsedSec() > 0 || _focusTimer.pendingStopwatchTransaction)) {
+  function linkedFocusSessionIsActive() {
+    if (!_focusTimer || _focusTimer.taskId !== id) return false;
+    if (_focusTimer.running || _focusTimer.pendingStopwatchTransaction) return true;
+    var elapsed = Number(_focusTimer.baseElapsed);
+    var remainder = Number(_focusElapsedRemainderMs);
+    return (Number.isFinite(elapsed) && elapsed > 0)
+      || (Number.isFinite(remainder) && remainder > 0);
+  }
+  if (linkedFocusSessionIsActive()) {
     showToast("⏸ أنهِ جلسة التركيز أو أعد تعيينها قبل حذف المهمة المرتبطة.");
     return;
   }
-  if (storageRecoveryRequired) {
+  if (typeof storageRecoveryRequired !== "undefined" && storageRecoveryRequired) {
     showToast("⏳ لا يمكن حذف المهمة قبل حسم استرداد التخزين.");
     return;
   }
@@ -5128,8 +5135,7 @@ function deleteTask(id) {
   showConfirmModal("حذف المهمة", "هل أنت متأكد من حذف هذه المهمة نهائيًا؟", function() {
     const current = tasks.find(function(item) { return item.id === id; });
     if (!current) return;
-    if (_focusTimer.taskId === id
-        && (_focusTimer.running || _getElapsedSec() > 0 || _focusTimer.pendingStopwatchTransaction)) {
+    if (linkedFocusSessionIsActive()) {
       showToast("⏸ تغيرت حالة المؤقت؛ لم تُحذف المهمة.");
       return;
     }

@@ -53,6 +53,7 @@ function createStopwatchSaveHarness(options = {}) {
     tasks: task ? [task] : [],
     console: { error() {}, warn() {} },
     _sessionAlreadyLogged() { calls.push('alreadyLogged'); return logged; },
+    _hasAmbiguousLegacyFocusSession: () => false,
     _validatePendingStopwatchTransaction: () => true,
     _saveFocusTimer() { calls.push('saveTimer'); return true; },
     _recoverPendingStopwatchSave(holdAlreadyAcquired) {
@@ -199,7 +200,7 @@ test('retry after a logged session but failed timer reset does not add the task 
   assert.equal(h.timer.baseElapsed, 0);
   assert.equal(h.releaseCalls, 1, 'the retry replays the durable transaction without acquiring a second save hold');
   assert.equal(h.timer.pendingStopwatchTransaction, null);
-  assert.ok(h.toasts.some(message => /استُكملت عملية Stopwatch المحفوظة دون تكرار/.test(message)));
+  assert.ok(h.toasts.some(message => /استُكملت معاملة جلسة التركيز المحفوظة دون تكرار/.test(message)));
 });
 
 test('an already logged Stopwatch session completes reset without changing task.actual', () => {
