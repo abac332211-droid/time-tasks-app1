@@ -86,7 +86,7 @@ test('session loader preserves the exact corrupt source and locks storage instea
   const alerts = [];
   const sandbox = {
     FOCUS_SESSIONS_KEY: 'focus-sessions',
-    FOCUS_MAX_SESSIONS: 500,
+    FOCUS_MAX_SESSIONS: 10000,
     _sessionsCache: null,
     _invalidFocusSessionsNoticeShown: false,
     storageRecoveryRequired: false,
@@ -116,7 +116,7 @@ test('session loader preserves the exact corrupt source and locks storage instea
 test('session saver rejects duplicate IDs and invalid end-before-start records before writing', () => {
   let writes = 0;
   const sandbox = {
-    FOCUS_MAX_SESSIONS: 500,
+    FOCUS_MAX_SESSIONS: 10000,
     FOCUS_SESSIONS_KEY: 'focus-sessions',
     storageRecoveryRequired: false,
     _sessionsCache: [],
@@ -245,3 +245,61 @@ function hValidate(session) {
   );
   return sandbox._validateFocusSessionRecord(session);
 }
+
+
+test('session 501 is appended without truncating the existing session history', () => {
+  const sessions = [];
+  for (let i = 0; i < 501; i++) {
+    const start = baseStart + i * 60_000;
+    sessions.push(validSession({
+      id: i + 1,
+      startedAt: new Date(start).toISOString(),
+      endedAt: new Date(start + 60_000).toISOString()
+    }));
+  }
+  let raw = JSON.stringify(sessions);
+  let preserveCalls = 0;
+  const nextStart = baseStart + 501 * 60_000;
+  const sandbox = {
+    FOCUS_SESSIONS_KEY: 'focus-sessions',
+    FOCUS_MAX_SESSIONS: 10000,
+    _sessionsCache: null,
+    _invalidFocusSessionsNoticeShown: false,
+    storageRecoveryRequired: false,
+    _focusTimer: {
+      mode: 'stopwatch', phase: 'work', taskId: 2, sessionStartAt: nextStart,
+      clockAdjusted: false
+    },
+    tasks: [{ id: 2, name: 'مهمة الاختبار' }],
+    _trackSecondaryStorageRead: (_key, value) => value,
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified: (_key, value) => { raw = value; return true; },
+    _storeRollingRecoveryBackup: () => true,
+    _preserveCorruptStorageSnapshot: () => { preserveCalls++; return true; },
+    localStorage: { getItem: () => raw },
+    showAlertModal() {},
+    showToast() {},
+    Date,
+    console
+  };
+  vm.runInNewContext(
+    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' +
+    extractFunction('_validateFocusSessionRecord') + '\n' +
+    extractFunction('_loadSessions') + '\n' +
+    extractFunction('_saveSessions') + '\n' +
+    extractFunction('_logSession'),
+    sandbox
+  );
+
+  const loaded = sandbox._loadSessions();
+  assert.equal(loaded.length, 501);
+  assert.equal(sandbox.storageRecoveryRequired, false);
+  assert.equal(preserveCalls, 0);
+  assert.equal(sandbox._logSession('work', 60, true), true);
+  const persisted = JSON.parse(raw);
+  assert.equal(persisted.length, 502);
+  assert.equal(persisted[0].id, 1, 'the oldest original session must remain intact');
+  assert.equal(persisted[500].id, 501);
+  assert.equal(persisted[501].id, 502);
+  assert.equal(persisted[501].startedAt, new Date(nextStart).toISOString());
+});

@@ -1350,6 +1350,7 @@ test('task deletion does not cancel a derived reminder ID directly', () => {
     storageRecoveryRequired: false,
     showConfirmModal: (_title, _body, callback) => callback(),
     saveData: () => { persistenceCalls++; return true; },
+    _renderFocusTimer: () => {},
     renderAll: () => {},
     showToast: () => {},
     _queueTaskReminderCancellation: (id) => { cancelled.push(id); }

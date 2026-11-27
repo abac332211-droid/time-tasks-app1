@@ -5158,7 +5158,7 @@ function deleteTask(id) {
     tasks = tasks.filter(function(item) { return item.id !== id; });
     if (editingId === id) cancelEdit();
     if (saveData()) {
-      _renderFocusTimer();
+      if (detached) _renderFocusTimer();
       renderAll();
       showToast("🗑️ تم حذف المهمة" + (detached ? " — فُصل المؤقت بعد حفظ حالته" : ""));
       return;
@@ -5169,9 +5169,8 @@ function deleteTask(id) {
     if (detached) {
       _focusTimer.taskId = previousFocusTaskId;
       restored = _saveFocusTimer();
+      _renderFocusTimer();
     }
-    _renderFocusTimer();
-    renderAll();
     if (!restored) {
       storageRecoveryRequired = true;
       showAlertModal("فشل الحذف والتراجع الكامل",
@@ -8477,7 +8476,8 @@ function _showAwaySessionConfirmation() {
   _awaySessionPromptOpen = true;
   showConfirmModal("⏱️ انتهت المرحلة أثناء غيابك",
     "اكتمل طور " + (labels[phase] || "المؤقت") + " (" + Math.round(target / 60) +
-    " دقيقة) أثناء وجود التطبيق في الخلفية أو بعد إغلاقه. هل تريد اعتماد جلسة واحدة وتسجيلها؟",
+    " دقيقة) أثناء وجود التطبيق في الخلفية أو بعد إغلاقه. هل تريد اعتماد جلسة واحدة وتسجيلها؟" +
+      (phase === "work" ? "<br><small>سيُحفظ سجل الجلسة فقط؛ لن تُضاف المدة تلقائيًا إلى رصيد المهمة.</small>" : ""),
     function() {
       _awaySessionPromptOpen = false;
       if (!_focusTimer.awaitingConfirmation || _focusTimer.phase !== phase || _focusTimer.sessionStartAt !== startedAt) return;

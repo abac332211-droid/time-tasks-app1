@@ -83,3 +83,25 @@ test('session history safety ceiling is raised without automatic truncation', ()
   assert.match(html, /FOCUS_MAX_SESSIONS = 10000/);
   assert.doesNotMatch(html, /valid\s*=\s*valid\.slice\\(-FOCUS_MAX_SESSIONS\\)/);
 });
+
+
+test('deleting a task linked to an active focus session is blocked without touching either store', () => {
+  const task = { id: 9, name: 'مهمة بمؤقت جارٍ' };
+  let confirms = 0, mainWrites = 0, timerWrites = 0;
+  const sandbox = {
+    tasks: [task], editingId: null, storageRecoveryRequired: false,
+    _focusTimer: { taskId: 9, running: true, baseElapsed: 15, pendingStopwatchTransaction: null },
+    _focusElapsedRemainderMs: 0,
+    showConfirmModal() { confirms++; },
+    _saveFocusTimer() { timerWrites++; return true; },
+    saveData() { mainWrites++; return true; },
+    _renderFocusTimer() {}, renderAll() {}, showToast() {}
+  };
+  vm.runInNewContext(extractFunction('deleteTask'), sandbox);
+  sandbox.deleteTask(9);
+  assert.equal(confirms, 0);
+  assert.equal(mainWrites, 0);
+  assert.equal(timerWrites, 0);
+  assert.equal(sandbox.tasks[0], task);
+  assert.equal(sandbox._focusTimer.taskId, 9);
+});
