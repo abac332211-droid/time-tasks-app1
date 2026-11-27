@@ -7571,10 +7571,18 @@ function _validateFocusSessionRecordV2(session) {
       && (session.activeDurationMs !== 0 || session.creditedSeconds !== 0
         || session.creditSource !== "none" || session.outcome !== "interrupted")) return false;
   if (session.outcome === "interrupted" && session.clockTrust === "trusted") return false;
-  if (session.creditSource === "user_adjusted"
-      && (session.phase !== "work" || session.taskId === null
-        || session.clockTrust === "untrusted"
-        || (session.outcome !== "completed" && session.outcome !== "ended_early"))) return false;
+  if (session.creditSource === "user_adjusted") {
+    var adjustedPomodoroOutcome = session.mode === "pomodoro"
+      && (session.outcome === "completed" || session.outcome === "ended_early");
+    var adjustedStopwatchOutcome = session.mode === "stopwatch"
+      && session.outcome === "stopped";
+    // V2 Stopwatch may record a user-approved minute credit separately from
+    // measured seconds. It remains a trusted-clock session; clock-adjusted
+    // snapshots are deliberately fail-closed by the commit entry point.
+    if (session.phase !== "work" || session.taskId === null
+        || session.clockTrust !== "trusted" || session.clockAdjusted === true
+        || (!adjustedPomodoroOutcome && !adjustedStopwatchOutcome)) return false;
+  }
   return true;
 }
 
@@ -13048,6 +13056,14 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
   }
   if(_focusTimerExternalConflict){showAlertModal("تعارض حالة المؤقت","تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق قبل إعادة تعيينه.");return;}
   var elapsed=_getElapsedSec();
+  if (_isClockAdjustedV2WorkSession(_focusTimer)) {
+    var adjustedSnapshot = _freezeFocusTimerForDecision();
+    if (!adjustedSnapshot) return false;
+    return _showClockAdjustedV2ReviewDialog(adjustedSnapshot, {
+      discardText: "تجاهل وتصفير",
+      successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+  }
   if(_focusTimer.mode==='stopwatch'&&elapsed>=STOPWATCH_SAVE_THRESHOLD_SEC){_showStopwatchSaveDialog(elapsed);return;}
   showConfirmModal('إعادة التعيين','سيتم تجاهل الجلسة الحالية دون تسجيلها وإعادة المؤقت إلى الصفر. المدة: '+_formatDuration(elapsed)+'. متابعة؟',
     function(){
@@ -13057,6 +13073,66 @@ function resetTimer(_nativeClockSynchronized, _notificationQueueChecked) {
       });
     });
 }
+function _isFocusTaskCreditSchemaV2(task) {
+  return !!task && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+    .some(function(key) { return Object.prototype.hasOwnProperty.call(task, key); });
+}
+
+function _isClockAdjustedV2WorkSession(snapshot) {
+  if (!snapshot || snapshot.clockAdjusted !== true || snapshot.phase !== "work"
+      || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
+      || snapshot.taskId === null || snapshot.taskId === undefined) return false;
+  var task = Array.isArray(tasks)
+    ? tasks.find(function(row) { return row && row.id === snapshot.taskId; }) : null;
+  return _isFocusTaskCreditSchemaV2(task);
+}
+
+function _showClockAdjustedV2ReviewDialog(snapshot, options) {
+  if (!_isClockAdjustedV2WorkSession(snapshot)) return false;
+  options = options || {};
+  var overlay = document.getElementById("customModalOverlay");
+  var card = document.getElementById("modalCardElement");
+  document.getElementById("modalTitle").textContent = "جلسة تحتاج إلى مراجعة الساعة";
+  document.getElementById("modalBody").innerHTML =
+    '<p style="margin:0 0 10px;line-height:1.7;">اكتشف التطبيق تغيرًا في ساعة المؤقت. الجلسة محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>'
+    + '<p style="margin:0;line-height:1.7;">لا يمكن اعتماد هذه الجلسة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً.</p>';
+  var footer = document.getElementById("modalFooter");
+  footer.innerHTML = "";
+  var keepPaused = document.createElement("button");
+  keepPaused.className = "btn-ghost";
+  keepPaused.textContent = "إبقاء متوقفة";
+  keepPaused.onclick = function() {
+    closeModal();
+    _pendingFinishDialogShown = false;
+    _renderFocusTimer();
+  };
+  var discard = document.createElement("button");
+  discard.className = "btn-danger";
+  discard.textContent = options.discardText || "تجاهل وتصفير";
+  discard.onclick = function() {
+    closeModal();
+    _pendingFinishDialogShown = false;
+    _discardShortFocusSession({
+      snapshot: snapshot,
+      allowLong: true,
+      onDiscarded: options.onDiscarded,
+      successToast: options.successToast || "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+  };
+  footer.appendChild(keepPaused);
+  footer.appendChild(discard);
+  overlay.classList.remove("hidden");
+  _pendingFinishDialogShown = true;
+  const trap = _setupModalFocusTrap(card);
+  if (_modalKeyHandler) document.removeEventListener("keydown", _modalKeyHandler);
+  _modalKeyHandler = function(e) {
+    if (e.key === "Escape") { e.preventDefault(); keepPaused.click(); }
+    else trap(e);
+  };
+  document.addEventListener("keydown", _modalKeyHandler);
+  return true;
+}
+
 function _showStopwatchSaveDialog(elapsedSec) {
   if (!_isTaskStorageLockHeld()) {
     return _withTaskStorageLock(function() { return _showStopwatchSaveDialog(elapsedSec); });
@@ -13064,6 +13140,12 @@ function _showStopwatchSaveDialog(elapsedSec) {
   if(_focusTimerExternalConflict){showAlertModal("تعارض حالة المؤقت","تغيّرت حالة المؤقت في نافذة أخرى. أعد تحميل التطبيق أولًا.");return;}
   var snapshot=_freezeFocusTimerForDecision();if(!snapshot)return;
   elapsedSec=snapshot.baseElapsed;
+  if (_isClockAdjustedV2WorkSession(snapshot)) {
+    return _showClockAdjustedV2ReviewDialog(snapshot, {
+      discardText: "تجاهل وتصفير",
+      successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+  }
   if(elapsedSec<60){_discardShortFocusSession({snapshot:snapshot,successToast:"⚪ أُعيد تعيين Stopwatch دون تسجيل الجلسة"});return;}
   var task=snapshot.taskId!==null?tasks.find(function(t){return t.id===snapshot.taskId;}):null;
   var minutes=Math.max(1,Math.round(elapsedSec/60));
@@ -13308,6 +13390,62 @@ function _pendingTxMatchesCommitRequest(tx,p) {
 
 function _commitFocusTaskSession(p) {
   if(!p||!p.snapshot)return Promise.resolve(false);
+  var snapshot = p.snapshot;
+  var taskId = p.taskId === undefined ? snapshot.taskId : p.taskId;
+  var snapshotHasLinkedWorkSession = snapshot.taskId !== null && snapshot.taskId !== undefined
+    && snapshot.phase === "work"
+    && (snapshot.mode === "stopwatch" || snapshot.mode === "pomodoro");
+  if (snapshotHasLinkedWorkSession) {
+    if (taskId !== snapshot.taskId) {
+      showAlertModal("تعارض ربط المهمة",
+        "تغير معرّف المهمة في طلب الحفظ. لم نمرر الجلسة إلى أي كاتب ولم نغيّر الرصيد أو المؤقت.");
+      return Promise.resolve(false);
+    }
+    var linkedTask = Array.isArray(tasks)
+      ? tasks.find(function(row) { return row && row.id === snapshot.taskId; })
+      : null;
+    var taskUsesV2CreditSchema = !!linkedTask
+      && ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+        .some(function(key) { return Object.prototype.hasOwnProperty.call(linkedTask, key); });
+    var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
+        && Number.isInteger(snapshot.elapsedRemainderMs)
+      ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
+    var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
+      ? Math.floor(measuredActiveDurationMs / 1000) : null;
+    var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
+      && Number.isSafeInteger(p.minutesToAdd)
+      && p.minutesToAdd * 60 === measuredActiveSeconds;
+    // First trusted linked Pomodoro commits (and exactly measured Stopwatch
+    // approvals) enter V2 here. All other legacy task saves stay on the V1
+    // transaction until a V2 commit has migrated their credit metadata.
+    var shouldEnterV2 = taskUsesV2CreditSchema
+      || (snapshot.clockAdjusted !== true
+        && (snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement));
+    if (shouldEnterV2) {
+      if (p.completed === false) {
+        showAlertModal("جلسة غير مكتملة",
+          "قرار حفظ جلسة العمل غير مكتمل. بقيت الجلسة متوقفة ولم نغيّر الرصيد.");
+        return Promise.resolve(false);
+      }
+      if (snapshot.clockAdjusted === true) {
+        showAlertModal("جلسة تحتاج إلى مراجعة الساعة",
+          "اكتشف التطبيق تغيرًا في ساعة المؤقت. لم نعتمد الثواني المقاسة ولم نمرر المهمة V2 إلى الكاتب القديم. بقيت الجلسة متوقفة ببياناتها دون تغيير؛ راجعها أو تجاهلها صراحةً.");
+        return Promise.resolve(false);
+      }
+      // Once a task has entered V2, every finish/reset/task-switch save must
+      // use the same durable writer. Legacy tasks retain their established
+      // V1 transaction contract until they are migrated by a V2 commit.
+      return _commitPendingFocusSessionV2({
+        snapshot: snapshot,
+        taskId: taskId,
+        minutesToAdd: p.minutesToAdd,
+        useMeasuredCredit: p.useMeasuredCredit === true,
+        completed: true,
+        onCommitted: p.onCommitted,
+        successToast: p.successToast
+      });
+    }
+  }
   if(_focusCommitInFlight){showToast("⏳ جارٍ تثبيت جلسة التركيز بالفعل");return Promise.resolve(false);}
   if(_startupResetRecoveryInFlight||_resetRecoveryInFlight||_resetInFlight){
     showToast("⏳ هناك عملية استرداد أو حذف قيد التنفيذ");return Promise.resolve(false);
@@ -13332,7 +13470,6 @@ function _commitFocusTaskSession(p) {
     });
   _focusCommitPendingPromise=pending;return pending;
 }
-
 function _commitFocusTaskSessionLocked(p) {
   if(!p||!p.snapshot||!_stopwatchTransactionLockDepth)return false;
   if ((typeof _hasPersistedPendingFocusCommit === "function"
@@ -14674,9 +14811,9 @@ function _commitFocusSessionV2(sessionFields) {
   });
 }
 
-// The PR #23 session contract supports trusted Pomodoro work sessions. Legacy
-// Stopwatch confirmation retains its minute-based writer unless a future
-// contract explicitly extends V2 to represent its user-adjusted "stopped" case.
+// All task-linked trusted work sessions use this durable V2 writer. Stopwatch
+// sessions may preserve measured duration and user-approved credit separately;
+// clock-adjusted snapshots are rejected before entering this function.
 function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasuredCredit) {
   if (!snapshot || !task || snapshot.running !== false
       || (snapshot.mode !== "pomodoro" && snapshot.mode !== "stopwatch")
@@ -14698,10 +14835,6 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
       || !Number.isSafeInteger(durationSec) || !Number.isSafeInteger(creditedSeconds)
       || (plannedDurationMs !== null
         && (!Number.isSafeInteger(plannedDurationMs) || plannedDurationMs <= 0))) return null;
-
-  // PR #23 only admits measured credit for Stopwatch's "stopped" outcome.
-  // A minute-based, user-adjusted Stopwatch value remains on the legacy writer.
-  if (snapshot.mode === "stopwatch" && creditedSeconds !== durationSec) return null;
 
   var started = new Date(snapshot.sessionStartAt);
   var endedMs = Number.isFinite(snapshot.pendingPhaseEndedAt)
@@ -14732,9 +14865,8 @@ function _buildPendingFocusSessionFields(snapshot, task, minutesToAdd, useMeasur
   };
 }
 
-// The real finish path enters here for linked, trusted Pomodoro work sessions,
-// and for Stopwatch only when the approved seconds exactly match measurement.
-// User-adjusted Stopwatch minutes retain the legacy writer for compatibility.
+// The unified task-session dispatcher enters here for every linked, trusted
+// Pomodoro or Stopwatch work save, including user-adjusted Stopwatch minutes.
 function _commitPendingFocusSessionV2(params) {
   if (!params || !params.snapshot) return Promise.resolve(false);
   if (_focusCommitPendingPromise) return _focusCommitPendingPromise;
@@ -14808,7 +14940,10 @@ function _commitPendingFocusSessionV2(params) {
       storageRecoveryRequired = true;
       return false;
     }
-    if (typeof params.onCommitted === "function" && params.onCommitted() !== true) {
+    if (typeof params.onCommitted === "function"
+        && _withFocusCommitWrite(function() {
+          return params.onCommitted();
+        }) !== true) {
       showAlertModal("حُفظت الجلسة ولم يكتمل الانتقال",
         "لم يُرجع callback الانتقال true؛ لم نعلن بدء الجلسة التالية.");
       return false;
@@ -15321,7 +15456,7 @@ function _applyStopwatchSave(elapsedSec,task,minutesToAdd,snapshot) {
 
 function _applyStopwatchSaveLocked(elapsedSec,task,minutesToAdd,snapshot) {
   var frozen=snapshot||_captureFocusTimerSnapshot();
-  return frozen?_commitFocusTaskSessionLocked({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
+  return frozen?_commitFocusTaskSession({snapshot:frozen,taskId:frozen.taskId,minutesToAdd:minutesToAdd,completed:true}):false;
 }
 function _cancelPendingNotificationFinish() {
   if (!_focusTimer.pendingNotificationFinish) return true;
@@ -15343,13 +15478,20 @@ function _cancelPendingNotificationFinish() {
 function _continueFocusTimerFinish(snapshot) {
   if (!snapshot) return Promise.resolve(false);
   var elapsed = snapshot.baseElapsed;
+  var isBreak = snapshot.mode === "pomodoro" && snapshot.phase !== "work";
+  var task = snapshot.taskId !== null ? tasks.find(function(t) { return t.id === snapshot.taskId; }) : null;
+  if (_isClockAdjustedV2WorkSession(snapshot)) {
+    _showClockAdjustedV2ReviewDialog(snapshot, {
+      discardText: "تجاهل وتصفير",
+      successToast: "⚪ تم تجاهل الجلسة غير الموثوقة دون اعتمادها"
+    });
+    return true;
+  }
   if (elapsed < 60) {
     var message = snapshot.mode === "pomodoro" && snapshot.phase !== "work"
       ? "☕ الاستراحة أقل من دقيقة — أُغلقت دون تسجيل" : "⏱️ الجلسة أقل من دقيقة — أُلغيت";
     return _discardShortFocusSession({ snapshot: snapshot, successToast: message });
   }
-  var isBreak = snapshot.mode === "pomodoro" && snapshot.phase !== "work";
-  var task = snapshot.taskId !== null ? tasks.find(function(t) { return t.id === snapshot.taskId; }) : null;
   if (isBreak || !task) {
     return _commitFocusTaskSession({
       snapshot: snapshot, taskId: null, allowUnlinkedTaskSnapshotLink: isBreak,
@@ -15403,7 +15545,9 @@ function _continueFocusTimerFinish(snapshot) {
   save.onclick = function() {
     closeModal();
     _pendingFinishDialogShown = false;
-    Promise.resolve(_applyTimerFinish(elapsed, task, minutes, snapshot.phase, snapshot, true))
+    Promise.resolve(_applyTimerFinish(
+        elapsed, task, minutes, snapshot.phase, snapshot, snapshot.mode === "pomodoro"
+      ))
       .then(function(ok) {
         if (!ok && _focusTimer.pendingNotificationFinish) {
           _pendingFinishDialogShown = false;
@@ -15502,19 +15646,11 @@ function _applyTimerFinish(elapsedSec,task,minutesToAdd,capturedPhase,frozenSnap
     useMeasuredCredit:useMeasuredCredit === true,
     completed:true, successToast:"✅ أُنهيت جلسة التركيز وسُجلت مرة واحدة"
   };
-  var measuredActiveDurationMs = Number.isSafeInteger(snapshot.baseElapsed)
-      && Number.isInteger(snapshot.elapsedRemainderMs)
-    ? snapshot.baseElapsed * 1000 + snapshot.elapsedRemainderMs : null;
-  var measuredActiveSeconds = Number.isSafeInteger(measuredActiveDurationMs)
-    ? Math.floor(measuredActiveDurationMs / 1000) : null;
-  var stopwatchCreditMatchesMeasurement = snapshot.mode === "stopwatch"
-    && Number.isSafeInteger(minutesToAdd) && minutesToAdd * 60 === measuredActiveSeconds;
-  if ((snapshot.mode === "pomodoro" || stopwatchCreditMatchesMeasurement)
-      && snapshot.phase === "work"
-      && snapshot.taskId !== null && snapshot.taskId !== undefined
-      && task && snapshot.clockAdjusted !== true) {
-    return _commitPendingFocusSessionV2(request);
-  }
+  // Every linked work-session finish is routed through the shared
+  // schema-aware dispatcher. It chooses the initial V2 entry for trusted
+  // measured Pomodoro/exact Stopwatch sessions, preserves V1 compatibility
+  // for legacy adjusted/manual Stopwatch sessions, and never sends V2 tasks
+  // back to the legacy writer.
   return _commitFocusTaskSession(request);
 }
 function _resetAfterSession() {
@@ -15629,6 +15765,13 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
   document.getElementById('modalBody').innerHTML='<p style="margin:0;line-height:1.7;">'+description+'</p>';
   var footer=document.getElementById('modalFooter');footer.innerHTML='';
   function switchNext(){return typeof onSwitch==="function"&&onSwitch()===true;}
+  if (_isClockAdjustedV2WorkSession(snapshot)) {
+    return _showClockAdjustedV2ReviewDialog(snapshot, {
+      discardText: "تجاهل والانتقال",
+      onDiscarded: switchNext,
+      successToast: "⚪ أُلغيت الجلسة غير الموثوقة دون اعتمادها"
+    });
+  }
   var cancel=document.createElement('button');cancel.className='btn-ghost';cancel.textContent='إلغاء';
   cancel.onclick=function(){
     closeModal();
@@ -15658,7 +15801,8 @@ function _showSessionTransitionDialog(newTaskId,onSwitch) {
     var isBreak=mode==='pomodoro'&&phase!=='work';
     _commitFocusTaskSession({snapshot:snapshot,taskId:taskLinked?currentId:null,
       allowUnlinkedTaskSnapshotLink:isBreak,minutesToAdd:taskLinked?Math.max(1,Math.round(elapsed/60)):0,
-      completed:true,onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
+      useMeasuredCredit:taskLinked&&mode==='pomodoro',completed:!isBreak,
+      onCommitted:switchNext,successToast:'✅ حُفظت الجلسة وتم الانتقال'});
   };
   footer.appendChild(cancel);footer.appendChild(discard);footer.appendChild(save);
   overlay.classList.remove('hidden');const trap=_setupModalFocusTrap(card);
@@ -15741,6 +15885,10 @@ function startTimerForTask(taskId, _nativeClockSynchronized, _notificationQueueC
   if(!_focusTimer.running&&_focusTimer.taskId===taskId&&_getElapsedSec()>0){toggleTimer();_scrollToTimer();return Promise.resolve(true);}
   var elapsed=_getElapsedSec(),hasSession=_focusTimer.running||elapsed>0;
   if(hasSession&&elapsed<60){
+    if (_isClockAdjustedV2WorkSession(_focusTimer)) {
+      _showSessionTransitionDialog(taskId,_beginNewSession);
+      return Promise.resolve(true);
+    }
     var snapshot=_freezeFocusTimerForDecision();if(!snapshot)return Promise.resolve(false);
     return _discardShortFocusSession({snapshot:snapshot,onDiscarded:_beginNewSession,
       successToast:'⏱️ أُلغيت الجلسة القصيرة وبدأت جلسة المهمة الجديدة'});

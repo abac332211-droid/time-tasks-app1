@@ -738,31 +738,42 @@ test('V2 credit writer refuses a new operation when the append-only ledger is fu
 
 function sessionFinishRoutingContext(snapshot) {
   const calls = [];
+  const migratedTask = {
+    id: 7,
+    name: 'Task',
+    actual: 25,
+    actualSeconds: 1500,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operationId
+  };
   const sandbox = {
     POMODORO_WORK_SEC: 25 * 60,
-    _captureFocusTimerSnapshot: () => snapshot,
     _commitPendingFocusSessionV2: request => {
       calls.push({ writer: 'v2', request });
       return Promise.resolve('v2');
     },
-    _commitFocusTaskSession: request => {
+    _commitFocusTaskSessionLocked: request => {
       calls.push({ writer: 'legacy', request });
       return Promise.resolve('legacy');
-    }
+    },
+    showAlertModal: (title, message) => calls.push({ writer: 'blocked', title, message }),
+    tasks: [migratedTask]
   };
   vm.runInNewContext([
     extractFunction('_buildPendingFocusSessionFields'),
+    extractFunction('_commitFocusTaskSession'),
     extractFunction('_applyTimerFinish')
   ].join('\n'), sandbox);
-  return { app: sandbox, calls };
+  return { app: sandbox, calls, migratedTask };
 }
 
-test('linked Stopwatch work sessions use V2 only when the approved seconds exactly match measured time', async () => {
-  const exactSnapshot = {
+test('already-migrated task accepts adjusted Stopwatch credit through the durable V2 route', async () => {
+  const snapshot = {
     mode: 'stopwatch',
     phase: 'work',
     running: false,
-    baseElapsed: 120,
+    baseElapsed: 125,
     elapsedRemainderMs: 0,
     taskId: 7,
     sessionStartAt: startedAtMs,
@@ -770,31 +781,344 @@ test('linked Stopwatch work sessions use V2 only when the approved seconds exact
     clockAdjusted: false,
     nativeSessionToken: null
   };
-  const exact = sessionFinishRoutingContext(exactSnapshot);
-  assert.equal(await exact.app._applyTimerFinish(120, { id: 7, name: 'Task' }, 2, 'work', exactSnapshot), 'v2');
-  assert.equal(exact.calls.length, 1);
-  assert.equal(exact.calls[0].writer, 'v2');
-  const fields = exact.app._buildPendingFocusSessionFields(exactSnapshot, { id: 7, name: 'Task' }, 2);
+  const runtime = sessionFinishRoutingContext(snapshot);
+  assert.equal(runtime.migratedTask.creditSchemaVersion, 1,
+    'the task represents a prior successful Pomodoro migration and commit');
+  assert.equal(await runtime.app._applyTimerFinish(
+    125, runtime.migratedTask, 2, 'work', snapshot, false
+  ), 'v2');
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(runtime.calls[0].writer, 'v2',
+    'the old minute writer must never receive a task-linked work session');
+  const fields = runtime.app._buildPendingFocusSessionFields(
+    snapshot, runtime.migratedTask, 2, false
+  );
   assert.equal(fields.mode, 'stopwatch');
-  assert.equal(fields.phase, 'work');
-  assert.equal(fields.plannedDurationMs, null);
   assert.equal(fields.outcome, 'stopped');
-  assert.equal(fields.completed, false);
+  assert.equal(fields.durationSec, 125);
   assert.equal(fields.creditedSeconds, 120);
-  assert.equal(fields.creditSource, 'measured');
-
-  const roundedButNotMeasured = { ...exactSnapshot, baseElapsed: 125 };
-  const adjusted = sessionFinishRoutingContext(roundedButNotMeasured);
-  assert.equal(await adjusted.app._applyTimerFinish(125, { id: 7, name: 'Task' }, 2, 'work', roundedButNotMeasured), 'legacy');
-  assert.equal(adjusted.calls.length, 1);
-  assert.equal(adjusted.calls[0].writer, 'legacy');
-
-  const clockAdjusted = { ...exactSnapshot, clockAdjusted: true };
-  const untrusted = sessionFinishRoutingContext(clockAdjusted);
-  assert.equal(await untrusted.app._applyTimerFinish(120, { id: 7, name: 'Task' }, 2, 'work', clockAdjusted), 'legacy');
-  assert.equal(untrusted.calls[0].writer, 'legacy');
+  assert.equal(fields.creditSource, 'user_adjusted');
 });
 
+test('the first trusted linked Pomodoro commit enters V2 through the common dispatcher', async () => {
+  const snapshot = {
+    mode: 'pomodoro', phase: 'work', running: false,
+    baseElapsed: 1500, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  runtime.app.tasks[0] = { id: 7, name: 'Legacy Task', actual: 5 };
+  assert.equal(await runtime.app._applyTimerFinish(
+    1500, runtime.app.tasks[0], 25, 'work', snapshot, true
+  ), 'v2');
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(runtime.calls[0].writer, 'v2');
+  assert.equal(runtime.calls[0].request.useMeasuredCredit, true);
+  assert.equal(runtime.calls[0].request.snapshot.mode, 'pomodoro');
+});
+
+test('Pomodoro transition dispatch preserves all 83 measured seconds in the V2 session and ledger request', async () => {
+  const snapshot = {
+    mode: 'pomodoro', phase: 'work', running: false,
+    baseElapsed: 83, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  const result = await runtime.app._commitFocusTaskSession({
+    snapshot, taskId: 7, minutesToAdd: 1,
+    useMeasuredCredit: true, completed: true
+  });
+  assert.equal(result, 'v2');
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(runtime.calls[0].writer, 'v2');
+  assert.equal(runtime.calls[0].request.useMeasuredCredit, true);
+
+  const fields = runtime.app._buildPendingFocusSessionFields(
+    snapshot, runtime.migratedTask, 1, runtime.calls[0].request.useMeasuredCredit
+  );
+  assert.equal(fields.durationSec, 83);
+  assert.equal(fields.creditedSeconds, 83);
+  assert.equal(fields.creditSource, 'measured');
+  assert.equal(fields.outcome, 'ended_early');
+  assert.equal(fields.completed, false);
+});
+
+test('interrupted Pomodoro break transition persists completed=false without task credit', () => {
+  const logged = [];
+  const snapshot = {
+    mode: 'pomodoro', phase: 'short-break', running: false,
+    baseElapsed: 180, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false
+  };
+  const sandbox = {
+    _stopwatchTransactionLockDepth: 1,
+    _focusTimer: { pendingStopwatchTransaction: null, pendingFocusCommit: null },
+    _hasPersistedPendingFocusCommit: () => false,
+    _focusTimerSnapshotMatchesState: () => true,
+    _focusCommitBaselinesMatch: () => ({ timerRecord: {} }),
+    _withFocusCommitWrite: callback => callback(),
+    _logSession: (...args) => { logged.push(args); return true; },
+    _resetAfterSession: () => true,
+    _verifyFocusTimerResetAfterCommit: () => true,
+    _completeRollingRecoveryCheckpoint: () => true,
+    renderFocusSessionsCard: () => {},
+    showAlertModal: () => {},
+    showToast: () => {},
+    console
+  };
+  vm.runInNewContext(extractFunction('_commitFocusTaskSessionLocked'), sandbox);
+
+  const committed = sandbox._commitFocusTaskSessionLocked({
+    snapshot, taskId: null, allowUnlinkedTaskSnapshotLink: true,
+    minutesToAdd: 0, completed: false
+  });
+  assert.equal(committed, true);
+  assert.deepEqual(logged, [['short-break', 180, false]],
+    'an interrupted break must be persisted as incomplete and must not be credited to the task');
+});
+
+test('an exactly measured first Stopwatch commit enters V2 through the common dispatcher', async () => {
+  const snapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  runtime.app.tasks[0] = { id: 7, name: 'Legacy Task', actual: 5 };
+  assert.equal(await runtime.app._applyTimerFinish(
+    120, runtime.app.tasks[0], 2, 'work', snapshot, false
+  ), 'v2');
+  assert.equal(runtime.calls[0].writer, 'v2');
+  const fields = runtime.app._buildPendingFocusSessionFields(
+    snapshot, runtime.app.tasks[0], 2, false
+  );
+  assert.equal(fields.durationSec, 120);
+  assert.equal(fields.creditedSeconds, 120);
+  assert.equal(fields.creditSource, 'measured');
+});
+
+test('manual Stopwatch approval remains on V1 for a task that has not entered V2', async () => {
+  const snapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 125, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  runtime.app.tasks[0] = { id: 7, name: 'Legacy Task', actual: 5 };
+  runtime.app._focusCommitInFlight = false;
+  runtime.app._startupResetRecoveryInFlight = false;
+  runtime.app._resetRecoveryInFlight = false;
+  runtime.app._resetInFlight = false;
+  runtime.app.storageRecoveryRequired = false;
+  runtime.app._focusTimerExternalConflict = false;
+  runtime.app._focusTimer = { pendingStopwatchTransaction: null };
+  runtime.app._acquireRollingRecoveryCheckpointHold = () => () => {};
+  runtime.app._withStopwatchTransactionLock = callback => Promise.resolve().then(callback);
+  runtime.app._renderFocusTimer = () => {};
+  assert.equal(await runtime.app._applyTimerFinish(
+    125, runtime.app.tasks[0], 2, 'work', snapshot, false
+  ), 'legacy');
+  assert.deepEqual(runtime.calls.map(call => call.writer), ['legacy']);
+  assert.equal(runtime.calls[0].request.minutesToAdd, 2);
+  assert.equal(runtime.calls[0].request.snapshot.clockAdjusted, false);
+});
+
+test('exactly measured Stopwatch credit remains measured in V2', async () => {
+  const snapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  assert.equal(await runtime.app._applyTimerFinish(
+    120, runtime.migratedTask, 2, 'work', snapshot, true
+  ), 'v2');
+  const fields = runtime.app._buildPendingFocusSessionFields(
+    snapshot, runtime.migratedTask, 2, true
+  );
+  assert.equal(fields.creditedSeconds, 120);
+  assert.equal(fields.creditSource, 'measured');
+});
+
+test('clock-adjusted legacy task sessions retain their explicit V1 transaction contract', async () => {
+  const snapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: true, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  runtime.app.tasks[0] = {
+    id: 7, name: 'Legacy Task', actual: 5
+  };
+  runtime.app._focusCommitInFlight = false;
+  runtime.app._startupResetRecoveryInFlight = false;
+  runtime.app._resetRecoveryInFlight = false;
+  runtime.app._resetInFlight = false;
+  runtime.app.storageRecoveryRequired = false;
+  runtime.app._focusTimerExternalConflict = false;
+  runtime.app._focusTimer = { pendingStopwatchTransaction: null };
+  runtime.app._acquireRollingRecoveryCheckpointHold = () => () => {};
+  runtime.app._withStopwatchTransactionLock = callback => Promise.resolve().then(callback);
+  runtime.app._renderFocusTimer = () => {};
+  assert.equal(await runtime.app._applyTimerFinish(
+    120, runtime.app.tasks[0], 2, 'work', snapshot, false
+  ), 'legacy');
+  assert.equal(runtime.calls[0].writer, 'legacy',
+    'legacy task data remains on its compatible V1 transaction contract');
+  assert.equal(runtime.calls[0].request.snapshot.clockAdjusted, true);
+});
+
+test('clock-adjusted task-linked sessions fail closed and never reach either writer', async () => {
+  const snapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: true, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  assert.equal(await runtime.app._applyTimerFinish(
+    120, runtime.migratedTask, 2, 'work', snapshot, true
+  ), false);
+  assert.deepEqual(runtime.calls.map(call => call.writer), ['blocked']);
+  assert.match(runtime.calls[0].message, /بقيت الجلسة متوقفة/);
+});
+
+test('a mismatched explicit task ID cannot divert a linked work session to the legacy writer', async () => {
+  const snapshot = {
+    mode: 'pomodoro', phase: 'work', running: false,
+    baseElapsed: 1500, elapsedRemainderMs: 0, taskId: 7,
+    sessionStartAt: startedAtMs, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null
+  };
+  const runtime = sessionFinishRoutingContext(snapshot);
+  assert.equal(await runtime.app._commitFocusTaskSession({
+    snapshot, taskId: null, minutesToAdd: 25, completed: true
+  }), false);
+  assert.deepEqual(runtime.calls.map(call => call.writer), ['blocked']);
+  assert.equal(runtime.calls[0].title, 'تعارض ربط المهمة');
+  assert.match(runtime.calls[0].message, /لم نمرر الجلسة إلى أي كاتب/);
+});
+
+test('all focus-session save entry points preserve the shared V2/V1 dispatch boundary', () => {
+  const routes = [
+    ['_applyTimerFinish', /_commitFocusTaskSession/],
+    ['_applyStopwatchSave', /_commitFocusTaskSession/],
+    ['_applyStopwatchSaveLocked', /_commitFocusTaskSession/],
+    ['_showStopwatchSaveDialog', /_applyStopwatchSave/],
+    ['_showSessionTransitionDialog', /_commitFocusTaskSession/],
+    ['_continueFocusTimerFinish', /_applyTimerFinish/],
+    ['resetTimer', /_showStopwatchSaveDialog/]
+  ];
+  for (const [name, expectedRoute] of routes) {
+    const source = extractFunction(name);
+    assert.match(source, expectedRoute,
+      name + ' must remain connected to the shared focus-session save route');
+    assert.doesNotMatch(source, /_commitFocusTaskSessionLocked/,
+      name + ' must not call the legacy locked writer directly');
+  }
+
+  const finishEntry = extractFunction('_applyTimerFinish');
+  assert.doesNotMatch(finishEntry, /_commitPendingFocusSessionV2/,
+    '_applyTimerFinish must not bypass the common dispatcher for its measured V2 cases');
+
+  const dispatcher = extractFunction('_commitFocusTaskSession');
+  assert.match(dispatcher, /taskUsesV2CreditSchema/,
+    'the dispatcher must detect tasks that have entered V2');
+  assert.match(dispatcher, /return _commitPendingFocusSessionV2/,
+    'V2 task-linked work saves must reach the durable V2 writer');
+  assert.match(dispatcher, /_withStopwatchTransactionLock/,
+    'non-V2 work saves must retain the locked V1 compatibility route');
+
+  const legacyWriter = extractFunction('_commitFocusTaskSessionLocked');
+  assert.match(legacyWriter, /actualSeconds/);
+  assert.match(legacyWriter, /كاتب جلسة قديم غير متوافق/,
+    'the legacy writer must refuse V2 task credit metadata');
+
+  const finish = extractFunction('_continueFocusTimerFinish');
+  assert.match(finish, /taskId:\s*null/);
+  assert.match(finish, /minutesToAdd:\s*0/,
+    'break and unlinked saves must not add minutes to a task');
+});
+
+
+test('break and unlinked finish paths request zero task credit through the shared dispatcher', async () => {
+  const calls = [];
+  const task = { id: 7, name: 'Task', actual: 5 };
+  const sandbox = {
+    tasks: [task],
+    _isClockAdjustedV2WorkSession: () => false,
+    _formatDuration: seconds => String(seconds) + 's',
+    _discardShortFocusSession: () => Promise.resolve(false),
+    _commitFocusTaskSession: request => {
+      calls.push(request);
+      return Promise.resolve(true);
+    }
+  };
+  vm.runInNewContext(extractFunction('_continueFocusTimerFinish'), sandbox);
+  const breakSnapshot = {
+    mode: 'pomodoro', phase: 'short_break', running: false,
+    baseElapsed: 300, elapsedRemainderMs: 0, taskId: 7,
+    clockAdjusted: false
+  };
+  const unlinkedSnapshot = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 120, elapsedRemainderMs: 0, taskId: null,
+    clockAdjusted: false
+  };
+  assert.equal(await sandbox._continueFocusTimerFinish(breakSnapshot), true);
+  assert.equal(await sandbox._continueFocusTimerFinish(unlinkedSnapshot), true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].taskId, null);
+  assert.equal(calls[0].minutesToAdd, 0);
+  assert.equal(calls[0].allowUnlinkedTaskSnapshotLink, true);
+  assert.equal(calls[0].completed, false);
+  assert.equal(calls[1].taskId, null);
+  assert.equal(calls[1].minutesToAdd, 0);
+  assert.equal(calls[1].allowUnlinkedTaskSnapshotLink, false);
+  assert.equal(calls[1].completed, true);
+  assert.equal(task.actual, 5);
+});
+
+test('pending V2 journal accepts Stopwatch user-adjusted credit with distinct measured and credited seconds', () => {
+  const app = validatorContext();
+  const journal = validPendingFocusCommit();
+  journal.timerBefore.baseElapsed = 125;
+  journal.timerBefore.elapsedRemainderMs = 0;
+  journal.session.activeDurationMs = 125000;
+  journal.session.durationSec = 125;
+  journal.session.creditedSeconds = 120;
+  journal.session.creditSource = 'user_adjusted';
+  journal.session.endedAt = '2026-11-26T10:02:05.000Z';
+  journal.operation.measuredSeconds = 125;
+  journal.operation.creditedSeconds = 120;
+  journal.operation.source = 'user_adjusted';
+  journal.operation.targetSeconds = 120;
+  journal.operation.createdAt = '2026-11-26T10:02:05.000Z';
+  journal.creditAfter = creditSnapshot({
+    actualSeconds: 120,
+    actual: 2,
+    creditRevision: 1,
+    lastCreditOperationId: operationId
+  });
+  journal.createdAt = '2026-11-26T10:02:05.000Z';
+  journal.updatedAt = '2026-11-26T10:02:05.000Z';
+
+  assert.equal(app._validateCreditOperationRecord(journal.operation), true);
+  assert.equal(app._validateFocusSessionRecordV2(journal.session), true);
+  assert.equal(app._validatePendingFocusCommit(journal), true);
+
+  const mismatchedJournal = JSON.parse(JSON.stringify(journal));
+  mismatchedJournal.session.creditedSeconds = 125;
+  assert.equal(app._validatePendingFocusCommit(mismatchedJournal), false,
+    'session credit must exactly match its ledger operation while preserving measured duration');
+});
 
 test('successful V2 focus commit refreshes task cards and task-derived analytics immediately', async () => {
   const refreshed = [];
@@ -816,6 +1140,7 @@ test('successful V2 focus commit refreshes task cards and task-derived analytics
     _capturePendingFocusCreditSnapshot: () => ({ actualSeconds: 0 }),
     _focusCommitBaselinesMatch: () => true,
     _buildPendingFocusSessionFields: () => ({ sessionId: operationId }),
+    _withFocusCommitWrite: callback => callback(),
     _commitFocusSessionV2Locked: () => {
       task.actual = 5;
       task.actualSeconds = 300;
@@ -831,12 +1156,18 @@ test('successful V2 focus commit refreshes task cards and task-derived analytics
     console: { warn() {}, error() {} }
   };
   vm.runInNewContext(extractFunction('_commitPendingFocusSessionV2'), sandbox);
+  let transitionCallbackCalled = false;
   const committed = await sandbox._commitPendingFocusSessionV2({
     snapshot: { taskId: 7, mode: 'pomodoro', phase: 'work', running: false, clockAdjusted: false },
     minutesToAdd: 5,
+    onCommitted: () => {
+      transitionCallbackCalled = true;
+      return true;
+    },
     successToast: 'saved'
   });
   assert.equal(committed, true);
+  assert.equal(transitionCallbackCalled, true);
   assert.deepEqual(refreshed, ['tasks', 'stats', 'type-gap', 'sessions']);
   assert.equal(task.actual, 5);
 });

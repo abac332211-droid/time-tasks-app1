@@ -2624,14 +2624,31 @@ test('credit migration readiness gate is checked under the real shared Web Lock 
 
     ownerPage = await context.newPage();
     const waitingPage = await context.newPage();
-    await Promise.all([
-      ownerPage.goto(appUrl, { waitUntil: 'domcontentloaded' }),
-      waitingPage.goto(appUrl, { waitUntil: 'domcontentloaded' })
-    ]);
-    await Promise.all([
-      waitForSafeStartup(ownerPage, 'migration lock owner page'),
-      waitForSafeStartup(waitingPage, 'migration lock waiting page')
-    ]);
+    // Initialize one page fully before opening the second. Parallel cold starts
+    // can both normalize the same legacy timer record and race their verified
+    // timer writes; the loser correctly marks a baseline conflict, which would
+    // make this lock-contention test start from an already-conflicted fixture.
+    await ownerPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(ownerPage, 'migration lock owner page');
+    await waitingPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(waitingPage, 'migration lock waiting page');
+
+    const sharedTimerBaseline = await ownerPage.evaluate(() => ({
+      raw: localStorage.getItem('timeTasksApp_focusTimer'),
+      baseline: _secondaryStorageBaselines['timeTasksApp_focusTimer'],
+      conflict: !!_secondaryStorageConflicts['timeTasksApp_focusTimer']
+    }));
+    const waitingTimerBaseline = await waitingPage.evaluate(() => ({
+      raw: localStorage.getItem('timeTasksApp_focusTimer'),
+      baseline: _secondaryStorageBaselines['timeTasksApp_focusTimer'],
+      conflict: !!_secondaryStorageConflicts['timeTasksApp_focusTimer']
+    }));
+    assert.equal(sharedTimerBaseline.conflict, false);
+    assert.equal(waitingTimerBaseline.conflict, false);
+    assert.equal(sharedTimerBaseline.raw, sharedTimerBaseline.baseline);
+    assert.equal(waitingTimerBaseline.raw, waitingTimerBaseline.baseline);
+    assert.equal(sharedTimerBaseline.raw, waitingTimerBaseline.raw,
+      'both real pages must begin from the same verified timer baseline');
 
     const outsideLock = await ownerPage.evaluate(() => _assertCreditMigrationReady());
     assert.deepEqual(JSON.parse(JSON.stringify(outsideLock)),

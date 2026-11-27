@@ -356,3 +356,105 @@
 5. أضيفت اختبارات تغطي اعتماد 72 ثانية كما هي، وتراكم 72 + 82 = 154 ثانية عبر جلستين، وبقاء التعديل اليدوي منفصلًا، وعرض الإجمالي بالثواني.
 
 **مهم:** التعديل الإضافي لم يُختبر ميدانيًا بعد على الهاتف، ولا تسجل له نتيجة CI ناجحة حتى تكتمل إجراءات GitHub Actions على رأس الفرع الجديد. لا تخلط بين نجاح المقارنة الميدانية السابقة وبين التحقق من هذا التعديل اللاحق.
+
+### متابعة PR #27 — تحقق CI وموقف الاختبار الميداني — 27 نوفمبر 2026
+
+**رأس مصدر PR #27:** `c3b7d9404fa0912681b32627ea01258a513bde31`  
+**قاعدة PR:** `codex/pending-focus-commit-integrated-fix-v1`، الرأس `33b82f6560bb8d5269db7c1247eba614b2af4d55`.
+
+#### نتائج التحقق الآلي
+
+- **PWA / Chromium:** [Workflow #45995934080](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934080) — 530 اختبارًا، 530 ناجحًا، صفر فشل، صفر متجاوز. تشمل هذه المجموعة اختبارات واجهة الحفظ من نافذة إعادة التعيين، وحالة 125 ثانية مقاسة مقابل 120 ثانية معتمدة، ومراجعة `clockAdjusted`، وفشل حفظ الانتقال، وسلوك النوافذ المتعددة.
+- **Android APK workflow:** [Workflow #45995934016](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934016) — 530 اختبار Node متاحًا في هذه المهمة، 482 ناجحًا، صفر فشل، و48 متجاوزًا. اختبارات Chromium الـ48 لا تعمل داخل مهمة APK، وتُنفذ في مهمة PWA أعلاه.
+- مهمة APK تحققت من المصدر عبر التزام الدمج المؤقت `366df8f` الذي يضم رأس PR أعلاه إلى قاعدة PR #26؛ لا يُعد هذا الالتزام تغييرًا لقاعدة PR أو دمجًا في `main`.
+- **Gradle:** `BUILD SUCCESSFUL`. نجح فحص أذونات Android المدمجة، ثم رُفع أثر Debug APK باسم `time-tasks-app-apk`، المعرّف `15196755084`، بحجم `5,537,804` بايت. رابط الأثر: https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934016/artifacts/15196755084
+
+#### حالة الاختبار الميداني على Android
+
+**لم يُنفذ الاختبار الميداني لهذا الرأس.** لا توجد نتيجة تثبيت وتشغيل لهذا الأثر على Redmi Note 10 5G أو أي جهاز Android آخر في هذه المتابعة. لذلك لا تثبت نتائج Chromium أو نجاح Gradle أن Web Locks أو التخزين أو WebView قد اختُبرت ميدانيًا على الهاتف، ولا يوصف هذا الرأس بأنه مجرّب ميدانيًا.
+
+عند توفر الجهاز، استخدم APK من الأثر المحدد أعلاه وسجل طراز الهاتف، وإصدار Android، وإصدار Android System WebView، وإصدار APK. ثم اختبر Web Locks، واعتماد Pomodoro على مهمة، وStopwatch المعدّل على المهمة نفسها (125 مقاسة و120 معتمدة)، والحفظ من نافذة إعادة التعيين، والحفظ والانتقال إلى مهمة أخرى، ثم إغلاق التطبيق وإعادة فتحه للتحقق من عدم تكرار العملية أو الجلسة. لا تستبدل اختبار انقطاع المعاملة في منتصف الكتابة بإيقاف التطبيق عشوائيًا؛ يبقى حقن الأعطال البرمجي في Chromium هو اختبار الاسترداد المنضبط.
+
+**الحكم:** بوابتا PWA/Chromium وبناء APK ناجحتان على رأس المصدر المذكور. بوابة التحقق الميداني على Android ما زالت مفتوحة وغير منفذة، كما أن مراجعة الكود المستقلة لـPR #27 لم تُسجل بعد. يبقى PR في وضع Draft ولا يُدمج قبل إغلاق هاتين البوابتين.
+
+---
+
+## PR #27 — CI verification of V2 writer unification (27 November 2026)
+
+### Source and automated verification
+
+- PR: [#27 — fix: unify V2 task-linked focus session commits](https://github.com/abac332211-droid/time-tasks-app1/pull/27)
+- Branch: `codex/pending-focus-v2-writer-unification`
+- Tested branch HEAD: `c3b7d9404fa0912681b32627ea01258a513bde31`
+- The PR base remains `codex/pending-focus-commit-integrated-fix-v1` at `33b82f6560bb8d5269db7c1247eba614b2af4d55`.
+
+**PWA / Chromium — [workflow run 45995934080](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934080)**
+
+- Checked-out source SHA: `c3b7d9404fa0912681b32627ea01258a513bde31` (branch head).
+- **530 tests passed, 0 failed, 0 skipped.**
+- This run includes the real Chromium UI and browser multi-window suites.
+
+**Android APK — [workflow run 45995934016](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934016)**
+
+- The workflow checked out merge-candidate commit `366df8f8efbccccd2cc3d30f9f437ac6d0f90a76`, whose merge message identifies PR head `c3b7d9404fa0912681b32627ea01258a513bde31` and base `33b82f6560bb8d5269db7c1247eba614b2af4d55`.
+- **482 tests passed, 0 failed, 48 skipped**. The 48 skipped tests are browser/Chromium tests not run in the APK job; use the PWA run above for those results.
+- Gradle APK build succeeded; merged Android notification permission verification succeeded; artifact upload succeeded.
+- APK artifact: [time-tasks-app-apk — ID 15196755084](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45995934016/artifacts/15196755084)
+- SHA-256 of the uploaded ZIP: `90bb6be70e6b9c1db068b7c11509c52ec2b08941ee0b0de23022fc3e238cf921`
+- Artifact size: 5,537,804 bytes.
+
+### Manual Android / WebView status
+
+**Field testing of this PR #27 head was not performed.**
+
+No claim is made that SHA `c3b7d9404fa0912681b32627ea01258a513bde31` was installed or exercised on Redmi Note 10 5G / Android 13. The artifact above is an automated Debug APK build only. Therefore this CI result does not establish Web Locks behavior or task-linked V2 session persistence in the device's actual Android System WebView.
+
+The following device checks remain outstanding for this exact APK/head: Web Locks availability, Pomodoro then adjusted Stopwatch on the same migrated task, Stopwatch save through the reset dialog, Pomodoro save-and-switch, and reopen verification for duplicate credit/session prevention. Record the device model, Android version, WebView version, installed APK build, and observations when those checks are actually run.
+
+**Status:** automated PWA and APK workflows passed; Android field verification remains unperformed. PR #27 remains Draft and must not be described as field-tested.
+
+
+### متابعة الاختبار الميداني بعد Force Stop — 27 نوفمبر 2026
+
+> **مصدر النتائج:** نص الإحصائيات المرسل من المختبِر، وصورة معلومات Android System WebView، وتأكيده أن APK نُزّل من رابط artifact الذي زُوّد به سابقًا. لا تتوفر قراءة مباشرة لسجلات الجهاز أو قاعدة بيانات التطبيق.
+
+#### هوية النسخة المختبرة
+
+| البيان | القيمة |
+|---|---|
+| PR المرتبط بالنسخة | #27 |
+| فرع PR | `codex/pending-focus-v2-writer-unification` |
+| رأس المصدر الذي بُني منه APK المختبر | `cf22b2e2e5d5f55fe3d146bc23cf27bd0da72351` |
+| تشغيل Build APK | [46026764736](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46026764736) |
+| Artifact ID | [15211034443](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46026764736/artifacts/15211034443) |
+| SHA-256 للأثر المرفوع | `c24c7a49c5933fea2da75802303a429e9109b4d7913c01cc272fe2b0a7d212b3` |
+| Android System WebView الظاهر في الصورة | `157.0.8103.50` |
+| طراز الهاتف / إصدار Android | لم يُعاد تأكيدهما في هذه الجولة |
+
+أكد المختبِر أن النسخة المثبتة نُزّلت من رابط artifact أعلاه. لذلك تُنسب النتيجة إلى APK المبني من SHA `cf22b2e...`، **ولا تُنسب إلى رأس PR الأحدث** `32df015d583a373669d35c47a11a2ffd511b584c` الذي أُنشئ بعد مزامنة قاعدة الاعتماد.
+
+#### ما أظهرته الواجهة
+
+| المرحلة | جلسات التركيز | الزمن |
+|---|---:|---:|
+| بعد جلسة Pomodoro الأولى | 1 | 1 دقيقة و49 ثانية (109 ثوانٍ) |
+| بعد الجلسة الثانية | 2 | 2 دقيقة و56 ثانية (176 ثانية) |
+| بعد Force Stop من إعدادات Android ثم إعادة الفتح | 2 | 2 دقيقة و56 ثانية (176 ثانية) |
+
+- سجل الجلستين بعد الجلسة الثانية: 1:07 (67 ثانية) و1:49 (109 ثوانٍ).
+- مجموعهما: 67 + 109 = 176 ثانية، أي 2:56.
+- الزمن المخطط للمهمة: 3:00 (180 ثانية). الفرق: 4 ثوانٍ أقل، أي نحو ‎-2.22%، بما يتوافق مع الفجوة المعروضة ‎-2% والمعامل المقترح 0.98.
+- بقيت المهمة واحدة، غير منجزة وقيد الانتظار؛ لم يظهر تكرار للجلسة أو زيادة في الإجمالي بعد Force Stop وإعادة الفتح.
+- صورة معلومات WebView تعرض الإصدار 157.0.8103.50؛ ولا تكفي وحدها لتحديد طراز الهاتف أو إصدار Android.
+
+#### الحكم وحدود الإثبات
+
+**نجاح ميداني مُبلّغ عنه:** ثبات عدّاد الجلسات ومجموع 176 ثانية بعد تنفيذ Force Stop من إعدادات Android عقب اكتمال الحفظ، ثم إعادة فتح التطبيق. هذه نتيجة أقوى من مجرد إزالة التطبيق من قائمة التطبيقات الأخيرة.
+
+لا تثبت هذه التجربة:
+- التعافي من إيقاف التطبيق أثناء تنفيذ معاملة الحفظ أو بين مراحل كتابتها.
+- التنافس الحصري بين سياقين مستقلين على Web Lock.
+- اختبارات Stopwatch المعدّل، أو نافذة إعادة التعيين، أو Pomodoro save-and-switch.
+- أن رأس PR الحالي `32df015d583a373669d35c47a11a2ffd511b584c` قد اختُبر ميدانيًا؛ النسخة المؤكدة هي artifact المبني من `cf22b2e...`.
+
+**الحالة الحالية:** أُضيف هذا السجل لتوثيق نتيجة Force Stop على artifact محدد. يلزم إعادة الاختبار على APK مبني من رأس PR الحالي بعد انتهاء مزامنته، قبل وصف الرأس الحالي بأنه مختبر ميدانيًا.
