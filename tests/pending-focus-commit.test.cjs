@@ -948,6 +948,7 @@ test('successful V2 focus commit refreshes task cards and task-derived analytics
     _capturePendingFocusCreditSnapshot: () => ({ actualSeconds: 0 }),
     _focusCommitBaselinesMatch: () => true,
     _buildPendingFocusSessionFields: () => ({ sessionId: operationId }),
+    _withFocusCommitWrite: callback => callback(),
     _commitFocusSessionV2Locked: () => {
       task.actual = 5;
       task.actualSeconds = 300;
@@ -963,12 +964,18 @@ test('successful V2 focus commit refreshes task cards and task-derived analytics
     console: { warn() {}, error() {} }
   };
   vm.runInNewContext(extractFunction('_commitPendingFocusSessionV2'), sandbox);
+  let transitionCallbackCalled = false;
   const committed = await sandbox._commitPendingFocusSessionV2({
     snapshot: { taskId: 7, mode: 'pomodoro', phase: 'work', running: false, clockAdjusted: false },
     minutesToAdd: 5,
+    onCommitted: () => {
+      transitionCallbackCalled = true;
+      return true;
+    },
     successToast: 'saved'
   });
   assert.equal(committed, true);
+  assert.equal(transitionCallbackCalled, true);
   assert.deepEqual(refreshed, ['tasks', 'stats', 'type-gap', 'sessions']);
   assert.equal(task.actual, 5);
 });
