@@ -45,11 +45,19 @@ function extractFunction(name) {
     helpers.push(actualMinutesHelper[0]);
   }
   if (/\bcomputeTaskGapMetrics\s*\(/.test(source)) {
+    const computeGapHelper = appScript.match(
+      /function\s+computeGap\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    const actualMinutesHelper = appScript.match(
+      /function\s+getTaskActualMinutes\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
     const gapMetricsHelper = appScript.match(
       /function\s+computeTaskGapMetrics\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
     );
+    assert.ok(computeGapHelper, 'computeGap helper exists in index.html');
+    assert.ok(actualMinutesHelper, 'getTaskActualMinutes helper exists in index.html');
     assert.ok(gapMetricsHelper, 'computeTaskGapMetrics helper exists in index.html');
-    helpers.push(gapMetricsHelper[0]);
+    helpers.push(computeGapHelper[0], actualMinutesHelper[0], gapMetricsHelper[0]);
   }
   return helpers.length ? helpers.concat(source).join('\n') : source;
 }
