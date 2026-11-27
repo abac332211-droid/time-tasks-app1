@@ -15,6 +15,7 @@ on:
       - codex/pomodoro-credit-migration-gate
       - codex/pomodoro-storage-gates-pwa-integration
       - codex/pomodoro-credit-schema-v2
+      - codex/task-credit-operation-contract
   pull_request:
     branches:
       - main
@@ -26,6 +27,7 @@ on:
       - codex/pomodoro-pwa-conservative-lifecycle
       - codex/pomodoro-credit-migration-gate
       - codex/pomodoro-storage-gates-pwa-integration
+      - codex/pomodoro-credit-schema-v2
 
 concurrency:
   group: verify-pwa-${{ github.ref }}

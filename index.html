@@ -2512,6 +2512,7 @@ function _validateTaskCreditFields(task) {
   }
   if (!Number.isSafeInteger(task.creditRevision) || task.creditRevision < 0) return false;
   if (task.creditSchemaVersion !== 1) return false;
+  if ((task.creditRevision === 0) !== (task.lastCreditOperationId === null)) return false;
   if (task.lastCreditOperationId !== null
       && (typeof task.lastCreditOperationId !== "string"
         || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.lastCreditOperationId))) return false;
@@ -2519,6 +2520,73 @@ function _validateTaskCreditFields(task) {
   // Every accepted operation, including a zero-second credit, advances both fields.
   if ((task.creditRevision === 0) !== (task.lastCreditOperationId === null)) return false;
   return true;
+}
+
+
+function _validateTaskCreditOperationV1(operation) {
+  if (!operation || typeof operation !== "object" || Array.isArray(operation)) return false;
+  var uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (operation.version !== 1) return false;
+  if (typeof operation.operationId !== "string" || !uuidPattern.test(operation.operationId)) return false;
+  if (!Number.isSafeInteger(operation.taskId) || operation.taskId <= 0) return false;
+  if (operation.kind !== "session_credit" && operation.kind !== "manual_adjustment") return false;
+
+  function isNullableSeconds(value) {
+    return value === null || (Number.isSafeInteger(value) && value >= 0);
+  }
+  if (!isNullableSeconds(operation.previousActualSeconds)
+      || !isNullableSeconds(operation.targetActualSeconds)) return false;
+
+  if (!Number.isSafeInteger(operation.previousCreditRevision)
+      || operation.previousCreditRevision < 0
+      || operation.previousCreditRevision >= Number.MAX_SAFE_INTEGER) return false;
+  if (!Number.isSafeInteger(operation.targetCreditRevision)
+      || operation.targetCreditRevision !== operation.previousCreditRevision + 1) return false;
+
+  if (operation.previousLastCreditOperationId !== null
+      && (typeof operation.previousLastCreditOperationId !== "string"
+        || !uuidPattern.test(operation.previousLastCreditOperationId))) return false;
+  if (operation.previousLastCreditOperationId === operation.operationId) return false;
+  if ((operation.previousCreditRevision === 0) !== (operation.previousLastCreditOperationId === null)) return false;
+
+  if (!Number.isSafeInteger(operation.createdAt) || operation.createdAt < 0
+      || !Number.isFinite(new Date(operation.createdAt).getTime())) return false;
+
+  if (operation.kind === "session_credit") {
+    if (typeof operation.sessionId !== "string" || !uuidPattern.test(operation.sessionId)) return false;
+    if (operation.creditSource !== "measured" && operation.creditSource !== "user_adjusted") return false;
+    if (!Number.isSafeInteger(operation.creditedSeconds) || operation.creditedSeconds <= 0) return false;
+    var previousNumeric = operation.previousActualSeconds === null ? 0 : operation.previousActualSeconds;
+    var expectedTarget = previousNumeric + operation.creditedSeconds;
+    if (!Number.isSafeInteger(expectedTarget)
+        || operation.targetActualSeconds !== expectedTarget) return false;
+  } else {
+    if (operation.sessionId !== null
+        || operation.creditSource !== "user_adjusted"
+        || operation.creditedSeconds !== null) return false;
+    // A no-op must not consume a credit revision. Null and zero are distinct states.
+    if (operation.previousActualSeconds === operation.targetActualSeconds) return false;
+  }
+  return true;
+}
+
+function _classifyTaskCreditOperationV1(task, operation) {
+  if (!_validateTaskCreditOperationV1(operation)
+      || !task || typeof task !== "object" || Array.isArray(task)
+      || task.id !== operation.taskId
+      || !_validateTaskCreditFields(task)
+      || task.creditSchemaVersion !== 1) return "invalid";
+
+  var matchesPrevious = task.actualSeconds === operation.previousActualSeconds
+    && task.creditRevision === operation.previousCreditRevision
+    && task.lastCreditOperationId === operation.previousLastCreditOperationId;
+  var matchesTarget = task.actualSeconds === operation.targetActualSeconds
+    && task.creditRevision === operation.targetCreditRevision
+    && task.lastCreditOperationId === operation.operationId;
+
+  if (matchesPrevious) return "not_applied";
+  if (matchesTarget) return "already_applied";
+  return "conflict";
 }
 
 function validateV2(data) {
