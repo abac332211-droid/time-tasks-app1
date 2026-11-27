@@ -995,6 +995,7 @@ test('credit provenance disclosure separates migrated opening balance from later
   vm.runInNewContext([
     extractFunction('_validateTaskCreditFields'),
     extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_persistedTaskCreditStateMatches'),
     extractFunction('computeTaskCreditDisclosure')
   ].join('\n'), sandbox);
 
@@ -1023,6 +1024,17 @@ test('credit provenance disclosure separates migrated opening balance from later
     creditRevision: 2, creditSchemaVersion: 1,
     lastCreditOperationId: ids[1]
   };
+
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [Object.assign({}, task, { name: 'changed display-only field' })],
+    [Object.assign({}, task, { name: 'older display-only field' })]
+  ), true, 'unrelated task fields must not hide a verified credit disclosure');
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [Object.assign({}, task, { actualSeconds: 3839 })], [task]
+  ), false, 'a changed credit balance must suppress the disclosure');
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [task, task], [task]
+  ), false, 'duplicate task identities must fail closed');
 
   const disclosure = sandbox.computeTaskCreditDisclosure([task], operations);
   assert.equal(disclosure.available, true);
