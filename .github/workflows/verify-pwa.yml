@@ -18,6 +18,7 @@ on:
       - codex/pomodoro-credit-operation-ledger-v1
       - codex/pending-focus-commit-v1
       - codex/pending-focus-commit-integrated-v1
+      - codex/pending-focus-v2-cross-path-fix
   pull_request:
     branches:
       - main
