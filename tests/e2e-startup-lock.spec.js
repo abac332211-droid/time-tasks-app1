@@ -1073,6 +1073,168 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
   }
 });
 
+test('a user-adjusted Stopwatch V2 journal replays after interruption without duplicate credit or session', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+
+    const firstAttempt = await page.evaluate(async () => {
+      const taskId = 7011;
+      async function preparePaused(mode, durationSec) {
+        const saved = await _withTaskStorageLock(function() {
+          _stopDisplayTick();
+          _focusTimer.mode = mode;
+          _focusTimer.phase = 'work';
+          _focusTimer.running = false;
+          _focusTimer.baseElapsed = durationSec;
+          _focusElapsedRemainderMs = 0;
+          _focusTimer.startedAt = null;
+          _focusTimer.cyclePosition = 0;
+          _focusTimer.taskId = taskId;
+          _focusTimer.sessionStartAt = Date.now() - durationSec * 1000;
+          _focusTimer.awaitingConfirmation = false;
+          _focusTimer.pendingPhaseEndedAt = null;
+          _focusTimer.clockAdjusted = false;
+          _focusTimer.nativeClockActive = false;
+          _focusTimer.nativeRestorePending = false;
+          _focusTimer.nativeBootMismatch = false;
+          _focusTimer.nativeSessionToken = null;
+          _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+          _focusTimer.nativeAnchorBootCount = null;
+          _focusTimer.nativeAnchorBaseMs = null;
+          _focusTimer.nativeAnchorWallMs = null;
+          _focusTimer.pendingNotificationFinish = null;
+          _focusTimer.pendingStopwatchTransaction = null;
+          _focusTimer.pendingFocusCommit = null;
+          _clearFocusTimerClock();
+          return _saveFocusTimer();
+        });
+        if (!saved) throw new Error('Could not persist ' + mode + ' crash-recovery fixture');
+        return _captureFocusTimerSnapshot();
+      }
+
+      const pomodoroSnapshot = await preparePaused('pomodoro', 180);
+      const taskBeforeMigration = tasks.find(row => row && row.id === taskId);
+      const migrated = await _applyTimerFinish(
+        180, taskBeforeMigration, 3, 'work', pomodoroSnapshot, true
+      );
+      if (!migrated) throw new Error('Initial Pomodoro migration commit failed');
+      const migratedMain = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const migratedTask = migratedMain.tasks.find(row => row.id === taskId);
+      if (!migratedTask || migratedTask.creditSchemaVersion !== 1) {
+        throw new Error('Pomodoro did not migrate task metadata to V2');
+      }
+
+      const stopwatchSnapshot = await preparePaused('stopwatch', 125);
+      const nativeSetItem = Storage.prototype.setItem;
+      const nativeGetItem = Storage.prototype.getItem;
+      window.__nativeSetItemBeforeAdjustedStopwatchFailure = nativeSetItem;
+      window.__injectedAdjustedStopwatchJournalClearFailure = false;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_focusTimer'
+            && !window.__injectedAdjustedStopwatchJournalClearFailure) {
+          try {
+            const next = JSON.parse(String(value));
+            const durable = JSON.parse(nativeGetItem.call(localStorage, 'timeTasksApp_focusTimer') || '{}');
+            if (durable.pendingFocusCommit
+                && !next.pendingFocusCommit && next.baseElapsed === 0) {
+              window.__injectedAdjustedStopwatchJournalClearFailure = true;
+              throw new Error('injected adjusted Stopwatch V2 journal-clear failure');
+            }
+          } catch (error) {
+            if (window.__injectedAdjustedStopwatchJournalClearFailure) throw error;
+          }
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+
+      const linkedTask = tasks.find(row => row && row.id === taskId);
+      const commitResult = await _applyTimerFinish(
+        125, linkedTask, 2, 'work', stopwatchSnapshot, false
+      );
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === taskId);
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      Storage.prototype.setItem = nativeSetItem;
+      return {
+        migrated,
+        commitResult,
+        injected: window.__injectedAdjustedStopwatchJournalClearFailure,
+        task,
+        operations: main.creditOperations,
+        sessions,
+        timer,
+        recoveryRequired: storageRecoveryRequired,
+        operationId: main.creditOperations[1] && main.creditOperations[1].operationId,
+        sessionId: sessions[1] && sessions[1].sessionId
+      };
+    });
+
+    assert.equal(firstAttempt.migrated, true);
+    assert.equal(firstAttempt.commitResult, false,
+      'the injected failure must stop the commit from reporting completion');
+    assert.equal(firstAttempt.injected, true);
+    assert.equal(firstAttempt.task.actualSeconds, 600,
+      'the V2 credit is durable before the injected final journal-clear failure');
+    assert.equal(firstAttempt.task.actual, 10);
+    assert.equal(firstAttempt.task.creditRevision, 2);
+    assert.equal(firstAttempt.operations.length, 2);
+    assert.equal(firstAttempt.operations[1].source, 'user_adjusted');
+    assert.equal(firstAttempt.operations[1].measuredSeconds, 125);
+    assert.equal(firstAttempt.operations[1].creditedSeconds, 120);
+    assert.equal(firstAttempt.sessions.length, 2);
+    assert.equal(firstAttempt.sessions[1].sessionId, firstAttempt.operationId);
+    assert.equal(firstAttempt.sessions[1].creditedSeconds, 120);
+    assert.equal(firstAttempt.timer.pendingFocusCommit.operationId, firstAttempt.operationId);
+    assert.equal(firstAttempt.timer.pendingStopwatchTransaction, null);
+    assert.equal(firstAttempt.recoveryRequired, true);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    const recovered = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === 7011);
+      const operations = main.creditOperations;
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task,
+        operations,
+        sessions,
+        timer,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+
+    assert.equal(recovered.task.actualSeconds, 600,
+      'recovery must not add the adjusted credit a second time');
+    assert.equal(recovered.task.actual, 10);
+    assert.equal(recovered.task.creditRevision, 2);
+    assert.equal(recovered.operations.length, 2);
+    assert.equal(recovered.operations.filter(row =>
+      row.operationId === firstAttempt.operationId).length, 1);
+    assert.equal(recovered.task.lastCreditOperationId, firstAttempt.operationId);
+    assert.equal(recovered.sessions.length, 2);
+    assert.equal(recovered.sessions.filter(row =>
+      row.sessionId === firstAttempt.sessionId).length, 1);
+    assert.equal(recovered.sessions[1].durationSec, 125);
+    assert.equal(recovered.sessions[1].creditedSeconds, 120);
+    assert.equal(recovered.sessions[1].creditSource, 'user_adjusted');
+    assert.equal(recovered.timer.pendingFocusCommit, null);
+    assert.equal(recovered.timer.pendingStopwatchTransaction, null);
+    assert.equal(recovered.timer.baseElapsed, 0);
+    assert.equal(recovered.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
 test('D-04 V2 Pomodoro credit commit at 500 sessions evicts once and startup retry does not evict another row', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
