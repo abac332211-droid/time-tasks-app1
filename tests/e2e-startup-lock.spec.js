@@ -743,7 +743,18 @@ test('D-02 resetTimer save dialog commits linked exact Stopwatch credit through 
         taskTransactionId: savedTask && savedTask.lastStopwatchTransactionId,
         sessions,
         timer,
-        recoveryRequired: storageRecoveryRequired
+        recoveryRequired: storageRecoveryRequired,
+        visibleModal: {
+          title: document.getElementById('modalTitle') && document.getElementById('modalTitle').textContent,
+          body: document.getElementById('modalBody') && document.getElementById('modalBody').textContent
+        },
+        guards: {
+          mainBaselineReady: _mainStorageBaselineReady,
+          mainExternalChangeObserved: _mainStorageExternalChangeObserved,
+          secondaryConflicts: _secondaryStorageConflicts,
+          timerExternalConflict: _focusTimerExternalConflict,
+          commitInFlight: _focusCommitInFlight
+        }
       };
     });
     assert.equal(result.commitResult, true);
@@ -2482,12 +2493,29 @@ async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
         mode: _focusTimer.mode, phase: _focusTimer.phase, taskId: _focusTimer.taskId,
         running: _focusTimer.running, baseElapsed: _focusTimer.baseElapsed,
         remainderMs: _focusElapsedRemainderMs, sessionStartAt: _focusTimer.sessionStartAt,
+        pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
+        awaitingConfirmation: _focusTimer.awaitingConfirmation,
+        clockAdjusted: _focusTimer.clockAdjusted,
         pendingFocusCommit: !!_focusTimer.pendingFocusCommit
       },
       persistedTimer: {
         mode: timer && timer.mode, phase: timer && timer.phase, taskId: timer && timer.taskId,
         running: timer && timer.running, baseElapsed: timer && timer.baseElapsed,
+        sessionStartAt: timer && timer.sessionStartAt,
+        pendingPhaseEndedAt: timer && timer.pendingPhaseEndedAt,
+        awaitingConfirmation: timer && timer.awaitingConfirmation,
         pendingFocusCommit: !!(timer && timer.pendingFocusCommit)
+      },
+      guards: {
+        mainBaselineReady: _mainStorageBaselineReady,
+        mainExternalChangeObserved: _mainStorageExternalChangeObserved,
+        secondaryConflicts: _secondaryStorageConflicts,
+        timerExternalConflict: _focusTimerExternalConflict,
+        commitInFlight: _focusCommitInFlight
+      },
+      visibleModal: {
+        title: document.getElementById('modalTitle') && document.getElementById('modalTitle').textContent,
+        body: document.getElementById('modalBody') && document.getElementById('modalBody').textContent
       },
       task: task && {
         actualSeconds: task.actualSeconds, creditRevision: task.creditRevision,
