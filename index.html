@@ -13094,8 +13094,8 @@ function _showClockAdjustedV2ReviewDialog(snapshot, options) {
   var card = document.getElementById("modalCardElement");
   document.getElementById("modalTitle").textContent = "جلسة تحتاج إلى مراجعة الساعة";
   document.getElementById("modalBody").innerHTML =
-    "<p style=\\"margin:0 0 10px;line-height:1.7;\\">اكتشف التطبيق تغيرًا في ساعة المؤقت. الجلسة محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>"
-    + "<p style=\\"margin:0;line-height:1.7;\\">لا يمكن اعتماد هذه الجلسة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً.</p>";
+    '<p style="margin:0 0 10px;line-height:1.7;">اكتشف التطبيق تغيرًا في ساعة المؤقت. الجلسة محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>'
+    + '<p style="margin:0;line-height:1.7;">لا يمكن اعتماد هذه الجلسة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً.</p>';
   var footer = document.getElementById("modalFooter");
   footer.innerHTML = "";
   var keepPaused = document.createElement("button");
@@ -13167,11 +13167,6 @@ function _showStopwatchSaveDialog(elapsedSec) {
     return _applyStopwatchSave(elapsedSec,task,amount,snapshot);
   }
   if(task){
-    body.innerHTML='<p style="margin:0 0 10px;line-height:1.7;">اكتشف التطبيق تغيرًا في ساعة المؤقت. جلسة V2 محفوظة كحالة متوقفة للمراجعة، ولم تُعتمد في رصيد المهمة أو سجل الجلسات.</p>'+
-      '<p style="margin:0;line-height:1.7;">لا يمكن اعتماد هذه الجلسة بعد تعديل الساعة. أبقها متوقفة للمراجعة أو تجاهلها صراحةً وتصفير المؤقت.</p>';
-    cancel.textContent='إبقاء متوقفة';
-    discard.textContent='تجاهل وتصفير';
-  }else if(task){
     var current=task.actual==null?0:task.actual;
     var edit=document.createElement('button');edit.className='btn-ghost';edit.textContent='✏️ تعديل الدقائق';
     edit.onclick=function(){closeModal();showPromptModal('القيمة المضافة','أدخل عدد الدقائق المراد إضافتها إلى المدة الفعلية:',
