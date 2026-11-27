@@ -829,6 +829,16 @@ test('clock-adjusted legacy task sessions retain their explicit V1 transaction c
   runtime.app.tasks[0] = {
     id: 7, name: 'Legacy Task', actual: 5
   };
+  runtime.app._focusCommitInFlight = false;
+  runtime.app._startupResetRecoveryInFlight = false;
+  runtime.app._resetRecoveryInFlight = false;
+  runtime.app._resetInFlight = false;
+  runtime.app.storageRecoveryRequired = false;
+  runtime.app._focusTimerExternalConflict = false;
+  runtime.app._focusTimer = { pendingStopwatchTransaction: null };
+  runtime.app._acquireRollingRecoveryCheckpointHold = () => () => {};
+  runtime.app._withStopwatchTransactionLock = callback => Promise.resolve().then(callback);
+  runtime.app._renderFocusTimer = () => {};
   assert.equal(await runtime.app._applyTimerFinish(
     120, runtime.app.tasks[0], 2, 'work', snapshot, false
   ), 'legacy');
