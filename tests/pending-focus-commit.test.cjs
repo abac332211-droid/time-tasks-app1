@@ -845,7 +845,8 @@ test('a mismatched explicit task ID cannot divert a linked work session to the l
     snapshot, taskId: null, minutesToAdd: 25, completed: true
   }), false);
   assert.deepEqual(runtime.calls.map(call => call.writer), ['blocked']);
-  assert.match(runtime.calls[0].message, /تعارض ربط المهمة/);
+  assert.equal(runtime.calls[0].title, 'تعارض ربط المهمة');
+  assert.match(runtime.calls[0].message, /لم نمرر الجلسة إلى أي كاتب/);
 });
 
 test('all linked work-session entry points delegate to the V2 dispatch boundary', () => {
