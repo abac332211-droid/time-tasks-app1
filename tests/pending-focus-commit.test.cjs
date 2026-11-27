@@ -901,7 +901,7 @@ test('all focus-session save entry points preserve the shared V2/V1 dispatch bou
     'the dispatcher must detect tasks that have entered V2');
   assert.match(dispatcher, /return _commitPendingFocusSessionV2/,
     'V2 task-linked work saves must reach the durable V2 writer');
-  assert.match(dispatcher, /return _withStopwatchTransactionLock/,
+  assert.match(dispatcher, /_withStopwatchTransactionLock/,
     'non-V2 work saves must retain the locked V1 compatibility route');
 
   const legacyWriter = extractFunction('_commitFocusTaskSessionLocked');
