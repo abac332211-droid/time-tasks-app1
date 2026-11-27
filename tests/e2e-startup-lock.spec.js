@@ -2477,6 +2477,38 @@ async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
       button.textContent.includes('حفظ الوقت المقاس')),
   null, { timeout: 5000 });
   const diagnostic = await page.evaluate(async () => {
+      const originalSnapshotMatch = _focusTimerSnapshotMatchesState;
+      window.__v2OriginalSnapshotMatch = originalSnapshotMatch;
+      window.__v2SnapshotMismatch = null;
+      window._focusTimerSnapshotMatchesState = function(snapshot) {
+        const result = originalSnapshotMatch(snapshot);
+        if (!result) {
+          const t = _focusTimer;
+          window.__v2SnapshotMismatch = {
+            snapshot: snapshot && {
+              mode: snapshot.mode, phase: snapshot.phase, running: snapshot.running,
+              baseElapsed: snapshot.baseElapsed, elapsedRemainderMs: snapshot.elapsedRemainderMs,
+              startedAt: snapshot.startedAt, cyclePosition: snapshot.cyclePosition,
+              taskId: snapshot.taskId, sessionStartAt: snapshot.sessionStartAt,
+              awaitingConfirmation: snapshot.awaitingConfirmation,
+              pendingPhaseEndedAt: snapshot.pendingPhaseEndedAt,
+              clockAdjusted: snapshot.clockAdjusted,
+              nativeSessionToken: snapshot.nativeSessionToken || null,
+              pendingNotificationFinish: snapshot.pendingNotificationFinish || null
+            },
+            state: t && {
+              mode: t.mode, phase: t.phase, running: t.running,
+              baseElapsed: t.baseElapsed, elapsedRemainderMs: _focusElapsedRemainderMs,
+              startedAt: t.startedAt, cyclePosition: t.cyclePosition, taskId: t.taskId,
+              sessionStartAt: t.sessionStartAt, awaitingConfirmation: t.awaitingConfirmation,
+              pendingPhaseEndedAt: t.pendingPhaseEndedAt, clockAdjusted: t.clockAdjusted,
+              nativeSessionToken: t.nativeSessionToken || null,
+              pendingNotificationFinish: t.pendingNotificationFinish || null
+            }
+          };
+        }
+        return result;
+      };
     const save = Array.from(document.getElementById('modalFooter').children)
       .find(button => button.textContent.includes('حفظ الوقت المقاس'));
     if (!save) throw new Error('measured Pomodoro save choice was not rendered');
@@ -2506,6 +2538,7 @@ async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
         awaitingConfirmation: timer && timer.awaitingConfirmation,
         pendingFocusCommit: !!(timer && timer.pendingFocusCommit)
       },
+      snapshotMismatch: window.__v2SnapshotMismatch,
       guards: {
         mainBaselineReady: _mainStorageBaselineReady,
         mainExternalChangeObserved: _mainStorageExternalChangeObserved,
@@ -2791,6 +2824,38 @@ test('V2 QuotaExceededError leaves a durable journal that recovers once after a 
     null, { timeout: 5000 });
 
     await page.evaluate(() => {
+      const originalSnapshotMatch = _focusTimerSnapshotMatchesState;
+      window.__v2OriginalSnapshotMatch = originalSnapshotMatch;
+      window.__v2SnapshotMismatch = null;
+      window._focusTimerSnapshotMatchesState = function(snapshot) {
+        const result = originalSnapshotMatch(snapshot);
+        if (!result) {
+          const t = _focusTimer;
+          window.__v2SnapshotMismatch = {
+            snapshot: snapshot && {
+              mode: snapshot.mode, phase: snapshot.phase, running: snapshot.running,
+              baseElapsed: snapshot.baseElapsed, elapsedRemainderMs: snapshot.elapsedRemainderMs,
+              startedAt: snapshot.startedAt, cyclePosition: snapshot.cyclePosition,
+              taskId: snapshot.taskId, sessionStartAt: snapshot.sessionStartAt,
+              awaitingConfirmation: snapshot.awaitingConfirmation,
+              pendingPhaseEndedAt: snapshot.pendingPhaseEndedAt,
+              clockAdjusted: snapshot.clockAdjusted,
+              nativeSessionToken: snapshot.nativeSessionToken || null,
+              pendingNotificationFinish: snapshot.pendingNotificationFinish || null
+            },
+            state: t && {
+              mode: t.mode, phase: t.phase, running: t.running,
+              baseElapsed: t.baseElapsed, elapsedRemainderMs: _focusElapsedRemainderMs,
+              startedAt: t.startedAt, cyclePosition: t.cyclePosition, taskId: t.taskId,
+              sessionStartAt: t.sessionStartAt, awaitingConfirmation: t.awaitingConfirmation,
+              pendingPhaseEndedAt: t.pendingPhaseEndedAt, clockAdjusted: t.clockAdjusted,
+              nativeSessionToken: t.nativeSessionToken || null,
+              pendingNotificationFinish: t.pendingNotificationFinish || null
+            }
+          };
+        }
+        return result;
+      };
       const nativeSetItem = Storage.prototype.setItem;
       window.__v2QuotaNativeSetItem = nativeSetItem;
       window.__v2QuotaInjected = false;
@@ -2826,7 +2891,8 @@ test('V2 QuotaExceededError leaves a durable journal that recovers once after a 
         operations: main.creditOperations || [],
         sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
         timer,
-        recoveryRequired: storageRecoveryRequired
+        recoveryRequired: storageRecoveryRequired,
+        snapshotMismatch: window.__v2SnapshotMismatch
       };
     });
     assert.equal(failedCommit, false,
