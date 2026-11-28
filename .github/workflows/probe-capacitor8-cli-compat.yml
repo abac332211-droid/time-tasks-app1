@@ -1,0 +1,146 @@
+name: Probe Capacitor 8 CLI compatibility
+
+on:
+  push:
+    branches:
+      - codex/capacitor8-cli-compat-spike
+  pull_request:
+    branches:
+      - codex/v2.9.1-stability
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out source SHA
+        run: |
+          EXPECTED_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          echo "Verified source SHA: $ACTUAL_SHA"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate lockfile from proposed compatible toolchain
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Install exact generated lockfile
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify Capacitor package versions
+        run: |
+          npx cap --version
+          npm ls @capacitor/cli @capacitor/core @capacitor/android @capacitor/local-notifications tar
+
+      - name: Run dependency audit
+        shell: bash
+        run: |
+          set +e
+          npm audit --json > npm-audit.json
+          AUDIT_EXIT_CODE=$?
+          set -e
+          node -e "const r=require('./npm-audit.json'); console.log(JSON.stringify({vulnerabilities:r.metadata?.vulnerabilities, packages:Object.keys(r.vulnerabilities||{})},null,2));"
+          test "$AUDIT_EXIT_CODE" -eq 0
+
+      - name: Prepare web files
+        run: |
+          mkdir -p web
+          cp index.html manifest.json sw.js web/
+          cp *.png web/ 2>/dev/null || true
+
+      - name: Create Capacitor config
+        run: |
+          rm -f capacitor.config.json capacitor.config.ts
+          cat > capacitor.config.json << 'EOF'
+          {
+            "appId": "com.abac332211.timetasks",
+            "appName": "TimeTasks",
+            "webDir": "web"
+          }
+          EOF
+
+      - name: Add Android platform using CLI 8 with existing plugins
+        run: npx cap add android
+
+      - name: Configure native stopwatch clock and foreground service
+        run: python3 scripts/configure-android-stopwatch.py
+
+      - name: Align Android version
+        run: python3 scripts/configure-android-version.py
+
+      - name: Isolate Debug APK
+        run: python3 scripts/configure-android-debug.py
+
+      - name: Sync Capacitor Android platform
+        run: npx cap sync android
+
+      - name: Build Debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload generated lockfile and audit evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: capacitor8-probe-evidence-${{ github.sha }}
+          path: |
+            package-lock.json
+            npm-audit.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  persist-lockfile:
+    needs: probe
+    if: success() && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/capacitor8-cli-compat-spike') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout probe branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: true
+
+      - name: Download generated lockfile evidence
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: capacitor8-probe-evidence-${{ github.sha }}
+          path: generated-evidence
+
+      - name: Commit generated lockfile
+        run: |
+          test -s generated-evidence/package-lock.json
+          cp generated-evidence/package-lock.json package-lock.json
+          if git diff --quiet -- package-lock.json; then
+            echo "No lockfile change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "chore: lock Capacitor CLI compatibility probe"
+          TARGET_BRANCH="${{ github.event.pull_request.head.ref || github.ref_name }}"
+          git push origin "HEAD:$TARGET_BRANCH"
