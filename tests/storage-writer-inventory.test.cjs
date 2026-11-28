@@ -53,6 +53,7 @@ test('every production localStorage mutation is inventoried under a reviewed own
   const { counts, sites } = collectDirectStorageWriters(source);
   const expected = {
     _writeSecondaryStorageVerified: 1,
+    _writeTaskFocusLinkJournal: 1,
     writeAndVerify: 3,
     clearMigrationMarker: 2,
     rollbackRejectedPublication: 2,
@@ -74,7 +75,7 @@ test('every production localStorage mutation is inventoried under a reviewed own
     _rollbackTestDataTransaction: 1
   };
 
-  assert.equal(sites.length, 48, 'unexpected production localStorage writer count; audit new or removed sites');
+  assert.equal(sites.length, 49, 'unexpected production localStorage writer count; audit new or removed sites');
   assert.deepEqual({ ...counts }, expected,
     'direct storage mutations must remain assigned to reviewed writer owners');
   assert.doesNotMatch(source,
