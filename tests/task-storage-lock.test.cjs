@@ -424,6 +424,7 @@ function createTaskFocusMutationHarness(options = {}) {
     '  if (taskSaveSucceeded === true) return "committed";',
     '  var rawMain = localStorage.getItem(STORAGE_KEY);',
     '  if (rawMain !== detachment.previousMainRaw) {',
+    '    if (storageRecoveryRequired) return false;',
     '    try {',
     '      var committed = JSON.parse(rawMain);',
     '      if (committed && Array.isArray(committed.tasks)',
@@ -512,13 +513,13 @@ test('ambiguous main write failure keeps Focus detached and blocks further write
   h.sandbox.toggleTask(31);
   const result = h.prompts[0][4]('40');
 
-  assert.equal(result, true,
-    'the transaction finalizer must report the durable committed state, not the initial ambiguous save result');
+  assert.equal(result, false,
+    'an unverified primary-storage baseline must remain fail-closed even if the target bytes appear present');
   assert.deepEqual(h.writes, ['focus', 'main']);
   assert.equal(JSON.parse(h.values.get('timeTasksApp_v1')).tasks[0].status, 'done');
   assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
   assert.equal(h.sandbox._focusTimer.taskId, null);
-  assert.equal(h.sandbox.storageRecoveryRequired, false);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
 });
 
 test('failed Focus-link rollback leaves the verified detached state and blocks writes', () => {
