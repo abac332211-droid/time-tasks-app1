@@ -4590,6 +4590,7 @@ function _resetSecondaryStorageTrackingAfterReset() {
     _focusTimer.clockAdjusted = false;
     _focusTimer.pendingStopwatchTransaction = null;
     _focusTimer.pendingFocusCommit = null;
+    _focusTimer.pendingTaskMutation = null;
   }
   if (typeof _focusElapsedRemainderMs !== "undefined") _focusElapsedRemainderMs = 0;
   if (typeof _focusTimerColdStartWasRunning !== "undefined") _focusTimerColdStartWasRunning = false;
@@ -4648,9 +4649,11 @@ function _recoverInterruptedReset(options) {
   var opts = options || {};
   var memoryPendingTaskMutation = typeof _focusTimer !== "undefined" && _focusTimer
     && _focusTimer.pendingTaskMutation !== null && _focusTimer.pendingTaskMutation !== undefined;
-  if (memoryPendingTaskMutation) {
+  var memoryPendingFocusCommit = typeof _focusTimer !== "undefined" && _focusTimer
+    && _focusTimer.pendingFocusCommit !== null && _focusTimer.pendingFocusCommit !== undefined;
+  if (memoryPendingTaskMutation || memoryPendingFocusCommit) {
     storageRecoveryRequired = true;
-    console.error("Interrupted reset recovery refuses to run while a memory-only task/focus journal is pending.");
+    console.error("Interrupted reset recovery refuses to run while a memory-only task/focus transaction journal is pending.");
     return false;
   }
   if (typeof _hasPersistedPendingTaskMutation === "function"
@@ -10707,7 +10710,7 @@ function _normalizeFocusTimerRecord(record, taskRows, strictTaskReference) {
         mode: "pomodoro", phase: "work", running: false, baseElapsed: 0,
         startedAt: null, cyclePosition: 0, taskId: null, sessionStartAt: null,
         awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false,
-        pendingStopwatchTransaction: null, pendingFocusCommit: null, nativeClockActive: false,
+        pendingStopwatchTransaction: null, pendingFocusCommit: null, pendingTaskMutation: null, nativeClockActive: false,
         nativeAnchorElapsedRealtimeMs: null, nativeAnchorBootCount: null,
         nativeAnchorBaseMs: null, nativeAnchorWallMs: null,
         nativeRestorePending: false, nativeBootMismatch: false,
@@ -15484,6 +15487,46 @@ function _readTaskMutationFocusRecord(expectedJournal) {
   } catch (error) { return null; }
 }
 
+function _rollbackTaskFocusMutationBeforeMainWrite(journal, originalMainRaw, originalFocusRaw, originalTaskRows) {
+  if (storageRecoveryRequired || !_isTaskStorageLockHeld()
+      || !_focusCommitDeepEqual(_focusTimer.pendingTaskMutation, journal)) return false;
+  try {
+    // Roll back only if both keys still equal the exact values observed before
+    // the operation. Never overwrite a newer tab's task or timer state.
+    if (localStorage.getItem(STORAGE_KEY) !== originalMainRaw
+        || localStorage.getItem(FOCUS_TIMER_KEY) !== originalFocusRaw) return false;
+    var currentFocus = JSON.parse(originalFocusRaw);
+    if (!currentFocus || currentFocus.taskId !== journal.taskId
+        || currentFocus.pendingTaskMutation) return false;
+    _focusTimer.pendingTaskMutation = null;
+    if (!_saveFocusTimer()) {
+      _focusTimer.pendingTaskMutation = journal;
+      return false;
+    }
+    var afterFocusRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    var afterFocus = afterFocusRaw === null ? null : JSON.parse(afterFocusRaw);
+    if (!afterFocus || afterFocus.taskId !== journal.taskId
+        || (afterFocus.pendingTaskMutation !== null
+          && afterFocus.pendingTaskMutation !== undefined)) {
+      _focusTimer.pendingTaskMutation = journal;
+      storageRecoveryRequired = true;
+      return false;
+    }
+    var originalMain = JSON.parse(originalMainRaw);
+    if (!validateV2(originalMain)) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    tasks = originalTaskRows;
+    _setMainStorageBaseline(originalMainRaw);
+    return true;
+  } catch (error) {
+    storageRecoveryRequired = true;
+    console.error("Conditional task/focus rollback could not be verified:", error);
+    return false;
+  }
+}
+
 function _failTaskFocusMutation(reason) {
   storageRecoveryRequired = true;
   _appInitCompleted = false;
@@ -15506,6 +15549,7 @@ function _persistLinkedTaskFocusMutation(kind, taskId, target) {
     if (mainRaw === null || focusRaw === null
         || !_mainStorageBaselineReady || mainRaw !== _mainStorageBaselineRaw
         || _mainStorageExternalChangeObserved) return _failTaskFocusMutation("baseline_conflict");
+    var originalTaskRows = JSON.parse(mainRaw).tasks;
     mainData = JSON.parse(mainRaw);
     focusRecord = JSON.parse(focusRaw);
     if (!validateV2(mainData) || !focusRecord || typeof focusRecord !== "object"
@@ -15540,7 +15584,19 @@ function _persistLinkedTaskFocusMutation(kind, taskId, target) {
     _taskFocusMutationWriteDepth++;
     _focusTimer.pendingTaskMutation = journal;
     try {
-      if (!_saveFocusTimer()) return _failTaskFocusMutation("journal_first_write_failed");
+      if (!_saveFocusTimer()) {
+        var journalWriteUnchanged = false;
+        try {
+          journalWriteUnchanged = !storageRecoveryRequired
+            && localStorage.getItem(STORAGE_KEY) === mainRaw
+            && localStorage.getItem(FOCUS_TIMER_KEY) === focusRaw;
+        } catch (initialReadError) {}
+        if (journalWriteUnchanged) {
+          _focusTimer.pendingTaskMutation = null;
+          return false;
+        }
+        return _failTaskFocusMutation("journal_first_write_failed");
+      }
       var durableJournal = _readTaskMutationFocusRecord(journal);
       if (!durableJournal || durableJournal.record.taskId !== taskId)
         return _failTaskFocusMutation("journal_first_readback_failed");
@@ -15552,7 +15608,16 @@ function _persistLinkedTaskFocusMutation(kind, taskId, target) {
       } else {
         tasks = tasks.filter(function(task) { return task && task.id !== taskId; });
       }
-      if (!saveData()) return _failTaskFocusMutation("main_task_write_failed");
+      if (!saveData()) {
+        if (_rollbackTaskFocusMutationBeforeMainWrite(
+          journal, mainRaw, durableJournal.raw, originalTaskRows
+        )) {
+          showAlertModal("لم يكتمل حفظ المهمة",
+            "لم يتغير سجل المهام الأساسي؛ أُلغي التعديل وأُعيد ربط المؤقت بعد التحقق من التخزين.");
+          return false;
+        }
+        return _failTaskFocusMutation("main_task_write_failed");
+      }
 
       var savedRaw = localStorage.getItem(STORAGE_KEY);
       var savedData = savedRaw === null ? null : JSON.parse(savedRaw);
@@ -17394,6 +17459,45 @@ function _completeNormalStartupInit(options) {
     }
   }
   if (!storageRecoveryRequired && !_mainStorageBaselineReady) _captureMainStorageBaseline();
+  if (!opts.focusStateAlreadyLoaded) {
+    _loadFocusTimer();
+    _loadFocusSettings();
+    opts.focusStateAlreadyLoaded = true;
+  }
+  if (!storageRecoveryRequired && _focusTimer.pendingTaskMutation) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    showAlertModal("استرداد تغيير مهمة مطلوب",
+      "ظهر سجل تغيير مهمة ومؤقت معلّق قبل تهيئة التطبيق. لم تبدأ الكتابة؛ أعد تشغيل منسق الاسترداد المحمي.");
+    renderAll();
+    _renderFocusTimer();
+    return false;
+  }
+  if (!storageRecoveryRequired && _focusTimer.pendingFocusCommit) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    showAlertModal("استرداد اعتماد جلسة مطلوب",
+      "ظهر سجل اعتماد جلسة معلّق قبل تهيئة التطبيق. لم تبدأ الكتابة؛ أعد محاولة استرداد التخزين.");
+    renderAll();
+    _renderFocusTimer();
+    return false;
+  }
+  if (!storageRecoveryRequired && _focusTimer.pendingStopwatchTransaction) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _startupStopwatchRecoveryExpectedTx = JSON.parse(
+      JSON.stringify(_focusTimer.pendingStopwatchTransaction)
+    );
+    _startupStopwatchRecoveryBootGeneration = _readPersistedRollingBackupGeneration();
+    _appInitCompleted = false;
+    showAlertModal("استرداد Stopwatch مطلوب",
+      "ظهر سجل معاملة معلّقة قبل تهيئة التطبيق. لم تبدأ الكتابة؛ استخدم إعادة محاولة الاسترداد.");
+    renderAll();
+    _renderFocusTimer();
+    return false;
+  }
   _setupSystemThemeListener();
   if (!opts.postInitAlreadyDone && !storageRecoveryRequired) {
     try {
@@ -17420,16 +17524,12 @@ function _completeNormalStartupInit(options) {
     }
   });
 
-  if (!opts.focusStateAlreadyLoaded) {
-    _loadFocusTimer();
-    _loadFocusSettings();
-  }
   if (!storageRecoveryRequired && _focusTimer.pendingFocusCommit) {
     storageRecoveryRequired = true;
     _startupStopwatchRecoveryFailed = true;
     _appInitCompleted = false;
     showAlertModal("استرداد اعتماد جلسة مطلوب",
-      "ظهر سجل اعتماد جلسة معلّق بعد الفحص الأولي. لم يبدأ التطبيق الكتابة؛ أعد محاولة استرداد التخزين.");
+      "ظهر سجل اعتماد جلسة معلّق أثناء التهيئة المحمية. لم يبدأ التطبيق الكتابة؛ أعد محاولة استرداد التخزين.");
     renderAll();
     _renderFocusTimer();
     return false;
