@@ -670,7 +670,7 @@ def configure(root: Path) -> None:
         raise ValueError("Generated Android platform files are missing; add the Capacitor Android platform first.")
 
     gradle = gradle_path.read_text(encoding="utf-8")
-    namespaces = re.findall(r'(?m)^\s*namespace\s+["\']([^"\']+)["\']', gradle)
+    namespaces = re.findall(r'(?m)^\s*namespace\s*(?:=\s*)?["\']([^"\']+)["\']', gradle)
     if len(namespaces) != 1:
         raise ValueError(f"Expected exactly one Android namespace; found {len(namespaces)}")
     package = namespaces[0]
