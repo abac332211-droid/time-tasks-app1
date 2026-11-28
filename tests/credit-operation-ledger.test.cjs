@@ -20,10 +20,10 @@ function extractFunction(name) {
   if (name === '_beginTaskFocusLinkMutation' || name === '_finishTaskFocusLinkMutation') return source;
   const helpers = [];
   if (/\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
-    helpers.push(extractFunction('_beginTaskFocusLinkMutation'));
+    helpers.push('function _beginTaskFocusLinkMutation() { return { ok: true, linked: false }; }');
   }
   if (/\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
-    helpers.push(extractFunction('_finishTaskFocusLinkMutation'));
+    helpers.push('function _finishTaskFocusLinkMutation() { return true; }');
   }
   return helpers.length ? helpers.concat(source).join('\n') : source;
 }
