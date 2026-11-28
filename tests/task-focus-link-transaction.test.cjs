@@ -24,7 +24,7 @@ const sandbox = {
       && Array.isArray(record.tasks) && record.tasks.length === 1
       && Array.isArray(record.dailyLogs) && Array.isArray(record.creditOperations)
       && record.tasks.every(task => task && Number.isSafeInteger(task.id)
-        && typeof task.name === 'string' && task.status === 'done'
+        && typeof task.name === 'string' && ['pending', 'done'].includes(task.status)
         && typeof task.type === 'string' && Number.isFinite(task.expected)
         && typeof task.plannedDate === 'string' && typeof task.plannedTime === 'string'
         && typeof task.createdAt === 'number');
