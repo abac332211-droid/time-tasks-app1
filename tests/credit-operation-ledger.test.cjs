@@ -637,6 +637,8 @@ function attachStatusOnlyTaskActions(sandbox) {
   sandbox.showToast = () => {};
   sandbox.showAlertModal = () => {};
   sandbox._isTaskStorageLockHeld = () => true;
+  sandbox._withTaskStorageLock = callback => callback();
+  sandbox._newPendingFocusCommitUuid = () => ids.fourth;
   return sandbox;
 }
 
