@@ -52,6 +52,26 @@ function saveHarness(lockHeld) {
   return { sandbox, writes };
 }
 
+test('_withFocusCommitWrite cannot bypass the shared lock', () => {
+  const sandbox = {
+    _stopwatchTransactionLockDepth: 0,
+    _focusCommitWriteDepth: 0,
+    console: { error() {} }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction('_withFocusCommitWrite'), sandbox);
+  let invoked = false;
+
+  assert.equal(sandbox._withFocusCommitWrite(() => { invoked = true; return true; }), false);
+  assert.equal(invoked, false, 'the protected callback must not execute without lock ownership');
+  assert.equal(sandbox._focusCommitWriteDepth, 0, 'a rejected scope must not open the write bypass');
+
+  sandbox._stopwatchTransactionLockDepth = 1;
+  assert.equal(sandbox._withFocusCommitWrite(() => { invoked = true; return true; }), true);
+  assert.equal(invoked, true);
+  assert.equal(sandbox._focusCommitWriteDepth, 0, 'the write bypass must always close after callback completion');
+});
+
 test('_saveFocusTimer fails closed when the shared Stopwatch lock is not held', () => {
   const h = saveHarness(false);
   assert.equal(h.sandbox._saveFocusTimer(), false);
