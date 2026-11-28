@@ -402,11 +402,35 @@ function createTaskFocusMutationHarness(options = {}) {
   };
 
   vm.createContext(sandbox);
-  const helpers = ['_beginTaskFocusLinkMutation', '_finishTaskFocusLinkMutation']
-    .filter(name => new RegExp('function\\s+' + name + '\\s*\\(').test(appScript))
-    .map(extractFunction);
+  const helpers = [
+    'function _beginTaskFocusLinkMutation(taskId) {',
+    '  if (!_focusTimer || _focusTimer.taskId !== taskId) return { ok: true, linked: false };',
+    '  var previousTaskId = _focusTimer.taskId;',
+    '  var previousMainRaw = localStorage.getItem(STORAGE_KEY);',
+    '  _focusTimer.taskId = null;',
+    '  if (!_saveFocusTimer()) {',
+    '    try {',
+    '      var raw = localStorage.getItem(FOCUS_TIMER_KEY);',
+    '      var persisted = raw === null ? null : JSON.parse(raw);',
+    '      if (persisted && persisted.taskId === taskId) _focusTimer.taskId = taskId;',
+    '      else storageRecoveryRequired = true;',
+    '    } catch (error) { storageRecoveryRequired = true; }',
+    '    return { ok: false, linked: true };',
+    '  }',
+    '  return { ok: true, linked: true, previousTaskId, previousMainRaw };',
+    '}',
+    'function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {',
+    '  if (!detachment || !detachment.linked || taskSaveSucceeded === true) return true;',
+    '  if (storageRecoveryRequired || localStorage.getItem(STORAGE_KEY) !== detachment.previousMainRaw) {',
+    '    storageRecoveryRequired = true; return false;',
+    '  }',
+    '  _focusTimer.taskId = detachment.previousTaskId;',
+    '  if (!_saveFocusTimer()) { storageRecoveryRequired = true; return false; }',
+    '  return true;',
+    '}'
+  ].join('\n');
   vm.runInContext([
-    ...helpers,
+    helpers,
     extractFunction('toggleTask'),
     extractFunction('deleteTask')
   ].join('\n'), sandbox);
