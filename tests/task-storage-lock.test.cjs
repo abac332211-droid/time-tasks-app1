@@ -425,7 +425,14 @@ function createTaskFocusMutationHarness(options = {}) {
     '    storageRecoveryRequired = true; return false;',
     '  }',
     '  _focusTimer.taskId = detachment.previousTaskId;',
-    '  if (!_saveFocusTimer()) { storageRecoveryRequired = true; return false; }',
+    '  if (!_saveFocusTimer()) {',
+    '    try {',
+    '      var raw = localStorage.getItem(FOCUS_TIMER_KEY);',
+    '      var persisted = raw === null ? null : JSON.parse(raw);',
+    '      _focusTimer.taskId = persisted && Number.isSafeInteger(persisted.taskId) ? persisted.taskId : null;',
+    '    } catch (error) { _focusTimer.taskId = null; }',
+    '    storageRecoveryRequired = true; return false;',
+    '  }',
     '  return true;',
     '}'
   ].join('\n');
