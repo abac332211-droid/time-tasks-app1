@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/v2.9.1-stability
+      - codex/2.9.1-integrity-followup
   pull_request:
     branches:
       - main
