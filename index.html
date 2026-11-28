@@ -10620,6 +10620,7 @@ var _nativeStopwatchSyncPromise = null;
 var _nativeStopwatchRestoreScheduled = false;
 var _nativeStopwatchLastSyncAt = 0;
 var _nativeStopwatchActionSyncPromise = null;
+var _nativeActionQueueOverflowNoticeShown = false;
 var _pendingFinishDialogShown = false;
 
 function _isNativeStopwatchUuid(value) {
@@ -11303,6 +11304,15 @@ function _consumeNativeStopwatchNotificationAction() {
   _nativeStopwatchActionSyncPromise = Promise.resolve().then(function() {
     return plugin.peekNotificationAction();
   }).then(function(action) {
+    if (action && action.queueOverflow === true) {
+      if (!_nativeActionQueueOverflowNoticeShown) {
+        _nativeActionQueueOverflowNoticeShown = true;
+        showAlertModal("إجراء إشعار لم يُحفظ",
+          "وصل طابور Android إلى سعته القصوى (20 إجراءً). لم يُضف الإجراء الأخير إلى الطابور ولم نقرّه، وبقيت الإجراءات السابقة محفوظة بترتيبها. افتح التطبيق لمعالجة الطابور، ثم أعد تنفيذ الإجراء المطلوب من الإشعار.");
+      }
+    } else {
+      _nativeActionQueueOverflowNoticeShown = false;
+    }
     if (!action || action.hasAction === false) return "";
     var actionId = action.actionId, token = action.sessionToken;
     if (!_isNativeStopwatchUuid(actionId) || !_isNativeStopwatchUuid(token)
