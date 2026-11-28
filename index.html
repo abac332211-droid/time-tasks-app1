@@ -1627,7 +1627,9 @@ function _isTaskWriteBlocked() {
     && _stopwatchTransactionLockDepth > 0;
   var startupRecoveryWrite = typeof _startupStopwatchRecoveryWriteDepth === "number"
     && _startupStopwatchRecoveryWriteDepth > 0 && lockHeld;
-  var taskMutationWriteAllowed = _taskFocusMutationWriteDepth > 0 || startupRecoveryWrite;
+  var taskMutationWriteDepth = typeof _taskFocusMutationWriteDepth === "number"
+    ? _taskFocusMutationWriteDepth : 0;
+  var taskMutationWriteAllowed = taskMutationWriteDepth > 0 || startupRecoveryWrite;
   return !!(
     (typeof _focusTimer !== "undefined" && _focusTimer && _focusTimer.pendingTaskMutation
       && !taskMutationWriteAllowed)
@@ -4764,8 +4766,11 @@ function saveData() {
     && _startupStopwatchRecoveryWriteDepth > 0
     && typeof _stopwatchTransactionLockDepth === "number"
     && _stopwatchTransactionLockDepth > 0;
-  if (_focusTimer && _focusTimer.pendingTaskMutation
-      && _taskFocusMutationWriteDepth <= 0 && !startupRecoveryWrite) {
+  var taskMutationWriteDepth = typeof _taskFocusMutationWriteDepth === "number"
+    ? _taskFocusMutationWriteDepth : 0;
+  if (typeof _focusTimer !== "undefined" && _focusTimer
+      && _focusTimer.pendingTaskMutation
+      && taskMutationWriteDepth <= 0 && !startupRecoveryWrite) {
     showAlertModal("عملية مهمة قيد الاسترداد",
       "يوجد سجل دائم يربط حفظ المهمة بالمؤقت. أوقفنا الكتابة حتى يستكمل التطبيق الاسترداد ويتحقق من السجلين.");
     return false;
@@ -14291,6 +14296,7 @@ function _probeStartupStopwatchRecovery() {
     var timerObj = null;
     var tx = null;
     var focusCommit = null;
+    var taskMutation = null;
     var mainRaw = localStorage.getItem(STORAGE_KEY);
     var bootGeneration = _readPersistedRollingBackupGeneration();
     if (timerRaw !== null) {
@@ -14336,12 +14342,14 @@ function _probeStartupStopwatchRecovery() {
         }
       }
       if (timerObj.pendingTaskMutation !== null && timerObj.pendingTaskMutation !== undefined) {
-        if (!_validatePendingTaskMutation(timerObj.pendingTaskMutation) || tx || focusCommit) {
+        taskMutation = timerObj.pendingTaskMutation;
+        if (!_validatePendingTaskMutation(taskMutation) || tx || focusCommit) {
           return {
             pending: true, error: "سجل تغيير المهمة المعلّق غير صالح أو متداخل مع معاملة مؤقت أخرى.",
             blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
             timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
             expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+            expectedTaskMutation: null,
             bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
           };
         }
@@ -14370,6 +14378,22 @@ function _probeStartupStopwatchRecovery() {
         blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
         timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
         expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+        expectedTaskMutation: taskMutation ? JSON.parse(JSON.stringify(taskMutation)) : null,
+        bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+      };
+    }
+    var memoryTaskMutation = typeof _focusTimer !== "undefined" && _focusTimer
+      ? _focusTimer.pendingTaskMutation : null;
+    var memoryTaskMutationMismatch = memoryTaskMutation !== null && memoryTaskMutation !== undefined
+      && (!taskMutation || !_focusCommitDeepEqual(memoryTaskMutation, taskMutation));
+    if (memoryTaskMutationMismatch) {
+      return {
+        pending: true,
+        error: "يوجد سجل تغيير مهمة في ذاكرة الصفحة لا يطابق سجلًا دائمًا؛ أوقفنا الاسترداد والكتابة.",
+        blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+        timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+        expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+        expectedTaskMutation: taskMutation ? JSON.parse(JSON.stringify(taskMutation)) : null,
         bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
       };
     }
@@ -14384,13 +14408,14 @@ function _probeStartupStopwatchRecovery() {
       };
     }
     var mainData = null;
-    if ((tx || focusCommit) && !hasMarkers) {
+    if ((tx || focusCommit || taskMutation) && !hasMarkers) {
       if (mainRaw === null) {
         return {
           pending: true, error: "السجل الرئيسي للمهام مفقود أثناء وجود معاملة تركيز معلّقة.",
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
           timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
           expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+          expectedTaskMutation: taskMutation ? JSON.parse(JSON.stringify(taskMutation)) : null,
           bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
@@ -14401,22 +14426,24 @@ function _probeStartupStopwatchRecovery() {
           blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
           timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
           expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+          expectedTaskMutation: taskMutation ? JSON.parse(JSON.stringify(taskMutation)) : null,
           bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
         };
       }
     }
     return {
-      pending: hasMarkers || !!tx || !!focusCommit, error: null,
+      pending: hasMarkers || !!tx || !!focusCommit || !!taskMutation, error: null,
       blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
       timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
       expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+      expectedTaskMutation: taskMutation ? JSON.parse(JSON.stringify(taskMutation)) : null,
       bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: mainData
     };
   } catch (e) {
     return {
       pending: true, error: "تعذر فحص حالة التخزين وسجل المؤقت قبل التهيئة.",
       blockingMarkers: null, markerValues: null, timerRaw: null, timerObj: null,
-      expectedTx: null, expectedFocusCommit: null,
+      expectedTx: null, expectedFocusCommit: null, expectedTaskMutation: null,
       bootPersistedGeneration: null, mainRaw: null, mainData: null
     };
   }
@@ -16073,6 +16100,86 @@ function _recoverPendingStopwatchSaveFromStartup(expectedTx, bootPersistedGenera
   return { ok: true, recoveredBySibling: false, generatedCount: postInit.generatedCount };
 }
 
+function _recoverPendingTaskMutationFromStartup(expectedJournal, lockedProbe, initialProbe) {
+  if (!_isTaskStorageLockHeld()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_lock_not_held" };
+  }
+  var currentProbe = lockedProbe || _probeStartupStopwatchRecovery();
+  var firstProbe = initialProbe || currentProbe;
+  if (!expectedJournal || !_validatePendingTaskMutation(expectedJournal)
+      || !currentProbe || currentProbe.error) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_probe_invalid" };
+  }
+  var markers = currentProbe.blockingMarkers || {};
+  if (Object.keys(markers).some(function(key) { return markers[key] === true; })) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_marker_overlap" };
+  }
+  var activeJournal = currentProbe.expectedTaskMutation || null;
+  if (!activeJournal || !_focusCommitDeepEqual(activeJournal, expectedJournal)) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    return { ok: false, reason: "task_mutation_journal_missing_or_changed" };
+  }
+  if (firstProbe.expectedTaskMutation
+      && !_focusCommitDeepEqual(firstProbe.expectedTaskMutation, activeJournal)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_identity_changed_while_waiting" };
+  }
+  if (currentProbe.timerRaw !== firstProbe.timerRaw
+      || currentProbe.mainRaw !== firstProbe.mainRaw) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_storage_snapshot_changed" };
+  }
+  var bundle = _readAndValidateResyncBundle();
+  if (!bundle || bundle.mainRaw !== currentProbe.mainRaw
+      || bundle.timerRaw !== currentProbe.timerRaw
+      || !bundle.timerObj
+      || !_focusCommitDeepEqual(bundle.timerObj.pendingTaskMutation, activeJournal)
+      || !_applyValidatedResyncBundle(bundle)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_resync_bundle_invalid" };
+  }
+
+  storageRecoveryRequired = false;
+  var previousWriteDepth = typeof _startupStopwatchRecoveryWriteDepth === "number"
+    ? _startupStopwatchRecoveryWriteDepth : 0;
+  _startupStopwatchRecoveryWriteDepth = previousWriteDepth + 1;
+  var recovered;
+  try {
+    recovered = _recoverPendingTaskMutationInsideLock();
+  } finally {
+    _startupStopwatchRecoveryWriteDepth = previousWriteDepth;
+  }
+  if (!recovered || recovered.ok !== true) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    return { ok: false, reason: recovered && recovered.reason
+      ? recovered.reason : "task_mutation_recovery_failed" };
+  }
+
+  storageRecoveryRequired = false;
+  if (typeof _flushPendingCorruptStorageSnapshotsInsideLock === "function"
+      && !_flushPendingCorruptStorageSnapshotsInsideLock()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_corrupt_snapshot_preservation_failed" };
+  }
+  var postInit = _runPostRecoveryPersistedInitInsideLock();
+  if (!postInit.ok) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_post_init_failed", detail: postInit.reason };
+  }
+  if (!_finishStartupInitializationInsideLock()) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_startup_finalize_failed" };
+  }
+  return { ok: true, recovered: "replayed", operationId: activeJournal.operationId };
+}
+
 function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
   if (!(typeof _stopwatchTransactionLockDepth === "number"
       && _stopwatchTransactionLockDepth > 0)) {
@@ -16111,6 +16218,28 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
   }
   if (initialFocusCommit) {
     return _recoverPendingFocusCommitFromStartup(initialFocusCommit, lockedProbe, initialProbe);
+  }
+  var initialTaskMutation = initialProbe.expectedTaskMutation || null;
+  var currentTaskMutation = lockedProbe.expectedTaskMutation || null;
+  if ((initialTaskMutation || currentTaskMutation) && markerCount > 0) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_and_recovery_marker_overlap" };
+  }
+  if (initialTaskMutation && currentTaskMutation
+      && !_focusCommitDeepEqual(initialTaskMutation, currentTaskMutation)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_mutation_identity_changed_while_waiting" };
+  }
+  if (currentTaskMutation) {
+    return _recoverPendingTaskMutationFromStartup(
+      currentTaskMutation, lockedProbe, initialProbe
+    );
+  }
+  if (initialTaskMutation) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    return { ok: false, reason: "task_mutation_journal_disappeared_before_lock" };
   }
   var initialTx = initialProbe.expectedTx || null;
   var currentTx = lockedProbe.expectedTx || null;
@@ -16168,7 +16297,8 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
   }
   var bundle = _readAndValidateResyncBundle();
   if (!bundle || (bundle.timerObj
-      && (bundle.timerObj.pendingStopwatchTransaction || bundle.timerObj.pendingFocusCommit))) {
+      && (bundle.timerObj.pendingStopwatchTransaction || bundle.timerObj.pendingFocusCommit
+        || bundle.timerObj.pendingTaskMutation))) {
     storageRecoveryRequired = true;
     return { ok: false, reason: "normal_startup_bundle_invalid_or_transaction_present" };
   }

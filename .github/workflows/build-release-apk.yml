@@ -41,7 +41,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install dependencies from the locked manifest
+      - name: Install dependencies from lockfile
         run: npm ci --no-audit --no-fund
 
       - name: Install and verify pinned Playwright Chromium

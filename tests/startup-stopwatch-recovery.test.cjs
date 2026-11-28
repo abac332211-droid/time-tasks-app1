@@ -369,6 +369,11 @@ test('all persisted post-recovery initialization remains inside the Stopwatch lo
   const sandbox = {
     tasks: [{ id: 7011 }],
     _stopwatchTransactionLockDepth: 1,
+    _recoverPendingTaskMutationInsideLock() {
+      assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
+      calls.push('task-recovery');
+      return { ok: true };
+    },
     _healTaskFieldsAfterLoad() {
       assert.equal(sandbox._stopwatchTransactionLockDepth, 1);
       calls.push('heal');
@@ -401,7 +406,7 @@ test('all persisted post-recovery initialization remains inside the Stopwatch lo
   assert.equal(result.ok, true);
   assert.equal(result.generatedCount, 2);
   assert.deepEqual(calls, [
-    'heal', 'save', 'recurring', 'cold-start', 'backup:startup:60000'
+    'task-recovery', 'heal', 'save', 'recurring', 'cold-start', 'backup:startup:60000'
   ]);
 });
 

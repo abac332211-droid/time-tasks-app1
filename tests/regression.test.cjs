@@ -1645,6 +1645,7 @@ test('task deletion restores the task and linked focus timer when persistence fa
     showConfirmModal: (title, body, callback) => callback(),
     _saveFocusTimer: () => { timerSaveCalls++; return true; },
     _renderFocusTimer: () => {},
+    _persistLinkedTaskFocusMutation: () => false,
     saveData: () => false,
     renderAll: () => { throw new Error('must not render unpersisted deletion'); },
     showToast: () => {}
@@ -1656,7 +1657,7 @@ test('task deletion restores the task and linked focus timer when persistence fa
   assert.equal(sandbox.tasks.length, 1);
   assert.equal(sandbox.tasks[0], task);
   assert.equal(sandbox._focusTimer.taskId, 12);
-  assert.equal(timerSaveCalls, 2);
+  assert.equal(timerSaveCalls, 0, 'the linked task and timer are not detached through separate writes');
 });
 
 
