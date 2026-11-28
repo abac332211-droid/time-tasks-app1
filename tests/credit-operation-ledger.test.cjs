@@ -593,3 +593,121 @@ test('first ledger operation may start from an existing migrated numeric balance
 
   assert.equal(app._classifyCreditOperationAttempt([], first).status, 'new');
 });
+
+
+function taskWithDurableCredit(seconds = 1530, status = 'pending') {
+  const operation = sessionOperation({
+    previousSeconds: null,
+    targetSeconds: seconds,
+    measuredSeconds: seconds,
+    creditedSeconds: seconds,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  });
+  const task = {
+    id: 1,
+    name: 'مهمة برصيد محفوظ',
+    status,
+    type: 'معرفية',
+    expected: 30,
+    actual: Math.floor(seconds / 60),
+    actualSeconds: seconds,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operation.operationId,
+    plannedDate: '2026-11-26',
+    plannedTime: '',
+    completedAt: status === 'done' ? '2026-11-26T10:00:00' : null,
+    createdAt: 1
+  };
+  return {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: {},
+    tasks: [task],
+    dailyLogs: [],
+    creditOperations: [operation]
+  };
+}
+
+function attachStatusOnlyTaskActions(sandbox) {
+  sandbox._focusTimer = { taskId: null };
+  sandbox.isTaskCancelled = task => task.status === 'cancelled';
+  sandbox.localDateTimeString = () => '2026-11-26T11:00:00';
+  sandbox.renderAll = () => {};
+  sandbox.showToast = () => {};
+  sandbox.showAlertModal = () => {};
+  sandbox._isTaskStorageLockHeld = () => true;
+  return sandbox;
+}
+
+test('blank completion input and completion undo preserve an exact 1530-second V2 balance without a new ledger operation', () => {
+  const fixture = taskWithDurableCredit(1530);
+  const { sandbox, storage } = primaryWriterContext(fixture);
+  attachStatusOnlyTaskActions(sandbox);
+  let prompts = 0;
+  sandbox.showPromptModal = (_title, _body, _value, _placeholder, callback) => {
+    prompts++;
+    callback('');
+  };
+  vm.runInNewContext(extractFunction('toggleTask'), sandbox);
+
+  sandbox.toggleTask(1);
+  let persisted = JSON.parse(storage.get('main'));
+  assert.equal(sandbox.tasks[0].status, 'done');
+  assert.equal(persisted.tasks[0].actual, 25);
+  assert.equal(persisted.tasks[0].actualSeconds, 1530);
+  assert.equal(persisted.tasks[0].creditRevision, 1);
+  assert.equal(persisted.tasks[0].lastCreditOperationId, fixture.creditOperations[0].operationId);
+  assert.deepEqual(persisted.creditOperations, fixture.creditOperations,
+    'blank completion input must not append a no-op or clearing adjustment');
+  assert.equal(sandbox._validateCreditOperationLedger(persisted.creditOperations, persisted.tasks), true);
+
+  sandbox.toggleTask(1);
+  persisted = JSON.parse(storage.get('main'));
+  assert.equal(sandbox.tasks[0].status, 'pending');
+  assert.equal(persisted.tasks[0].actual, 25);
+  assert.equal(persisted.tasks[0].actualSeconds, 1530);
+  assert.deepEqual(persisted.creditOperations, fixture.creditOperations,
+    'undoing completion changes status only and must keep the old credit history');
+  assert.equal(sandbox._validateCreditOperationLedger(persisted.creditOperations, persisted.tasks), true);
+  assert.equal(prompts, 1);
+  // Re-read as a fresh page would; the exact balance and identity must survive reload.
+  const afterReload = JSON.parse(storage.get('main'));
+  assert.equal(afterReload.tasks[0].actualSeconds, 1530);
+  assert.equal(afterReload.tasks[0].lastCreditOperationId, fixture.creditOperations[0].operationId);
+});
+
+test('shutdown cancellation and revival preserve the exact V2 credit balance and operation identities', () => {
+  const fixture = taskWithDurableCredit(1530);
+  const { sandbox, storage } = primaryWriterContext(fixture);
+  attachStatusOnlyTaskActions(sandbox);
+  const row = { dataset: { taskId: '1', decision: 'cancel' } };
+  const nextInput = { value: '' };
+  sandbox.todayStr = () => '2026-11-26';
+  sandbox.document = {
+    querySelectorAll: selector => selector === '.shutdown-task-row' ? [row] : [],
+    getElementById: id => id === 'shutdownNextStep' ? nextInput : null
+  };
+  sandbox.closeModal = () => {};
+  vm.runInNewContext(extractFunction('performShutdown'), sandbox);
+  sandbox.performShutdown();
+
+  let persisted = JSON.parse(storage.get('main'));
+  assert.equal(persisted.tasks[0].status, 'cancelled');
+  assert.equal(persisted.tasks[0].actual, 25);
+  assert.equal(persisted.tasks[0].actualSeconds, 1530);
+  assert.deepEqual(persisted.creditOperations, fixture.creditOperations);
+  assert.equal(sandbox._validateCreditOperationLedger(persisted.creditOperations, persisted.tasks), true);
+
+  vm.runInNewContext(extractFunction('reviveTask'), sandbox);
+  sandbox.reviveTask(1);
+  persisted = JSON.parse(storage.get('main'));
+  assert.equal(persisted.tasks[0].status, 'pending');
+  assert.equal(persisted.tasks[0].actual, 25);
+  assert.equal(persisted.tasks[0].actualSeconds, 1530);
+  assert.deepEqual(persisted.creditOperations, fixture.creditOperations);
+  assert.equal(sandbox._validateCreditOperationLedger(persisted.creditOperations, persisted.tasks), true);
+  const afterReload = JSON.parse(storage.get('main'));
+  assert.equal(afterReload.tasks[0].actualSeconds, 1530);
+  assert.equal(afterReload.tasks[0].lastCreditOperationId, fixture.creditOperations[0].operationId);
+});
