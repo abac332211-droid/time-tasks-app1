@@ -7338,14 +7338,12 @@ function toggleTask(id) {
           showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
         }
         const _old = { actual: t.actual, status: t.status, completedAt: t.completedAt };
-        t.actual = _newActual;
-        t.status = "done";
-        t.completedAt = localDateTimeString();
+        var _completedAt = localDateTimeString();
         if (_focusTimer.taskId === id) {
           var linkedCompleted = _persistLinkedTaskFocusMutation("complete", id, {
             actual: _newActual,
             status: "done",
-            completedAt: localDateTimeString()
+            completedAt: _completedAt
           });
           if (linkedCompleted) {
             _renderFocusTimer();
@@ -7354,6 +7352,9 @@ function toggleTask(id) {
           }
           return linkedCompleted;
         }
+        t.actual = _newActual;
+        t.status = "done";
+        t.completedAt = _completedAt;
         if (saveData()) {
           renderAll();
           showToast("🎉 ممتاز! تم إنجاز المهمة");
