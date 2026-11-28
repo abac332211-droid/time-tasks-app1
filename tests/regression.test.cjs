@@ -1677,17 +1677,17 @@ test('task deletion restores the task and linked focus timer when persistence fa
     'function _isTaskStorageLockHeld() { return true; }',
     'function _withTaskStorageLock(callback) { return callback(); }',
     'function _beginTaskFocusLinkMutation(id) {',
-    '  if (sandbox._focusTimer.taskId !== id) return { ok: true, linked: false };',
-    '  const previousTaskId = sandbox._focusTimer.taskId;',
-    '  sandbox._focusTimer.taskId = null;',
-    '  if (!sandbox._saveFocusTimer()) { sandbox._focusTimer.taskId = previousTaskId; return { ok: false, linked: true }; }',
+    '  if (_focusTimer.taskId !== id) return { ok: true, linked: false };'
+    '  const previousTaskId = _focusTimer.taskId;'
+    '  _focusTimer.taskId = null;'
+    '  if (!_saveFocusTimer()) { _focusTimer.taskId = previousTaskId; return { ok: false, linked: true }; }'
     '  return { ok: true, linked: true, previousTaskId };',
     '}',
     'function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {',
     '  if (!detachment || !detachment.linked) return true;',
     '  if (taskSaveSucceeded === true) return "committed";',
-    '  sandbox._focusTimer.taskId = detachment.previousTaskId;',
-    '  return sandbox._saveFocusTimer() ? "rolled_back" : false;',
+    '  _focusTimer.taskId = detachment.previousTaskId;'
+    '  return _saveFocusTimer() ? "rolled_back" : false;'
     '}',
     deleteFunctionMatch[0]
   ].join('\n'), sandbox);
