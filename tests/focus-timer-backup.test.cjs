@@ -364,9 +364,30 @@ test('backup validator is wired to focus-timer validation', () => {
     ...valid,
     data: { ...valid.data, focusTimer: { ...paused, running: true, startedAt: 9_000 } }
   };
+  const pendingLegacyStopwatchTransaction = {
+    ...valid,
+    data: {
+      ...valid.data,
+      focusTimer: {
+        ...paused,
+        pendingStopwatchTransaction: { version: 1, id: 'focus-import-transaction' }
+      }
+    }
+  };
+  const pendingV2FocusCommit = {
+    ...valid,
+    data: {
+      ...valid.data,
+      focusTimer: { ...paused, pendingFocusCommit: {} }
+    }
+  };
 
   assert.equal(validateBackup(valid).valid, true);
   assert.equal(validateBackup(invalid).valid, false);
+  assert.equal(validateBackup(pendingLegacyStopwatchTransaction).valid, false,
+    'user backups must never import an internal legacy Stopwatch recovery journal');
+  assert.equal(validateBackup(pendingV2FocusCommit).valid, false,
+    'user backups must never import an internal V2 focus-commit journal');
   const missingFocusTimer = {
     ...valid,
     data: { tasks: valid.data.tasks, dailyLogs: [] }
