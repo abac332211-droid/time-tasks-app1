@@ -12985,7 +12985,12 @@ function _renderFocusTimer() {
 
   var finishBtn = document.getElementById('timerFinishBtn');
   if (finishBtn) {
-    var canFinish = _focusTimer.running || _focusTimer.baseElapsed > 0;
+    var hasPendingNotificationFinish = !!_focusTimer.pendingNotificationFinish;
+    var remainderMs = Number.isInteger(_focusElapsedRemainderMs)
+      && _focusElapsedRemainderMs >= 0 && _focusElapsedRemainderMs < 1000
+      ? _focusElapsedRemainderMs : 0;
+    var canFinish = _focusTimer.running || _focusTimer.baseElapsed > 0
+      || remainderMs > 0 || hasPendingNotificationFinish;
     finishBtn.disabled = !canFinish || timerControlsBlocked;
   }
 
@@ -15824,7 +15829,16 @@ function _continueFocusTimerFinish(snapshot) {
 }
 
 function finishTimer(_nativeClockSynchronized) {
-  if (_focusTimer.pendingNotificationFinish && _pendingFinishDialogShown) return false;
+  if (_focusTimer.pendingNotificationFinish && _pendingFinishDialogShown) {
+    var pendingOverlay = document.getElementById("customModalOverlay");
+    var pendingDialogVisible = !!pendingOverlay && !!pendingOverlay.classList
+      && !pendingOverlay.classList.contains("hidden");
+    if (pendingDialogVisible) return false;
+    // Another UI path may close the modal without invoking its explicit
+    // Cancel handler. The durable notification intent remains authoritative;
+    // clear only the stale presentation flag so the user can reopen it.
+    _pendingFinishDialogShown = false;
+  }
   if (!_nativeClockSynchronized && _focusTimer.nativeClockActive === true
       && typeof _runWithFreshNativeStopwatchClock === "function") {
     return _runWithFreshNativeStopwatchClock(function() { return finishTimer(true); });
