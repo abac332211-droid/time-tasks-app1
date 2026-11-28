@@ -4487,8 +4487,10 @@ function _recoverInterruptedResetWithLock(options, afterRecovery) {
 }
 
 function _resetSecondaryStorageTrackingAfterReset() {
-  if (typeof _hasPersistedPendingFocusCommit === "function"
-      && _hasPersistedPendingFocusCommit()) {
+  var memoryPendingFocusCommit = typeof _focusTimer !== "undefined" && _focusTimer
+    && _focusTimer.pendingFocusCommit !== null && _focusTimer.pendingFocusCommit !== undefined;
+  if ((typeof _hasPersistedPendingFocusCommit === "function"
+      && _hasPersistedPendingFocusCommit()) || memoryPendingFocusCommit) {
     storageRecoveryRequired = true;
     console.error("Reset cleanup refuses to clear a pending focus commit journal.");
     return false;
@@ -4540,6 +4542,7 @@ function _resetSecondaryStorageTrackingAfterReset() {
     _focusTimer.pendingPhaseEndedAt = null;
     _focusTimer.clockAdjusted = false;
     _focusTimer.pendingStopwatchTransaction = null;
+    _focusTimer.pendingFocusCommit = null;
   }
   if (typeof _focusElapsedRemainderMs !== "undefined") _focusElapsedRemainderMs = 0;
   if (typeof _focusTimerColdStartWasRunning !== "undefined") _focusTimerColdStartWasRunning = false;
@@ -14015,22 +14018,18 @@ function _probeStartupStopwatchRecovery() {
         };
       }
     }
-    // A journal held only in this page is still unresolved. Do not let Reset
-    // erase the sole remaining copy after its first persistence attempt failed.
-    var memoryTx = typeof _focusTimer !== "undefined" && _focusTimer
-      ? _focusTimer.pendingStopwatchTransaction : null;
+    // A V2 focus-commit journal held only in this page is still unresolved.
+    // Do not let Reset erase its sole remaining copy after the first journal
+    // persistence attempt failed. Legacy Stopwatch cache cleanup remains
+    // governed by its existing transaction protocol.
     var memoryFocusCommit = typeof _focusTimer !== "undefined" && _focusTimer
       ? _focusTimer.pendingFocusCommit : null;
-    var memoryTxMismatch = memoryTx !== null && memoryTx !== undefined
-      && (!tx || JSON.stringify(memoryTx) !== JSON.stringify(tx));
     var memoryFocusCommitMismatch = memoryFocusCommit !== null && memoryFocusCommit !== undefined
       && (!focusCommit || JSON.stringify(memoryFocusCommit) !== JSON.stringify(focusCommit));
-    if (memoryTxMismatch || memoryFocusCommitMismatch) {
+    if (memoryFocusCommitMismatch) {
       return {
         pending: true,
-        error: memoryFocusCommitMismatch
-          ? "يوجد سجل اعتماد جلسة في ذاكرة الصفحة لا يطابق سجلًا دائمًا في التخزين؛ أوقفنا Reset والاسترداد الجماعي."
-          : "يوجد سجل معاملة Stopwatch في ذاكرة الصفحة لا يطابق سجلًا دائمًا في التخزين؛ أوقفنا Reset والاسترداد الجماعي.",
+        error: "يوجد سجل اعتماد جلسة في ذاكرة الصفحة لا يطابق سجلًا دائمًا في التخزين؛ أوقفنا Reset والاسترداد الجماعي.",
         blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
         timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
         expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,

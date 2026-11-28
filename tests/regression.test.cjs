@@ -2324,28 +2324,25 @@ function resetAllHarness(faults = {}) {
     }
   };
 }
-test('Reset refuses a Stopwatch journal held only in page memory and preserves all stored data', async () => {
-  for (const field of ['pendingFocusCommit', 'pendingStopwatchTransaction']) {
-    const harness = resetAllHarness();
-    const journal = field === 'pendingFocusCommit'
-      ? { protocolVersion: 1, operationId: 'memory-only-focus-commit' }
-      : { version: 1, id: 'memory-only-stopwatch-transaction' };
-    harness.sandbox._focusTimer[field] = journal;
+test('Reset refuses a V2 focus-commit journal held only in page memory and preserves all stored data', async () => {
+  const harness = resetAllHarness();
+  const field = 'pendingFocusCommit';
+  const journal = { protocolVersion: 1, operationId: 'memory-only-focus-commit' };
+  harness.sandbox._focusTimer[field] = journal;
     const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
-    const probe = harness.sandbox._probeStartupStopwatchRecovery();
-    assert.equal(probe.pending, true, field + ' must block recovery');
-    assert.match(probe.error, /ذاكرة الصفحة/);
+  const probe = harness.sandbox._probeStartupStopwatchRecovery();
+  assert.equal(probe.pending, true, field + ' must block recovery');
+  assert.match(probe.error, /ذاكرة الصفحة/);
 
-    assert.equal(await harness.run(), false, field + ' must block Reset');
-    const after = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    assert.deepEqual(after, before, field + ' must not change any durable key');
-    assert.deepEqual(harness.removeCalls, [], field + ' must not begin Reset deletions');
-    assert.equal(harness.values.has(harness.keys.resetInProgress), false);
-    assert.equal(harness.sandbox._focusTimer[field], journal,
-      field + ' must remain available in memory for explicit recovery');
-    assert.equal(harness.sandbox.storageRecoveryRequired, true);
-  }
+  assert.equal(await harness.run(), false, field + ' must block Reset');
+  const after = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  assert.deepEqual(after, before, field + ' must not change any durable key');
+  assert.deepEqual(harness.removeCalls, [], field + ' must not begin Reset deletions');
+  assert.equal(harness.values.has(harness.keys.resetInProgress), false);
+  assert.equal(harness.sandbox._focusTimer[field], journal,
+    field + ' must remain available in memory for explicit recovery');
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
 });
 
 test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
