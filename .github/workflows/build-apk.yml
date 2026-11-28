@@ -3,7 +3,9 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/v2.9.0-stability, codex/v2.9.1-stability]
+    branches: [main, codex/v2.9.0-stability, codex/v2.9.1-stability, codex/v2.9.1-stopwatch-integrity-fix, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-v1, codex/pending-focus-v2-writer-unification]
+  pull_request:
+    branches: [codex/v2.9.1-stability, codex/pomodoro-storage-gates-pwa-integration, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-fix-v1]
 
 permissions:
   contents: read
@@ -14,6 +16,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify checked-out source SHA
+        run: |
+          EXPECTED_SHA="${{ github.sha }}"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Verified source SHA: $ACTUAL_SHA"
+          echo "Expected source SHA: $EXPECTED_SHA"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -54,6 +65,9 @@ jobs:
 
       - name: Add Android platform
         run: npx cap add android
+
+      - name: Configure native stopwatch clock and foreground service
+        run: python3 scripts/configure-android-stopwatch.py
 
       - name: Align Android version with app sources
         run: python3 scripts/configure-android-version.py
@@ -98,6 +112,10 @@ jobs:
           grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
           grep -q "android.permission.RECEIVE_BOOT_COMPLETED" <<< "$PERMISSIONS"
           grep -q "android.permission.WAKE_LOCK" <<< "$PERMISSIONS"
+          grep -q "android.permission.FOREGROUND_SERVICE" <<< "$PERMISSIONS"
+          grep -q "android.permission.FOREGROUND_SERVICE_SPECIAL_USE" <<< "$PERMISSIONS"
+          grep -q 'android:foregroundServiceType="specialUse"' android/app/src/main/AndroidManifest.xml
+          grep -q "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android/app/src/main/AndroidManifest.xml
 
       - name: Upload APK
         uses: actions/upload-artifact@v7.0.2

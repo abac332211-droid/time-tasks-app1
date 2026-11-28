@@ -17,7 +17,11 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  if (name === '_isTaskStorageLockHeld') return match[0];
+  return [
+    'function _isTaskStorageLockHeld() { return true; }',
+    match[0]
+  ].join('\n');
 }
 
 const baseStart = 1_700_000_000_000;
@@ -36,11 +40,18 @@ function validSession(overrides = {}) {
   };
 }
 
-function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult = true } = {}) {
+function createLogHarness({
+  sessionStartAt = baseStart,
+  initial = [],
+  saveResult = true,
+  maxSessions = 500
+} = {}) {
   let sessions = initial.slice();
   let saveCalls = 0;
   const toasts = [];
   const sandbox = {
+    FOCUS_MAX_SESSIONS: maxSessions,
+    _stopwatchTransactionLockDepth: 1,
     _focusTimer: {
       mode: 'stopwatch',
       phase: 'work',
@@ -52,7 +63,7 @@ function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult
     _loadSessions: () => sessions.slice(),
     _saveSessions(records) {
       saveCalls++;
-      if (!saveResult) return false;
+      if (!saveResult || !Array.isArray(records) || records.length > maxSessions) return false;
       sessions = records.slice();
       return true;
     },
@@ -63,6 +74,7 @@ function createLogHarness({ sessionStartAt = baseStart, initial = [], saveResult
   vm.runInNewContext(
     extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' +
     extractFunction('_logSession') + '\n' +
+    extractFunction('_matchingFocusSessionRecords') + '\n' +
     extractFunction('_sessionAlreadyLogged'),
     sandbox
   );
@@ -119,13 +131,14 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
     FOCUS_MAX_SESSIONS: 500,
     FOCUS_SESSIONS_KEY: 'focus-sessions',
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     _sessionsCache: [],
     _storageWriteAllowed: () => true,
     _writeSecondaryStorageVerified: () => { writes++; return true; },
     _storeRollingRecoveryBackup: () => true
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
+    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
     sandbox
   );
 
@@ -134,6 +147,28 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
   const inverted = validSession({ endedAt: new Date(baseStart - 1).toISOString() });
   assert.equal(sandbox._saveSessions([inverted]), false,
     'an end timestamp before its start must be rejected');
+  const overLimit = Array.from({ length: 501 }, (_, index) => validSession({ id: index + 1 }));
+  assert.equal(sandbox._saveSessions(overLimit), false,
+    'the low-level saver must keep rejecting arrays above the retention limit');
+  assert.equal(writes, 0);
+  assert.deepEqual(sandbox._sessionsCache, []);
+});
+
+test('session saver refuses to write without shared Web Lock ownership', () => {
+  let writes = 0;
+  const sandbox = {
+    FOCUS_MAX_SESSIONS: 500,
+    FOCUS_SESSIONS_KEY: 'focus-sessions',
+    _stopwatchTransactionLockDepth: 0,
+    _sessionsCache: [],
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified: () => { writes++; return true; },
+    _storeRollingRecoveryBackup: () => true,
+    console
+  };
+  sandbox._isTaskStorageLockHeld = () => false;
+  vm.runInNewContext(extractFunction('_saveSessions'), sandbox);
+  assert.equal(sandbox._saveSessions([validSession()]), false);
   assert.equal(writes, 0);
   assert.deepEqual(sandbox._sessionsCache, []);
 });
@@ -159,6 +194,78 @@ test('session logging is idempotent for an already saved session identity', () =
   assert.equal(h.sandbox._logSession('work', 60, true, baseStart + 60_000), true);
   assert.equal(h.sessions.length, 1);
   assert.equal(h.saveCalls, 0, 'duplicate recognition must not write a second record');
+});
+
+test('session logging retains all 499 existing sessions when adding the 500th', () => {
+  const initial = Array.from({ length: 499 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const sessionStartAt = baseStart + 499 * 120_000;
+  const h = createLogHarness({ sessionStartAt, initial });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), true);
+  assert.equal(h.sessions.length, 500);
+  assert.equal(h.sessions[0].id, 1, 'the oldest row remains while capacity is still available');
+  assert.equal(h.sessions[499].id, 500);
+  assert.equal(h.saveCalls, 1);
+});
+
+test('session logging evicts exactly the oldest row before adding session 501', () => {
+  const initial = Array.from({ length: 500 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const sessionStartAt = baseStart + 500 * 120_000;
+  const h = createLogHarness({ sessionStartAt, initial });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), true);
+  assert.equal(h.sessions.length, 500);
+  assert.equal(h.sessions[0].id, 2, 'only the oldest stored row is evicted');
+  assert.equal(h.sessions[499].id, 501, 'the new row receives an ID above the pre-trim maximum');
+  assert.equal(new Set(h.sessions.map(row => row.id)).size, 500);
+  assert.equal(h.sessions[499].startedAt, new Date(sessionStartAt).toISOString());
+  assert.equal(h.saveCalls, 1);
+});
+
+test('failed FIFO save leaves all 500 persisted sessions represented in the in-memory harness', () => {
+  const initial = Array.from({ length: 500 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const before = initial.map(row => ({ ...row }));
+  const h = createLogHarness({
+    sessionStartAt: baseStart + 500 * 120_000,
+    initial,
+    saveResult: false
+  });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), false);
+  assert.deepEqual(h.sessions, before, 'a failed write must not commit the evicted view');
+  assert.equal(h.saveCalls, 1);
+});
+
+test('duplicate session recognition at capacity does not rotate or write history', () => {
+  const sessionStartAt = baseStart + 500 * 120_000;
+  const initial = Array.from({ length: 500 }, (_, index) => validSession({
+    id: index + 1,
+    startedAt: index === 499
+      ? new Date(sessionStartAt).toISOString()
+      : new Date(baseStart + index * 120_000).toISOString(),
+    endedAt: index === 499
+      ? new Date(sessionStartAt + 60_000).toISOString()
+      : new Date(baseStart + index * 120_000 + 60_000).toISOString()
+  }));
+  const h = createLogHarness({ sessionStartAt, initial });
+
+  assert.equal(h.sandbox._logSession('work', 60, true), true);
+  assert.equal(h.sessions.length, 500);
+  assert.equal(h.sessions[0].id, 1);
+  assert.equal(h.sessions[499].id, 500);
+  assert.equal(h.saveCalls, 0, 'idempotent replay must not evict another historical row');
 });
 
 test('session logging rejects timestamps outside the JavaScript Date range without throwing', () => {

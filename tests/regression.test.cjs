@@ -21,7 +21,50 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  const source = match[0];
+  if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
+  const helpers = [];
+  if (name !== '_isClockAdjustedV2WorkSession'
+      && /\b_isClockAdjustedV2WorkSession\s*\(/.test(source)) {
+    helpers.push(extractFunction('_isFocusTaskCreditSchemaV2'));
+    helpers.push(extractFunction('_isClockAdjustedV2WorkSession'));
+  }
+  if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
+    helpers.push('function _isTaskStorageLockHeld() { return typeof _stopwatchTransactionLockDepth === "number" ? _stopwatchTransactionLockDepth > 0 : true; }');
+  }
+  if (/\b_withTaskStorageLock\s*\(/.test(source)) {
+    helpers.push('function _withTaskStorageLock(callback) { return typeof callback === "function" ? callback() : false; }');
+  }
+  if (/\bcomputeGap\s*\(/.test(source)) {
+    const computeGapHelper = appScript.match(
+      /function\s+computeGap\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(computeGapHelper, 'computeGap helper exists in index.html');
+    helpers.push(computeGapHelper[0]);
+  }
+  if (/\bgetTaskActualMinutes\s*\(/.test(source)) {
+    const actualMinutesHelper = appScript.match(
+      /function\s+getTaskActualMinutes\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(actualMinutesHelper, 'getTaskActualMinutes helper exists in index.html');
+    helpers.push(actualMinutesHelper[0]);
+  }
+  if (/\bcomputeTaskGapMetrics\s*\(/.test(source)) {
+    const computeGapHelper = appScript.match(
+      /function\s+computeGap\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    const actualMinutesHelper = appScript.match(
+      /function\s+getTaskActualMinutes\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    const gapMetricsHelper = appScript.match(
+      /function\s+computeTaskGapMetrics\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+    );
+    assert.ok(computeGapHelper, 'computeGap helper exists in index.html');
+    assert.ok(actualMinutesHelper, 'getTaskActualMinutes helper exists in index.html');
+    assert.ok(gapMetricsHelper, 'computeTaskGapMetrics helper exists in index.html');
+    helpers.push(computeGapHelper[0], actualMinutesHelper[0], gapMetricsHelper[0]);
+  }
+  return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
 test('inline application and service worker JavaScript parse', () => {
@@ -156,13 +199,14 @@ test('long background absence never synthesizes repeated focus and break session
   assert.equal(sandbox.promptCount, 1);
 });
 
-test('failed persistence of a pending background phase does not create a fake session', () => {
+test('failed persistence preserves the running Pomodoro and does not create a fake session', () => {
   const sandbox = timerSandbox(null, () => false);
   sandbox._catchUp(true);
   assert.equal(sandbox.savedSessions.length, 0);
-  assert.equal(sandbox._focusTimer.running, false);
-  assert.equal(sandbox._focusTimer.awaitingConfirmation, true);
-  assert.equal(sandbox._focusTimer.baseElapsed, 5 * 60);
+  assert.equal(sandbox._focusTimer.running, true,
+    'a failed durable pause must restore the prior running state');
+  assert.equal(sandbox._focusTimer.awaitingConfirmation, false);
+  assert.equal(sandbox._focusTimer.baseElapsed, 0);
   assert.equal(sandbox.promptCount, 0);
   assert.equal(sandbox.alertCount, 1);
 });
@@ -184,6 +228,88 @@ test('resume keeps the original sessionStartAt instead of drifting it forward', 
   assert.equal(typeof sandbox._focusTimer.startedAt, 'number');
 });
 
+test('task storage wrapper executes its mutation only while the shared Web Lock is held', async () => {
+  const events = [];
+  const sandbox = {
+    _stopwatchTransactionLockDepth: 0,
+    _taskStorageWriteInFlight: false,
+    navigator: {
+      locks: {
+        request(name, options, callback) {
+          assert.equal(name, 'timeTasksApp-stopwatch-transaction');
+          assert.equal(options.mode, 'exclusive');
+          return Promise.resolve().then(() => callback({ name }));
+        }
+      }
+    },
+    showToast() {}, showAlertModal() {}, console
+  };
+  vm.runInNewContext([
+    extractFunction('_isTaskStorageLockHeld'),
+    extractFunction('_withStopwatchTransactionLock'),
+    extractFunction('_withTaskStorageLock')
+  ].join('\n'), sandbox);
+  const result = await sandbox._withTaskStorageLock(() => {
+    events.push(sandbox._stopwatchTransactionLockDepth);
+    assert.equal(sandbox._isTaskStorageLockHeld(), true);
+    return true;
+  });
+  assert.equal(result, true);
+  assert.deepEqual(events, [1]);
+  assert.equal(sandbox._stopwatchTransactionLockDepth, 0);
+  assert.equal(sandbox._taskStorageWriteInFlight, false);
+});
+
+test('focus commit guard blocks saveData and side-storage writes before reading storage', () => {
+  let reads = 0, writes = 0;
+  const sandbox = {
+    storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
+    STORAGE_KEY: 'main',
+    IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
+    RESET_IN_PROGRESS_KEY: 'reset-in-progress',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
+    _isFocusCommitBlocked: () => true,
+    localStorage: { getItem() { reads++; return null; }, setItem() { writes++; } },
+    showAlertModal() {}, showToast() {}, console
+  };
+  vm.runInNewContext([
+    extractFunction('saveData'),
+    extractFunction('_storageWriteAllowed'),
+    extractFunction('persistDailyLog')
+  ].join('\n'), sandbox);
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(reads, 0, 'saveData must block before reading recovery markers or data');
+  assert.equal(sandbox._storageWriteAllowed(), false);
+  assert.equal(reads, 0, '_storageWriteAllowed must stop before side-storage reads');
+  assert.equal(sandbox.persistDailyLog({ date: '2026-11-23' }), false);
+  assert.equal(reads, 0, 'daily log persistence must stop before reading main storage');
+  assert.equal(writes, 0);
+});
+
+test('saveData refuses writes before storage access when the shared Web Lock is not held', () => {
+  let reads = 0, writes = 0;
+  const alerts = [];
+  const sandbox = {
+    storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 0,
+    STORAGE_KEY: 'main',
+    showAlertModal: (...args) => alerts.push(args),
+    showToast() {},
+    localStorage: { getItem() { reads++; return null; }, setItem() { writes++; } },
+    console
+  };
+  vm.runInNewContext(
+    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('saveData'),
+    sandbox
+  );
+  assert.equal(sandbox.saveData(), false);
+  assert.equal(reads, 0);
+  assert.equal(writes, 0);
+  assert.equal(alerts.length, 1);
+});
+
 test('saveData refuses to overwrite a malformed main record', () => {
   const original = '{broken-json';
   let stored = original;
@@ -191,6 +317,7 @@ test('saveData refuses to overwrite a malformed main record', () => {
   const alerts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     CURRENT_SCHEMA_VERSION: 2,
     _mainStorageBaselineReady: false,
@@ -219,6 +346,7 @@ test('saveData refuses writes while an import recovery marker remains', () => {
   const alerts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
     localStorage: {
@@ -242,6 +370,7 @@ test('saveData refuses a stale tab when the main record changed after its baseli
   const alerts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     _mainStorageBaselineReady: true,
     _mainStorageBaselineRaw: '{"schemaVersion":2,"tasks":[{"id":1}],"dailyLogs":[]}',
@@ -274,6 +403,7 @@ function createSaveDataHarness({ transformWrite, rollingFailure } = {}) {
   const baselineUpdates = [], reminderSyncs = [], alerts = [], toasts = [];
   const sandbox = {
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     STORAGE_KEY: 'main',
     CURRENT_SCHEMA_VERSION: 2,
     APP_VERSION: '2.9.0',
@@ -386,6 +516,7 @@ test('mental-item conversion locks storage if its committed main record cannot b
     STORAGE_KEY: 'main',
     MENTAL_INBOX_KEY: 'inbox',
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     appSettings: { lastTaskId: 0 },
     tasks,
     Date,
@@ -478,7 +609,7 @@ test('V2 and backup recurring-date metadata share strict bounds and key validati
   assert.equal(validate(tooMany), false);
 });
 
-test('recurring task refresh uses an app-lifetime interval independent of the focus timer', () => {
+test('recurring task refresh uses an app-lifetime interval independent of the focus timer', async () => {
   let callback = null, delay = null, generated = 0, rendered = 0, notified = 0;
   const sandbox = {
     _recurringTaskRefreshInterval: null,
@@ -495,6 +626,7 @@ test('recurring task refresh uses an app-lifetime interval independent of the fo
   assert.equal(delay, 60 * 1000);
   assert.equal(typeof callback, 'function');
   callback();
+  await Promise.resolve();
   assert.equal(generated, 1);
   assert.equal(rendered, 1);
   assert.equal(notified, 1);
@@ -559,7 +691,7 @@ test('backup validator accepts legacy partial for import healing', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateBackup'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateBackup'), sandbox);
   const backup = { backupFormatVersion: 1, schemaVersion: 2, data: {
     tasks: [{ id: 1, name: 'قديم', status: 'partial', type: 'معرفية', expected: 20, actual: null, plannedDate: '2026-11-04', plannedTime: '', completedAt: null, createdAt: 1 }],
     dailyLogs: []
@@ -777,6 +909,253 @@ test('weekly report separates planned cohort from actual completion dates', () =
 });
 
 
+test('weekly and task-type gap metrics use measured seconds consistently', () => {
+  const task = {
+    id: 9101,
+    type: 'معرفية',
+    status: 'pending',
+    expected: 3,
+    actual: 2,
+    actualSeconds: 139,
+    plannedDate: '2026-11-27',
+    completedAt: null,
+    recurrence: null
+  };
+  const sandbox = {
+    tasks: [task],
+    STORAGE_KEY: 'test-storage',
+    VALID_ENERGY: [],
+    getLast7OperationalDays: () => ['2026-11-27'],
+    localStorage: { getItem: () => JSON.stringify({ dailyLogs: [] }) },
+    isTaskCancelled: (row) => row.status === 'cancelled',
+    isTaskDone: (row) => row.status === 'done',
+    _operationalDateFromIso: (value) => String(value).slice(0, 10)
+  };
+
+  vm.runInNewContext([
+    extractFunction('computeWeeklyReport'),
+    extractFunction('computeTypeAnalysis')
+  ].join('\n'), sandbox);
+
+  const weekly = sandbox.computeWeeklyReport();
+  const byType = sandbox.computeTypeAnalysis('معرفية');
+  const direct = sandbox.computeTaskGapMetrics(sandbox.tasks);
+  const expectedGap = (139 / 60 - 3) / 3;
+
+  for (const metrics of [weekly, byType, direct]) {
+    assert.equal(metrics.gapCount, 1);
+    for (const key of ['avgGap', 'aggGap', 'medianGap']) {
+      assert.ok(Math.abs(metrics[key] - expectedGap) < 1e-12,
+        key + ' must use 139 measured seconds rather than the floored 2-minute legacy value');
+    }
+  }
+  assert.equal(Math.round(weekly.avgGap * 100), -23);
+  assert.equal(Math.round(byType.avgGap * 100), -23);
+  assert.equal(Math.round(direct.avgGap * 100), -23);
+  assert.equal(Math.round(((task.actual - task.expected) / task.expected) * 100), -33,
+    'the regression fixture must distinguish stale legacy minutes from measured seconds');
+
+  const element = () => ({
+    innerHTML: '',
+    textContent: '',
+    style: {},
+    classList: { add: () => {}, remove: () => {} },
+    closest: () => ({ classList: { add: () => {}, remove: () => {} } })
+  });
+  const ids = [
+    'weeklyReport', 'statsTotal', 'statsDone', 'statsPending', 'statsLate',
+    'statsCancelled', 'homeTotal', 'homeDone', 'homePending', 'homeLate',
+    'homePercent', 'homeBar', 'typeStats', 'typeGapAnalysis'
+  ];
+  const elements = Object.fromEntries(ids.map(id => [id, element()]));
+  sandbox.document = { getElementById: id => elements[id] || null };
+  sandbox.lastPct = 0;
+  sandbox.todayStr = () => '2026-11-27';
+  sandbox.isLate = () => false;
+  sandbox.setTimeout = () => {};
+  sandbox.gapText = value => Math.round(value * 100) + '%';
+  sandbox.gapClass = () => '';
+  sandbox.gapMetricClass = () => '';
+  sandbox.sampleWarning = () => ({ cls: 'warn', text: 'sample' });
+  sandbox.computeRecommendation = () => ({ type: 'info', text: '' });
+  vm.runInNewContext([
+    extractFunction('renderWeeklyReport'),
+    extractFunction('renderStats'),
+    extractFunction('_formatFocusSessionDuration'),
+    extractFunction('renderTypeGapAnalysis')
+  ].join('\n'), sandbox);
+
+  sandbox.renderWeeklyReport();
+  sandbox.renderStats();
+  sandbox.renderTypeGapAnalysis();
+  assert.equal((elements.weeklyReport.innerHTML.match(/-23%/g) || []).length, 3,
+    'weekly card average, aggregate, and median must render -23%');
+  assert.match(elements.typeStats.innerHTML, /-23%/,
+    'the type summary card must render -23%');
+  assert.equal((elements.typeGapAnalysis.innerHTML.match(/-23%/g) || []).length, 3,
+    'type-analysis average, aggregate, and median must render -23%');
+});
+
+test('type gap analysis separates measured task totals from the standardized projection', () => {
+  const task = {
+    id: 9201,
+    type: 'معرفية',
+    status: 'pending',
+    expected: 5,
+    actual: 2,
+    actualSeconds: 139,
+    plannedDate: '2026-11-27',
+    completedAt: null,
+    recurrence: null
+  };
+  const element = { innerHTML: '' };
+  const sandbox = {
+    tasks: [task],
+    document: { getElementById: id => id === 'typeGapAnalysis' ? element : null },
+    isTaskCancelled: row => row.status === 'cancelled',
+    isTaskDone: row => row.status === 'done',
+    gapText: value => Math.round(value * 100) + '%',
+    gapMetricClass: () => '',
+    sampleWarning: () => ({ cls: 'warn', text: 'sample' }),
+    renderTaskCreditDisclosure: () => ''
+  };
+
+  vm.runInNewContext([
+    extractFunction('computeGap'),
+    extractFunction('getTaskActualMinutes'),
+    extractFunction('computeTaskGapMetrics'),
+    extractFunction('computeTypeAnalysis'),
+    extractFunction('_formatFocusSessionDuration'),
+    extractFunction('renderTypeGapAnalysis')
+  ].join('\n'), sandbox);
+
+  sandbox.renderTypeGapAnalysis();
+
+  assert.match(element.innerHTML,
+    /5 د تقدير ← 2 د 19 ث فعلي/,
+    'the type card must show actual measured task totals, including leftover seconds');
+  assert.match(element.innerHTML, /مثال قياسي/,
+    'the 60-minute line must be explicitly identified as a standard example');
+  assert.match(element.innerHTML, /ليس وقت مهامك الفعلي/,
+    'the standard example must be distinguished from actual task time');
+  assert.match(element.innerHTML, /تقدير 60 دقيقة ← المتوقع 28 دقيقة/,
+    'the standardized projection must show the expected value derived from the type factor');
+  assert.doesNotMatch(element.innerHTML, /60 دقيقة تقدير ←/,
+    'the old ambiguous label must no longer appear');
+});
+
+test('credit provenance disclosure separates migrated opening balance from later focus-session credits', () => {
+  const sandbox = {};
+  vm.runInNewContext([
+    extractFunction('_validateTaskCreditFields'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_persistedTaskCreditStateMatches'),
+    extractFunction('computeTaskCreditDisclosure')
+  ].join('\n'), sandbox);
+
+  const ids = [
+    '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000002',
+    '00000000-0000-4000-8000-000000000003'
+  ];
+  const createdAt = '2026-11-27T00:00:00.000Z';
+  const operations = [
+    {
+      recordVersion: 1, operationId: ids[0], kind: 'session', taskId: 44,
+      revision: 1, previousSeconds: 3648, targetSeconds: 3752,
+      source: 'measured', sessionId: ids[0], createdAt,
+      measuredSeconds: 104, creditedSeconds: 104
+    },
+    {
+      recordVersion: 1, operationId: ids[1], kind: 'session', taskId: 44,
+      revision: 2, previousSeconds: 3752, targetSeconds: 3840,
+      source: 'measured', sessionId: ids[1], createdAt,
+      measuredSeconds: 88, creditedSeconds: 88
+    }
+  ];
+  const task = {
+    id: 44, actual: 64, actualSeconds: 3840,
+    creditRevision: 2, creditSchemaVersion: 1,
+    lastCreditOperationId: ids[1]
+  };
+
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [Object.assign({}, task, { name: 'changed display-only field' })],
+    [Object.assign({}, task, { name: 'older display-only field' })]
+  ), true, 'unrelated task fields must not hide a verified credit disclosure');
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [Object.assign({}, task, { actualSeconds: 3839 })], [task]
+  ), false, 'a changed credit balance must suppress the disclosure');
+  assert.equal(sandbox._persistedTaskCreditStateMatches(
+    [task, task], [task]
+  ), false, 'duplicate task identities must fail closed');
+
+  const disclosure = sandbox.computeTaskCreditDisclosure([task], operations);
+  assert.equal(disclosure.available, true);
+  assert.equal(disclosure.legacyOpeningSeconds, 3648,
+    'the opening balance before the ledger is disclosed rather than attributed to the two sessions');
+  assert.equal(disclosure.legacyTaskCount, 1);
+  assert.equal(disclosure.sessionCreditedSeconds, 192,
+    '104 + 88 seconds are the only post-migration session credits in this fixture');
+  assert.equal(disclosure.manualAdjustmentNetSeconds, 0);
+
+  const manualOperation = {
+    recordVersion: 1, operationId: ids[2], kind: 'manual_adjustment', taskId: 44,
+    revision: 3, previousSeconds: 3840, targetSeconds: 3000,
+    source: 'manual_adjustment', sessionId: null, createdAt
+  };
+  const manuallyAdjustedTask = {
+    id: 44, actual: 50, actualSeconds: 3000,
+    creditRevision: 3, creditSchemaVersion: 1,
+    lastCreditOperationId: ids[2]
+  };
+  const adjusted = sandbox.computeTaskCreditDisclosure(
+    [manuallyAdjustedTask], operations.concat(manualOperation));
+  assert.equal(adjusted.available, true);
+  assert.equal(adjusted.legacyOpeningSeconds, 3648);
+  assert.equal(adjusted.sessionCreditedSeconds, 192);
+  assert.equal(adjusted.manualAdjustmentNetSeconds, -840,
+    'later manual adjustments are kept separate from the historical opening balance');
+
+  const legacyTask = {
+    id: 45, actual: 64, actualSeconds: 3840,
+    creditRevision: 0, creditSchemaVersion: 1,
+    lastCreditOperationId: null
+  };
+  const legacyOnly = sandbox.computeTaskCreditDisclosure([legacyTask], []);
+  assert.equal(legacyOnly.available, true);
+  assert.equal(legacyOnly.legacyOpeningSeconds, 3840,
+    'a migrated revision-zero balance is identified as pre-ledger, without inventing a source');
+
+  const incomplete = sandbox.computeTaskCreditDisclosure([task], [operations[1]]);
+  assert.equal(incomplete.available, false,
+    'an incomplete history must suppress the disclosure instead of reporting a misleading breakdown');
+
+  assert.match(extractFunction('renderWeeklyReport'), /renderTaskCreditDisclosure\(_weeklyDisclosureTasks\)/,
+    'the weekly report surfaces legacy opening-balance provenance');
+  assert.match(extractFunction('renderTypeGapAnalysis'), /renderTaskCreditDisclosure\(typeTasksForDisclosure\)/,
+    'the type report surfaces legacy opening-balance provenance');
+});
+
+test('focus-session commits refresh all task-gap views after the measured balance is saved', () => {
+  const commit = appScript.match(
+    /function\s+_commitPendingFocusSessionV2\s*\([^)]*\)\s*\{[\s\S]*?\n\}/
+  );
+  assert.ok(commit, '_commitPendingFocusSessionV2 exists');
+  for (const renderCall of [
+    'renderWeeklyReport',
+    'renderStats',
+    'renderTypeGapAnalysis'
+  ]) {
+    assert.match(commit[0], new RegExp(renderCall + '\\s*\\('),
+      renderCall + ' must refresh after a focus-session commit');
+  }
+  assert.match(extractFunction('renderStats'), /computeTaskGapMetrics\(subset\)/,
+    'the type summary must use the shared gap-metrics implementation');
+  assert.match(extractFunction('renderTypeGapAnalysis'), /computeTypeAnalysis\(tp\)/,
+    'the type analysis card must use the shared type calculation');
+});
+
 test('restored notebook records normalize imported IDs before inline event handlers use them', () => {
   const thoughtsSandbox = {
     THOUGHTS_KEY: 'thoughts',
@@ -836,6 +1215,7 @@ test('startup restores a valid snapshot when backup import was interrupted', () 
   let restored = null;
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: {
       getItem: (key) => store.has(key) ? store.get(key) : null,
@@ -860,6 +1240,7 @@ test('startup does not touch storage when no import is in progress', () => {
   let restoreCalled = false;
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: 'importing',
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: 'rollback',
     localStorage: { getItem: (key) => store.has(key) ? store.get(key) : null },
     _restoreStorageSnapshot: () => { restoreCalled = true; return true; },
@@ -877,6 +1258,7 @@ test('startup preserves an invalid rollback snapshot and blocks recovery', () =>
   const store = new Map([[markerKey, '1'], [backupKey, '{broken-json']]);
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: { getItem: (key) => store.has(key) ? store.get(key) : null },
     validateV2: () => true,
@@ -944,7 +1326,7 @@ test('stored schema rejects duplicate task IDs before normal app use', () => {
     isValidLocalDateTime: (value) => typeof value === 'string',
     validateDailyLog: () => true
   };
-  vm.runInNewContext(extractFunction('validateV2'), sandbox);
+  vm.runInNewContext(extractFunction('_validateTaskCreditFields') + '\n' + extractFunction('validateV2'), sandbox);
   const task = {
     id: 1, name: 'مهمة', status: 'pending', type: 'معرفية',
     expected: 30, actual: null, plannedDate: '2026-11-04',
@@ -1476,124 +1858,122 @@ test('task search ignores malformed optional tags and checklist data safely', ()
 });
 
 
-function transitionDialogHarness({ saveResults = [true, true], logResult = false, checkpointResult = true } = {}) {
+function transitionDialogHarness({
+  commitResult = true, checkpointResult = true, initiallyRunning = true, switchResult = true,
+  mode = 'stopwatch', phase = 'work', elapsed = 120
+} = {}) {
   const elements = Object.create(null);
   function element() {
-    return {
-      children: [],
-      classList: { add() {}, remove() {}, contains() { return false; } },
-      appendChild(child) { this.children.push(child); },
-      style: {},
-      innerHTML: '',
-      textContent: '',
-      focus() {}
-    };
+    return { children: [], classList: { add() {}, remove() {}, contains() { return false; } },
+      appendChild(child) { this.children.push(child); }, style: {}, innerHTML: '', textContent: '', focus() {} };
   }
   const document = {
     getElementById(id) { if (!elements[id]) elements[id] = element(); return elements[id]; },
-    createElement() { return element(); },
-    addEventListener() {},
-    removeEventListener() {},
-    querySelector() { return null; },
-    contains() { return true; }
+    createElement() { return element(); }, addEventListener() {}, removeEventListener() {},
+    querySelector() { return null; }, contains() { return true; }
   };
   const task = { id: 1, name: 'المهمة الحالية', actual: null };
-  const timer = { mode: 'stopwatch', phase: 'work', taskId: 1, running: true, baseElapsed: 0, startedAt: 1, sessionStartAt: 1 };
-  const alerts = [];
-  const toasts = [];
-  const checkpoints = [];
-  let saveCalls = 0, resetCalls = 0, switchCalls = 0, renderCalls = 0;
+  const timer = { mode, phase, taskId: 1, running: initiallyRunning,
+    baseElapsed: elapsed, startedAt: initiallyRunning ? 1000 : null, sessionStartAt: 1,
+    cyclePosition: 0, awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false };
+  const alerts = [], toasts = [], commits = [];
+  let freezeCalls = 0, switchCalls = 0, renderCalls = 0;
   const sandbox = {
-    _rollingRecoveryCheckpointHold: 0,
-    _acquireRollingRecoveryCheckpointHold(enabled) {
-      if (enabled) sandbox._rollingRecoveryCheckpointHold++;
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-        if (enabled) sandbox._rollingRecoveryCheckpointHold = Math.max(0, sandbox._rollingRecoveryCheckpointHold - 1);
-      };
-    },
-    _completeRollingRecoveryCheckpoint(reason) {
-      return sandbox._storeRollingRecoveryBackup(reason, 0);
-    },
-    _modalKeyHandler: null,
-    storageRecoveryRequired: false,
-    document,
-    tasks: [task, { id: 2, name: 'المهمة التالية' }],
-    _focusTimer: timer,
+    _modalKeyHandler: null, storageRecoveryRequired: false, document,
+    tasks: [task, { id: 2, name: 'المهمة التالية' }], _focusTimer: timer,
     _focusElapsedRemainderMs: 0,
-    _getElapsedSec: () => 120,
-    _getFocusTimerElapsedParts: () => ({ seconds: 120, remainderMs: sandbox._focusElapsedRemainderMs || 0 }),
-    _stopDisplayTick: () => {},
-    _saveFocusTimer: () => checkpointResult,
-    _renderFocusTimer: () => {},
-    _formatDuration: (sec) => String(sec),
-    escapeHTML: (value) => String(value),
-    showAlertModal: (...args) => alerts.push(args),
-    showToast: (value) => toasts.push(value),
-    _setupModalFocusTrap: () => () => {},
-    _sessionAlreadyLogged: () => false,
-    saveData() {
-      const result = saveResults[Math.min(saveCalls++, saveResults.length - 1)];
-      if (result && sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('main-save');
-      return result;
+    _freezeFocusTimerForDecision() {
+      freezeCalls++;
+      if (!checkpointResult) { alerts.push(['تعذر حفظ حالة المؤقت', 'لم يتم تأكيد التجميد.']); return null; }
+      timer.running = false; timer.startedAt = null;
+      return Object.freeze({ mode: timer.mode, phase: timer.phase, taskId: timer.taskId, running: false,
+        baseElapsed: timer.baseElapsed, elapsedRemainderMs: 0, startedAt: null,
+        cyclePosition: timer.cyclePosition, sessionStartAt: timer.sessionStartAt,
+        awaitingConfirmation: false, pendingPhaseEndedAt: null, clockAdjusted: false });
     },
-    _logSession() {
-      if (sandbox._rollingRecoveryCheckpointHold === 0) checkpoints.push('session-save');
-      return logResult;
+    _commitFocusTaskSession(params) {
+      commits.push(params);
+      if (!commitResult) return Promise.resolve(false);
+      if (typeof params.onCommitted === 'function' && params.onCommitted() !== true) return Promise.resolve(false);
+      return Promise.resolve(true);
     },
-    _storeRollingRecoveryBackup(reason) {
-      checkpoints.push(reason);
-      return checkpointResult;
+    _discardShortFocusSession(params) {
+      if (typeof params.onDiscarded === 'function' && params.onDiscarded() !== true) return Promise.resolve(false);
+      return Promise.resolve(true);
     },
-    _resetAfterSession: () => { resetCalls++; return true; },
-    closeModal: () => {},
-    renderAll: () => { renderCalls++; },
-    renderFocusSessionsCard: () => {},
-    _startDisplayTick: () => {},
-    addEventListener() {},
+    _renderFocusTimer() { renderCalls++; }, _formatDuration: String, escapeHTML: String,
+    showAlertModal(...args) { alerts.push(args); }, showToast(message) { toasts.push(message); },
+    _setupModalFocusTrap: () => () => {}, closeModal() {},
+    _startDisplayTick() {}, _saveFocusTimer: () => true, _anchorFocusTimerClock() {},
+    _stopDisplayTick() {}, renderFocusSessionsCard() {},
     console
   };
   vm.runInNewContext(extractFunction('_showSessionTransitionDialog'), sandbox);
-  sandbox._showSessionTransitionDialog(2, () => { switchCalls++; });
-  const footer = elements.modalFooter;
-  return {
-    sandbox, task, timer, alerts, toasts, footer, checkpoints,
-    counts: () => ({ saveCalls, resetCalls, switchCalls, renderCalls })
-  };
+  sandbox._showSessionTransitionDialog(2, () => { switchCalls++; return switchResult; });
+  return { sandbox, task, timer, alerts, toasts, commits, elements,
+    counts: () => ({ freezeCalls, switchCalls, renderCalls }) };
 }
 
-test('failed session logging rolls task.actual back even when its old value is null and keeps the session for retry', () => {
-  const harness = transitionDialogHarness({ saveResults: [true, true], logResult: false });
-  assert.equal(harness.footer.children.length, 3);
-  harness.footer.children[2].onclick();
-
-  assert.equal(harness.task.actual, null);
-  assert.equal(harness.timer.running, false);
-  assert.equal(harness.timer.baseElapsed, 120);
-  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
-  assert.match(harness.alerts[0][0], /تعذر تسجيل الجلسة/);
+test('transition save delegates a frozen snapshot and switches only after an explicit true callback', () => {
+  const h=transitionDialogHarness({switchResult:true});
+  assert.equal(h.elements.modalFooter.children.length,3);
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,1);
+  assert.equal(h.commits[0].minutesToAdd,2);
+  assert.equal(Object.isFrozen(h.commits[0].snapshot),true);
+  assert.equal(h.task.actual,null,'the UI dialog must not mutate task.actual outside the transaction engine');
+  assert.equal(h.counts().switchCalls,1);
 });
 
-test('failed session logging reports inconsistency if rollback persistence also fails', () => {
-  const harness = transitionDialogHarness({ saveResults: [true, false], logResult: false });
-  harness.footer.children[2].onclick();
-
-  assert.equal(harness.task.actual, null, 'the in-memory value is still restored');
-  assert.deepEqual(harness.counts(), { saveCalls: 2, resetCalls: 0, switchCalls: 0, renderCalls: 1 });
-  assert.match(harness.alerts[0][0], /فشل تسجيل الجلسة والتراجع/);
-  assert.equal(harness.sandbox.storageRecoveryRequired, true,
-    'normal writes must be blocked when task compensation failed');
-  assert.deepEqual(harness.checkpoints, [],
-    'the intermediate task write must not become a rolling recovery checkpoint');
+test('Pomodoro transition save requests exact measured-second credit', () => {
+  const h=transitionDialogHarness({mode:'pomodoro',phase:'work',elapsed:83});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,1);
+  assert.equal(h.commits[0].minutesToAdd,1,
+    'the legacy display-minute argument remains present but must not determine V2 credit');
+  assert.equal(h.commits[0].useMeasuredCredit,true,
+    'a linked Pomodoro transition must explicitly request measured-second credit');
+  assert.equal(h.commits[0].completed,true);
+  assert.equal(h.counts().switchCalls,1);
 });
 
-test('transition dialog is not opened when the initial paused-timer checkpoint fails', () => {
-  const harness = transitionDialogHarness({ checkpointResult: false });
-  assert.equal(harness.footer, undefined, 'the modal is not constructed when the initial checkpoint fails');
-  assert.equal(harness.alerts.length, 1);
-  assert.deepEqual(harness.counts(), { saveCalls: 0, resetCalls: 0, switchCalls: 0, renderCalls: 0 });
+test('switching tasks during a Pomodoro break records an interrupted, uncredited session', () => {
+  const h=transitionDialogHarness({mode:'pomodoro',phase:'short-break',elapsed:180});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.commits[0].taskId,null);
+  assert.equal(h.commits[0].allowUnlinkedTaskSnapshotLink,true);
+  assert.equal(h.commits[0].minutesToAdd,0);
+  assert.equal(h.commits[0].useMeasuredCredit,false);
+  assert.equal(h.commits[0].completed,false,
+    'leaving a break before its own completion must not mark it completed');
+  assert.equal(h.counts().switchCalls,1);
+});
+
+test('transition failure does not invoke the next-session callback', () => {
+  const h=transitionDialogHarness({commitResult:false,switchResult:true});
+  h.elements.modalFooter.children[2].onclick();
+  assert.equal(h.commits.length,1);
+  assert.equal(h.counts().switchCalls,0);
+  assert.equal(h.task.actual,null);
+});
+
+test('transition dialog is not opened when the initial frozen checkpoint fails', () => {
+  const h=transitionDialogHarness({checkpointResult:false});
+  assert.equal(h.elements.modalFooter,undefined);
+  assert.equal(h.alerts.length,1);
+  assert.equal(h.counts().freezeCalls,1);
+});
+
+test('cancel transition from an originally paused timer keeps it paused', () => {
+  const h=transitionDialogHarness({initiallyRunning:false});
+  assert.equal(h.timer.running,false);
+  h.elements.modalFooter.children[0].onclick();
+  assert.equal(h.timer.running,false);
+  assert.equal(h.timer.baseElapsed,120);
+  assert.equal(h.counts().switchCalls,0);
 });
 
 test('failed timer-transition checkpoint pauses safely and suppresses the success notification', () => {
@@ -1653,6 +2033,7 @@ function migrationHarness(mainRaw, archiveRaw = null, markerRaw = null, faults =
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     CURRENT_SCHEMA_VERSION: 2,
     APP_VERSION: 'test',
+    _stopwatchTransactionLockDepth: 1,
     Date,
     console,
     localStorage: {
@@ -1744,6 +2125,20 @@ test('corrupt current storage does not silently fall back to an old migration ar
   assert.equal(harness.values.get('migration-archive'), oldArchive);
 });
 
+test('migration refuses malformed non-null marker values without changing source bytes', () => {
+  const original = JSON.stringify({ tasks: [{ id: 7, name: 'V1 source' }], dailyLogs: [] });
+  for (const markerValue of ['', '2', 'unknown']) {
+    const harness = migrationHarness(original, null, markerValue);
+    const report = harness.run();
+    assert.equal(report.success, false, 'marker=' + JSON.stringify(markerValue));
+    assert.equal(report.error, 'invalid_or_unknown_migration_marker');
+    assert.equal(harness.values.get('main'), original);
+    assert.equal(harness.values.get('migration-in-progress'), markerValue);
+    assert.deepEqual(harness.writes, [],
+      'invalid marker values must fail before migration writes begin');
+  }
+});
+
 test('an explicit pending migration marker allows archive recovery and is cleared after verified V2 write', () => {
   const oldArchive = JSON.stringify({
     tasks: [{ id: 7, name: 'مهمة الترحيل' }],
@@ -1776,13 +2171,14 @@ function resetAllHarness(faults = {}) {
     migrationInProgress: 'migration-in-progress', resetInProgress: 'reset-in-progress',
     rollingBackupA: 'rolling-backup-a', rollingBackupB: 'rolling-backup-b',
     rollingRestoreInProgress: 'rolling-restore-in-progress',
+    rollingBackupGeneration: 'rolling-backup-generation',
     testFlag: 'test-flag', migrationArchive: 'migration-archive', testBackup: 'test-backup',
     thoughts: 'thoughts', projects: 'projects', focusTimer: 'focus-timer',
     focusSessions: 'focus-sessions', mentalInbox: 'mental-inbox',
     focusSettings: 'focus-settings', notifications: 'notifications'
   };
   const values = new Map(Object.entries(keys)
-    .filter(([name]) => name !== 'resetInProgress' && name !== 'rollingRestoreInProgress')
+    .filter(([name]) => !['resetInProgress', 'rollingRestoreInProgress', 'rollingBackupGeneration'].includes(name))
     .map(([, key]) => [key, 'old-value']));
   const removeCalls = [];
   const alerts = [];
@@ -1792,11 +2188,13 @@ function resetAllHarness(faults = {}) {
     STORAGE_KEY: keys.main,
     PRE_IMPORT_KEY: keys.preImport,
     IMPORT_IN_PROGRESS_KEY: keys.importInProgress,
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: keys.migrationInProgress,
     RESET_IN_PROGRESS_KEY: keys.resetInProgress,
     ROLLING_BACKUP_A_KEY: keys.rollingBackupA,
     ROLLING_BACKUP_B_KEY: keys.rollingBackupB,
     ROLLING_RESTORE_IN_PROGRESS_KEY: keys.rollingRestoreInProgress,
+    ROLLING_BACKUP_GENERATION_KEY: keys.rollingBackupGeneration,
     MIGRATION_ARCHIVE_KEY: keys.migrationArchive,
     BACKUP_KEY: keys.migrationArchive,
     TEST_FLAG_KEY: keys.testFlag,
@@ -1806,14 +2204,56 @@ function resetAllHarness(faults = {}) {
     FOCUS_TIMER_KEY: keys.focusTimer,
     FOCUS_SESSIONS_KEY: keys.focusSessions,
     MENTAL_INBOX_KEY: keys.mentalInbox,
+    FOCUS_SETTINGS_KEY: keys.focusSettings,
+    NOTIFICATIONS_KEY: keys.notifications,
     APP_VERSION: 'test',
     appSettings: { darkMode: false, themeMode: 'light' },
     tasks: [{ id: 99 }],
     createdByVersion: 'old',
     storageRecoveryRequired: false,
+    _hasPersistedPendingStopwatchTransaction: () => false,
+    _probeStartupStopwatchRecovery: () => ({
+      error: null,
+      pending: false,
+      expectedTx: null,
+      markerValues: {
+        reset: null, rollingRestore: null, import: null, migration: null
+      },
+      blockingMarkers: {
+        reset: false, rollingRestore: false, import: false, migration: false
+      },
+      timerRaw: null,
+      mainRaw: null,
+      bootPersistedGeneration: 0
+    }),
     _sessionsCache: [],
-    _focusTimer: {},
-    _awaySessionPromptOpen: false,
+    _focusTimer: {
+      mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 75,
+      startedAt: 1, cyclePosition: 2, taskId: 99, sessionStartAt: 1,
+      awaitingConfirmation: true, pendingPhaseEndedAt: 2,
+      clockAdjusted: true, pendingStopwatchTransaction: { id: 'pending' }
+    },
+    _focusElapsedRemainderMs: 500,
+    _focusTimerColdStartWasRunning: true,
+    _focusTimerSavedAtAtLoad: 1,
+    _focusTimerCheckpointAt: 1,
+    _awaySessionPromptOpen: true,
+    _secondaryStorageKeys: [
+      keys.projects, keys.thoughts, keys.mentalInbox, keys.focusSessions,
+      keys.focusTimer, keys.focusSettings, keys.notifications
+    ],
+    _secondaryStorageBaselines: Object.create(null),
+    _secondaryStorageConflicts: Object.create(null),
+    _mainStorageExternalChangeObserved: true,
+    _focusTimerExternalConflict: true,
+    _focusTimerConflictNoticeShown: true,
+    _rollingRecoveryBackupEpoch: 0,
+    _rollingRecoveryBackupPending: null,
+    _rollingRecoveryBackupStale: false,
+    _rollingRecoveryBackupLastFailure: null,
+    _resetInFlight: false,
+    _startupResetRecoveryInFlight: false,
+    _resetAllPendingPromise: null,
     buildEmptyV2: () => ({
       schemaVersion: 2, createdByVersion: 'test',
       settings: {}, tasks: [], dailyLogs: []
@@ -1838,11 +2278,23 @@ function resetAllHarness(faults = {}) {
       }
     },
     _setMainStorageBaseline: () => {},
+    _captureMainStorageBaseline: () => true,
+    _withStopwatchTransactionLock(callback) {
+      const sandbox = this;
+      sandbox._stopwatchTransactionLockDepth = (sandbox._stopwatchTransactionLockDepth || 0) + 1;
+      return Promise.resolve().then(callback).finally(() => {
+        sandbox._stopwatchTransactionLockDepth = Math.max(0, sandbox._stopwatchTransactionLockDepth - 1);
+      });
+    },
+    loadData: () => true,
+    _loadFocusTimer: () => {},
+    _loadFocusSettings: () => {},
     showConfirmModal(title, body, accept) { confirmations.push({ title, body }); accept(); },
     showAlertModal: (...args) => alerts.push(args),
     showToast: (message) => toasts.push(message),
     _invalidateProjectsCache: () => {},
     _stopDisplayTick: () => {},
+    _clearFocusTimerClock: () => {},
     _applyThemePreference: () => {},
     _queueAllTaskReminderSync: () => {},
     cancelEdit: () => {},
@@ -1850,52 +2302,43 @@ function resetAllHarness(faults = {}) {
     renderAll: () => {}
   };
   vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_resetSecondaryStorageTracking') + '\n'
+    extractFunction('_readPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_setPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_invalidateRollingRecoveryBackupRequests') + '\n'
+      + extractFunction('_withResetTransactionLock') + '\n'
+      + extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_resetSecondaryStorageTrackingAfterReset') + '\n'
       + extractFunction('_recoverInterruptedReset') + '\n'
+      + extractFunction('_executeResetAllTransaction') + '\n'
       + extractFunction('resetAll'),
     sandbox
   );
-  return { keys, values, removeCalls, alerts, toasts, confirmations, sandbox, run: () => sandbox.resetAll() };
+  return {
+    keys, values, removeCalls, alerts, toasts, confirmations, sandbox,
+    seedResetMarker() {
+      const main = JSON.stringify(sandbox.buildEmptyV2());
+      values.set(keys.resetInProgress, JSON.stringify({ version: 1, main, generation: 1 }));
+    },
+    recover: () => sandbox._recoverInterruptedReset(),
+    run: () => {
+      sandbox.resetAll();
+      return sandbox._resetAllPendingPromise;
+    }
+  };
 }
-
-
-
-test('resetAll clears stale secondary-storage conflict tracking after a successful reset', () => {
-  const harness = resetAllHarness();
-  harness.sandbox._secondaryStorageBaselines = Object.assign(Object.create(null), {
-    projects: 'old-projects',
-    thoughts: 'old-thoughts',
-    'focus-timer': 'old-focus-timer'
-  });
-  harness.sandbox._secondaryStorageConflicts = Object.assign(Object.create(null), {
-    projects: true,
-    thoughts: true,
-    'focus-timer': true
-  });
-  harness.sandbox._focusTimerExternalConflict = true;
-  harness.sandbox._focusTimerConflictNoticeShown = true;
-  harness.sandbox._invalidFocusSessionsNoticeShown = true;
-  harness.run();
-  assert.deepEqual(Object.keys(harness.sandbox._secondaryStorageBaselines), []);
-  assert.deepEqual(Object.keys(harness.sandbox._secondaryStorageConflicts), []);
-  assert.equal(harness.sandbox._focusTimerExternalConflict, false);
-  assert.equal(harness.sandbox._focusTimerConflictNoticeShown, false);
-  assert.equal(harness.sandbox._invalidFocusSessionsNoticeShown, false);
-});
-
-test('resetAll attempts every deletion and never reports full success when one key cannot be removed', () => {
+test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
-  harness.run();
+  harness.seedResetMarker();
+  assert.equal(harness.recover(), false);
 
   assert.ok(harness.removeCalls.includes('focus-timer'));
   assert.ok(harness.removeCalls.includes('focus-sessions'));
   assert.ok(harness.removeCalls.includes('mental-inbox'));
   assert.equal(harness.values.get('projects'), 'old-value');
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
-  assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
-  assert.ok(harness.alerts.some((args) => /لم يكتمل حذف كل البيانات/.test(String(args[0]))));
-  assert.match(harness.confirmations[0].body, /النسخ الداخلية/);
+  assert.notEqual(harness.values.get(harness.keys.resetInProgress), undefined,
+    'the durable reset marker must remain available for retry after a failed deletion');
+  assert.equal(harness.values.get(harness.keys.rollingBackupGeneration), '1');
 });
 
 
@@ -1911,7 +2354,8 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     notifications: 'notifications',
     backupA: 'rolling-backup-a',
     backupB: 'rolling-backup-b',
-    restoreMarker: 'rolling-restore-in-progress'
+    restoreMarker: 'rolling-restore-in-progress',
+    generation: 'rolling-backup-generation'
   };
   const values = new Map(Object.entries(initial));
   const writes = [];
@@ -1928,9 +2372,18 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     ROLLING_BACKUP_A_KEY: keys.backupA,
     ROLLING_BACKUP_B_KEY: keys.backupB,
     ROLLING_RESTORE_IN_PROGRESS_KEY: keys.restoreMarker,
+    ROLLING_BACKUP_GENERATION_KEY: keys.generation,
     Date,
     console,
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
+    _rollingRecoveryBackupEpoch: 0,
+    _rollingRecoveryBackupPending: null,
+    _rollingRecoveryCheckpointHold: 0,
+    _rollingRecoveryBackupStale: false,
+    _rollingRecoveryBackupLastFailure: null,
+    _rollingRecoveryBackupLastSuccessAt: null,
+    _isOptionalRollingRecoveryBackupFailure: () => false,
     validateV2(data) {
       return !!data && data.schemaVersion === 2
         && Array.isArray(data.tasks) && Array.isArray(data.dailyLogs);
@@ -1970,8 +2423,15 @@ function rollingRecoveryHarness(initial = {}, faults = {}) {
     }
   };
   vm.runInNewContext(
-    extractFunction('_parseRollingRecoveryBackup') + '\n'
+    extractFunction('_validateTaskCreditFields') + '\n'
+      + extractFunction('_validateCreditOperationRecord') + '\n'
+      + extractFunction('_validateCreditOperationLedger') + '\n'
+      + extractFunction('_creditOperationLedgerPreservesHistory') + '\n'
+      + extractFunction('_creditOperationSnapshotPreservesHistory') + '\n'
+      + extractFunction('_readPersistedRollingBackupGeneration') + '\n'
+      + extractFunction('_parseRollingRecoveryBackup') + '\n'
       + extractFunction('_getLatestRollingRecoveryBackup') + '\n'
+      + extractFunction('_storeRollingRecoveryBackupLocked') + '\n'
       + extractFunction('_storeRollingRecoveryBackup') + '\n'
       + extractFunction('_recoverInterruptedRollingRestore'),
     sandbox
@@ -1991,6 +2451,23 @@ function rollingState(prefix) {
     notifications: JSON.stringify({ enabled: true })
   };
 }
+
+test('locked rolling-recovery writer refuses direct calls without the Stopwatch lock', () => {
+  const harness = rollingRecoveryHarness(rollingState('current'));
+  harness.sandbox._stopwatchTransactionLockDepth = 0;
+  const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  assert.equal(harness.sandbox._storeRollingRecoveryBackupLocked('direct-call'), false);
+  assert.deepEqual(harness.writes, [],
+    'the locked writer must reject before publishing any backup slot');
+  assert.deepEqual(
+    Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0])),
+    before,
+    'the locked writer must preserve every stored byte when called without lock ownership'
+  );
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.sandbox._rollingRecoveryBackupLastFailure, 'lock_not_held');
+});
 
 test('rolling recovery checkpoints contain every raw storage group and rotate two verified generations', () => {
   const harness = rollingRecoveryHarness(rollingState('first'));
@@ -2067,6 +2544,7 @@ test('interrupted rolling-backup restoration is replayed from its durable slot m
   };
   harness.values.set(harness.keys.backupA, JSON.stringify(record));
   harness.values.set(harness.keys.restoreMarker, JSON.stringify({ version: 1, slot: 'a', sequence: 7 }));
+  harness.sandbox._stopwatchTransactionLockDepth = 1;
   assert.equal(harness.sandbox._recoverInterruptedRollingRestore(), true);
   assert.equal(harness.values.get('main'), rollingState('saved').main);
   assert.equal(harness.values.get('projects'), rollingState('saved').projects);
@@ -2095,15 +2573,107 @@ test('failed interrupted rolling-backup restoration preserves its marker and ver
   const rawMarker = JSON.stringify({ version: 1, slot: 'a', sequence: 3 });
   harness.values.set(harness.keys.backupA, rawRecord);
   harness.values.set(harness.keys.restoreMarker, rawMarker);
+  harness.sandbox._stopwatchTransactionLockDepth = 1;
   assert.equal(harness.sandbox._recoverInterruptedRollingRestore(), false);
   assert.equal(harness.values.get(harness.keys.backupA), rawRecord);
   assert.equal(harness.values.get(harness.keys.restoreMarker), rawMarker);
 });
 
-test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', () => {
+test('_recoverInterruptedResetWithLock keeps the lock through the post-recovery load callback', async () => {
+  const events = [];
+  let sandbox;
+  sandbox = {
+    navigator: { locks: { request() { throw new Error('the helper must delegate to the shared lock wrapper'); } } },
+    _stopwatchTransactionLockDepth: 0,
+    _withStopwatchTransactionLock(callback) {
+      sandbox._stopwatchTransactionLockDepth++;
+      let result;
+      try { result = callback(); }
+      finally { sandbox._stopwatchTransactionLockDepth--; }
+      return Promise.resolve(result);
+    },
+    _recoverInterruptedReset(options) {
+      events.push({ stage: 'recover', depth: sandbox._stopwatchTransactionLockDepth,
+        keepRecoveryLock: options.keepRecoveryLock });
+      return true;
+    }
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedResetWithLock'), sandbox);
+  const result = await sandbox._recoverInterruptedResetWithLock({ keepRecoveryLock: true }, function(recovered) {
+    events.push({ stage: 'afterRecovery', depth: sandbox._stopwatchTransactionLockDepth, recovered });
+    assert.equal(sandbox._stopwatchTransactionLockDepth, 1,
+      'loadData and reset verification must remain inside the same lock');
+    return true;
+  });
+  assert.equal(result, true);
+  assert.deepEqual(events.map(event => event.stage), ['recover', 'afterRecovery']);
+  assert.equal(events[0].depth, 1);
+  assert.equal(events[0].keepRecoveryLock, true);
+  assert.equal(events[1].depth, 1);
+  assert.equal(sandbox._stopwatchTransactionLockDepth, 0);
+});
+
+test('_recoverInterruptedResetWithLock does not run post-recovery load after a failed replay', async () => {
+  let callbackCalls = 0;
+  let sandbox;
+  sandbox = {
+    navigator: { locks: { request() { throw new Error('the helper must delegate to the shared lock wrapper'); } } },
+    _stopwatchTransactionLockDepth: 0,
+    _withStopwatchTransactionLock(callback) {
+      sandbox._stopwatchTransactionLockDepth++;
+      try { return Promise.resolve(callback()); }
+      finally { sandbox._stopwatchTransactionLockDepth--; }
+    },
+    _recoverInterruptedReset: () => false
+  };
+  vm.runInNewContext(extractFunction('_recoverInterruptedResetWithLock'), sandbox);
+  const result = await sandbox._recoverInterruptedResetWithLock({}, function() {
+    callbackCalls++;
+    return true;
+  });
+  assert.equal(result, false);
+  assert.equal(callbackCalls, 0);
+});
+
+
+test('resetAll refuses before publishing its marker when a Stopwatch journal or another recovery marker exists', async () => {
+  const scenarios = [
+    {
+      name: 'pending Stopwatch journal',
+      probe: {
+        error: null,
+        expectedTx: { id: 'pending-reset-conflict-0001' },
+        blockingMarkers: { reset: false, rollingRestore: false, import: false, migration: false }
+      }
+    },
+    {
+      name: 'existing collective restore marker',
+      probe: {
+        error: null,
+        expectedTx: null,
+        blockingMarkers: { reset: false, rollingRestore: true, import: false, migration: false }
+      }
+    }
+  ];
+  for (const scenario of scenarios) {
+    const harness = resetAllHarness();
+    harness.sandbox._probeStartupStopwatchRecovery = () => scenario.probe;
+    const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    assert.equal(await harness.run(), false, scenario.name + ' must block Reset');
+    const after = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    assert.deepEqual(after, before, scenario.name + ' must not alter any stored key');
+    assert.equal(harness.values.has(harness.keys.resetInProgress), false,
+      scenario.name + ' must not publish RESET_IN_PROGRESS_KEY');
+    assert.deepEqual(harness.removeCalls, [],
+      scenario.name + ' must not begin deleting collections');
+    assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  }
+});
+
+test('resetAll leaves a persistent marker on partial deletion and startup recovery completes the reset', async () => {
   const faults = { throwOnRemoveKey: 'projects' };
   const harness = resetAllHarness(faults);
-  harness.run();
+  assert.equal(await harness.run(), false);
   const markerRaw = harness.values.get(harness.keys.resetInProgress);
   assert.ok(markerRaw, 'reset intent survives after the first reset attempt');
   const marker = JSON.parse(markerRaw);
@@ -2112,12 +2682,7 @@ test('resetAll leaves a persistent marker on partial deletion and startup recove
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 
   faults.throwOnRemoveKey = null;
-  const recover = vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
-    harness.sandbox
-  );
-  assert.equal(recover(), true);
+  assert.equal(harness.recover(), true);
   assert.equal(harness.values.has('projects'), false);
   assert.equal(harness.values.has(harness.keys.focusTimer), false);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
@@ -2128,10 +2693,10 @@ test('resetAll leaves a persistent marker on partial deletion and startup recove
     'reset preserves the notification preference');
 });
 
-test('resetAll does not change data when its durable marker cannot be written and verified', () => {
+test('resetAll does not change data when its durable marker cannot be written and verified', async () => {
   const harness = resetAllHarness({ throwOnSetKey: 'reset-in-progress' });
   const originalMain = harness.values.get('main');
-  harness.run();
+  assert.equal(await harness.run(), false);
   assert.equal(harness.values.get('main'), originalMain);
   assert.equal(harness.removeCalls.length, 0);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
@@ -2142,12 +2707,7 @@ test('interrupted reset recovery rejects an invalid marker without deleting any 
   const harness = resetAllHarness();
   const original = new Map(harness.values);
   harness.values.set(harness.keys.resetInProgress, '{broken');
-  const recover = vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
-    harness.sandbox
-  );
-  assert.equal(recover(), false);
+  assert.equal(harness.recover(), false);
   assert.equal(harness.values.get(harness.keys.resetInProgress), '{broken');
   assert.equal(harness.values.get('projects'), original.get('projects'));
   assert.equal(harness.values.get('focus-timer'), original.get('focus-timer'));
@@ -2199,9 +2759,9 @@ test('rolling recovery uses the timestamp to select the newest equal-sequence sl
     'the selected latest slot remains intact when sequence and timestamp are tied');
 });
 
-test('resetAll keeps its durable marker and original records when writing the empty main record fails', () => {
+test('resetAll keeps its durable marker and original records when writing the empty main record fails', async () => {
   const harness = resetAllHarness({ throwOnSetKey: 'main' });
-  harness.run();
+  assert.equal(await harness.run(), false);
   assert.equal(harness.values.get('main'), 'old-value');
   assert.ok(harness.values.get(harness.keys.resetInProgress));
   assert.equal(harness.values.get('projects'), 'old-value');
@@ -2209,22 +2769,17 @@ test('resetAll keeps its durable marker and original records when writing the em
   assert.equal(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)), false);
 });
 
-test('reset recovery retains its marker when marker cleanup fails and can finish on retry', () => {
+test('reset recovery retains its marker when marker cleanup fails and can finish on retry', async () => {
   const faults = { throwOnRemoveKey: 'reset-in-progress' };
   const harness = resetAllHarness(faults);
-  harness.run();
+  assert.equal(await harness.run(), false);
   assert.ok(harness.values.get(harness.keys.resetInProgress));
   assert.equal(harness.values.get('main') !== 'old-value', true);
   assert.equal(harness.values.has('projects'), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 
   faults.throwOnRemoveKey = null;
-  const recover = vm.runInNewContext(
-    extractFunction('_resetStorageRemovalKeys') + '\n'
-      + extractFunction('_recoverInterruptedReset') + '\n_recoverInterruptedReset',
-    harness.sandbox
-  );
-  assert.equal(recover(), true);
+  assert.equal(harness.recover(), true);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
@@ -2240,6 +2795,7 @@ test('daily-log save checkpoints the updated main record into rolling recovery s
   const sandbox = {
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2294,6 +2850,7 @@ test('daily-log save refuses writes during migration, import, reset, and rolling
     const sandbox = {
       STORAGE_KEY: 'main',
       IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
       MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
       RESET_IN_PROGRESS_KEY: 'reset-in-progress',
       ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2334,6 +2891,7 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
   for (const markerKey of markerKeys) {
     const sandbox = {
       IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
       MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
       RESET_IN_PROGRESS_KEY: 'reset-in-progress',
       ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2346,6 +2904,7 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
 
   const readFailure = {
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2359,6 +2918,7 @@ test('storage-write guard blocks all in-progress operations and fails closed on 
   const staleBaseline = {
     STORAGE_KEY: 'main',
     IMPORT_IN_PROGRESS_KEY: 'import-in-progress',
+    _stopwatchTransactionLockDepth: 1,
     MIGRATION_IN_PROGRESS_KEY: 'migration-in-progress',
     RESET_IN_PROGRESS_KEY: 'reset-in-progress',
     ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-restore-in-progress',
@@ -2390,7 +2950,46 @@ test('rolling recovery refuses a mixed multi-collection snapshot when another ta
   assert.equal(projectReads, 2);
 });
 
-test('resetAll also removes timestamped corruption snapshots from every auxiliary collection', () => {
+test('resetAll resynchronizes secondary-storage baselines and clears stale conflicts after success', async () => {
+  const harness = resetAllHarness();
+  const secondaryKeys = harness.sandbox._secondaryStorageKeys;
+
+  for (const key of secondaryKeys) {
+    harness.sandbox._secondaryStorageBaselines[key] = 'stale:' + key;
+    harness.sandbox._secondaryStorageConflicts[key] = true;
+  }
+  harness.sandbox._mainStorageExternalChangeObserved = true;
+  harness.sandbox._focusTimerExternalConflict = true;
+  harness.sandbox._focusTimerConflictNoticeShown = true;
+  harness.sandbox._invalidFocusSessionsNoticeShown = true;
+
+  assert.equal(await harness.run(), true);
+
+  for (const key of secondaryKeys) {
+    assert.equal(
+      harness.sandbox._secondaryStorageBaselines[key],
+      harness.values.has(key) ? harness.values.get(key) : null,
+      'the new baseline must match the actual stored value for ' + key
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(harness.sandbox._secondaryStorageConflicts, key),
+      false,
+      'a successful read-back must clear the old conflict for ' + key
+    );
+  }
+
+  assert.equal(harness.sandbox._mainStorageExternalChangeObserved, false);
+  assert.equal(harness.sandbox._focusTimerExternalConflict, false);
+  assert.equal(harness.sandbox._focusTimerConflictNoticeShown, false);
+  assert.equal(harness.sandbox._invalidFocusSessionsNoticeShown, false);
+  assert.equal(harness.sandbox._focusTimer.running, false);
+  assert.equal(harness.sandbox._focusTimer.baseElapsed, 0);
+  assert.equal(harness.sandbox._focusTimer.pendingStopwatchTransaction, null);
+  assert.equal(harness.sandbox._focusElapsedRemainderMs, 0);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+});
+
+test('resetAll also removes timestamped corruption snapshots from every auxiliary collection', async () => {
   const harness = resetAllHarness();
   const corruptKeys = [
     'mental-inbox_corrupt_1700000000000',
@@ -2399,7 +2998,7 @@ test('resetAll also removes timestamped corruption snapshots from every auxiliar
   ];
   for (const key of corruptKeys) harness.values.set(key, 'preserved-corrupt-bytes');
 
-  harness.run();
+  assert.equal(await harness.run(), true);
 
   for (const key of corruptKeys) {
     assert.equal(harness.values.has(key), false, 'reset must remove hidden corrupt snapshot: ' + key);
@@ -2409,13 +3008,13 @@ test('resetAll also removes timestamped corruption snapshots from every auxiliar
   assert.ok(harness.toasts.some((message) => /تم حذف كل البيانات/.test(message)));
 });
 
-test('failed corruption-snapshot deletion keeps reset marker and startup retry removes the remaining snapshot', () => {
+test('failed corruption-snapshot deletion keeps reset marker and startup retry removes the remaining snapshot', async () => {
   const corruptKey = 'projects_corrupt_1700000000002';
   const faults = { throwOnRemoveKey: corruptKey };
   const harness = resetAllHarness(faults);
   harness.values.set(corruptKey, 'preserved-corrupt-bytes');
 
-  harness.run();
+  assert.equal(await harness.run(), false);
 
   assert.equal(harness.values.get(corruptKey), 'preserved-corrupt-bytes');
   assert.ok(harness.values.has(harness.keys.resetInProgress),
@@ -2423,7 +3022,7 @@ test('failed corruption-snapshot deletion keeps reset marker and startup retry r
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 
   faults.throwOnRemoveKey = null;
-  assert.equal(harness.sandbox._recoverInterruptedReset(), true);
+  assert.equal(harness.recover(), true);
   assert.equal(harness.values.has(corruptKey), false);
   assert.equal(harness.values.has(harness.keys.resetInProgress), false);
   assert.equal(harness.sandbox.storageRecoveryRequired, false);
@@ -2804,6 +3403,12 @@ test('loadData blocks migration and normal loading when interrupted import recov
   const sandbox = {
     tasks: [{ id: 77, name: 'must not be replaced' }],
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
+    _probeStartupStopwatchRecovery: () => ({
+      error: null,
+      expectedTx: null,
+      blockingMarkers: { reset: false, rollingRestore: false, import: false, migration: false }
+    }),
     _recoverInterruptedReset: () => true,
     _recoverInterruptedRollingRestore: () => true,
     _recoverInterruptedImport: () => false,
@@ -2821,6 +3426,107 @@ test('loadData blocks migration and normal loading when interrupted import recov
   assert.equal(sandbox.storageRecoveryRequired, true);
   assert.equal(sandbox.tasks[0].id, 77, 'in-memory task state must not be replaced by fallback data');
   assert.equal(alerts.length, 1);
+});
+
+
+test('loadData refuses a pending Stopwatch journal before any collective recovery or migration', () => {
+  const calls = [];
+  const writes = [];
+  const tx = { id: 'pending-load-data-tx-0001', taskId: 77 };
+  const sandbox = {
+    storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
+    _probeStartupStopwatchRecovery() {
+      calls.push('probe');
+      return {
+        error: null,
+        pending: true,
+        expectedTx: tx,
+        blockingMarkers: { reset: true, rollingRestore: false, import: false, migration: false }
+      };
+    },
+    _recoverInterruptedReset() { calls.push('reset'); return true; },
+    _recoverInterruptedRollingRestore() { calls.push('rolling'); return true; },
+    _recoverInterruptedImport() { calls.push('import'); return true; },
+    migrateV1ToV2() { calls.push('migration'); return { success: true }; },
+    localStorage: {
+      getItem(key) { calls.push('read:' + key); return null; },
+      setItem(key, value) { writes.push(['set', key, String(value)]); },
+      removeItem(key) { writes.push(['remove', key]); }
+    },
+    showAlertModal() {},
+    console
+  };
+  vm.runInNewContext(extractFunction('loadData'), sandbox);
+  assert.equal(sandbox.loadData(), false);
+  assert.deepEqual(calls, ['probe'],
+    'the read-only journal/marker probe must be the first and only recovery step');
+  assert.deepEqual(writes, [],
+    'loadData must not replay a collective restore or migration while the journal exists');
+  assert.equal(sandbox.storageRecoveryRequired, true);
+});
+
+test('direct collective restore entry points refuse to overwrite a pending Stopwatch journal', () => {
+  const cases = [
+    {
+      name: '_restoreStorageSnapshot',
+      source: extractFunction('_restoreStorageSnapshot'),
+      snapshot: {
+        main: null, focusSessions: null, focusTimer: null, mentalInbox: null,
+        thoughts: null, projects: null, focusSettings: null, notifications: null
+      },
+      marker: null
+    },
+    {
+      name: '_recoverInterruptedReset',
+      source: extractFunction('_recoverInterruptedReset'),
+      snapshot: null,
+      marker: ['reset-key', JSON.stringify({ version: 1, main: '{}' })]
+    },
+    {
+      name: '_recoverInterruptedRollingRestore',
+      source: extractFunction('_recoverInterruptedRollingRestore'),
+      snapshot: null,
+      marker: ['rolling-key', '{"version":1,"slot":"a","sequence":1}']
+    },
+    {
+      name: '_recoverInterruptedImport',
+      source: extractFunction('_recoverInterruptedImport'),
+      snapshot: null,
+      marker: ['import-key', '1']
+    }
+  ];
+  for (const entry of cases) {
+    const writes = [];
+    const values = new Map(entry.marker ? [entry.marker] : []);
+    const sandbox = {
+      _stopwatchTransactionLockDepth: 1,
+      storageRecoveryRequired: false,
+      RESET_IN_PROGRESS_KEY: 'reset-key',
+      ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-key',
+      IMPORT_IN_PROGRESS_KEY: 'import-key',
+      _hasPersistedPendingStopwatchTransaction: () => true,
+      localStorage: {
+        getItem(key) { return values.has(key) ? values.get(key) : null; },
+        setItem(key, value) { writes.push(['set', key, String(value)]); values.set(key, String(value)); },
+        removeItem(key) { writes.push(['remove', key]); values.delete(key); }
+      },
+      console
+    };
+    if (entry.name === '_restoreStorageSnapshot') {
+      sandbox._setMainStorageBaseline = () => {};
+      sandbox._invalidateProjectsCache = () => {};
+    }
+    vm.runInNewContext(entry.source, sandbox);
+    const result = entry.name === '_restoreStorageSnapshot'
+      ? sandbox._restoreStorageSnapshot(entry.snapshot)
+      : sandbox[entry.name]();
+    assert.equal(result, false, entry.name + ' must refuse the transaction conflict');
+    assert.deepEqual(writes, [], entry.name + ' must refuse before its first write');
+    assert.equal(sandbox.storageRecoveryRequired, true,
+      entry.name + ' must preserve the recovery-required state');
+    if (entry.marker) assert.equal(values.get(entry.marker[0]), entry.marker[1]);
+  }
 });
 
 test('interrupted import keeps both control keys when recovery-marker deletion fails', () => {
@@ -2842,6 +3548,7 @@ test('interrupted import keeps both control keys when recovery-marker deletion f
   ]);
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
@@ -2878,6 +3585,7 @@ test('interrupted import treats only PRE_IMPORT cleanup failure as retained clea
   ]);
   const sandbox = {
     IMPORT_IN_PROGRESS_KEY: markerKey,
+    _stopwatchTransactionLockDepth: 1,
     PRE_IMPORT_KEY: backupKey,
     localStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
@@ -2895,16 +3603,6 @@ test('interrupted import treats only PRE_IMPORT cleanup failure as retained clea
   assert.equal(values.has(markerKey), false, 'recovery marker must be cleared');
   assert.equal(values.get(backupKey), JSON.stringify(previous),
     'the inert snapshot is retained for manual cleanup rather than replayed');
-});
-
-
-test('successful focus-session transaction checkpoints only after task and session writes complete', () => {
-  const harness = transitionDialogHarness({ saveResults: [true], logResult: true });
-  harness.footer.children[2].onclick();
-
-  assert.deepEqual(harness.checkpoints, ['focus-session-transition-commit']);
-  assert.equal(harness.sandbox._rollingRecoveryCheckpointHold, 0);
-  assert.equal(harness.sandbox.storageRecoveryRequired, false);
 });
 
 
@@ -2976,10 +3674,12 @@ test('V2 validation rejects malformed lastRecurringDates before normal storage u
 
 test('all reviewed modal openers remove the previous shared keydown handler before registering', () => {
   for (const name of ['openSOSModal', 'openShutdownModal', '_showStopwatchSaveDialog', 'finishTimer', '_showSessionTransitionDialog']) {
-    const body = extractFunction(name);
+    const body = name === 'finishTimer'
+      ? extractFunction('finishTimer') + '\\n' + extractFunction('_continueFocusTimerFinish')
+      : extractFunction(name);
     assert.match(body,
       /if \(_modalKeyHandler\) \{\s*document\.removeEventListener\(['"]keydown['"],\s*_modalKeyHandler\);\s*\}\s*_modalKeyHandler\s*=\s*function/,
-      name + ' removes the previously registered handler');
+      name + ' or its delegated dialog renderer removes the previously registered handler');
   }
 });
 
@@ -3047,7 +3747,7 @@ test('failed timer start save restores the exact prior stopped state', () => {
   assert.match(alerts[0][0], /تشغيل المؤقت/);
 });
 
-test('recurring task refresh is page-lifetime, visible-only, minute-based, and idempotently installed', () => {
+test('recurring task refresh is page-lifetime, visible-only, minute-based, and idempotently installed', async () => {
   let tick = null, delay = null, intervalCreates = 0, generated = 0, rendered = 0, toasted = 0;
   const sandbox = {
     _recurringTaskRefreshInterval: null,
@@ -3068,6 +3768,7 @@ test('recurring task refresh is page-lifetime, visible-only, minute-based, and i
   assert.equal(generated, 0, 'hidden tabs do not run the periodic task generator');
   sandbox.document.visibilityState = 'visible';
   tick();
+  await Promise.resolve();
   assert.equal(generated, 1);
   assert.equal(rendered, 1);
   assert.equal(toasted, 1);

@@ -356,29 +356,407 @@
 ### الخطوة التالية
 إجراء الاختبار اليدوي الموثق على جهاز Android فعلي ومتصفح فعلي، وتسجيل الطراز وإصدار Android ونتائج حالات Doze/الإشعارات/الاستعادة/التباين. بعد توفر الدليل، يُطلب اعتماد مستقل جديد على الرأس الناتج قبل أي تغيير في رقم الإصدار أو تشغيل Release الموقّع.
 
+
 ---
 
-## إصلاح P0 — تنظيف حالة تتبع التخزين بعد resetAll — 25 نوفمبر 2026
+## معالجة مراجعة PR #10 — 23 نوفمبر 2026
 
-### الخطوة المنفذة
-أضيفت دالة ضيقة باسم `_resetSecondaryStorageTracking()`، ويُستدعى تنفيذها بعد نجاح `resetAll()` فقط. الدالة تصفر baseline والتعارضات وحالة تعارض المؤقت وإشعارات التعارض القديمة، حتى لا يمنع reset ناجح الحفظ اللاحق في الجلسة نفسها.
+### المرجع ونطاق التنفيذ
+- المرجع السابق: `1d703d49f615a7c1e5a0e4428d65b3c32325cc80`.
+- فرع الإصلاح: `codex/v2.9.1-stopwatch-integrity-fix`، وPR #10 يبقى مفتوحًا كمسودة.
+- لم تُجرَ أي تغييرات على `main`، ولم يُدمج PR #10 أو PR #6، ولم يتغير رقم الإصدار أو يُنشأ Release.
 
-### الملفات المتغيرة
-- `index.html`: إضافة helper صغير واستدعاؤه بعد نجاح الحذف.
-- `tests/regression.test.cjs`: اختبار انحدار يثبت تصفير baseline/conflicts/flags بعد reset ناجح.
+### المشكلة والإصلاح
+- المشكلة: كان `_logSession(..., tx.id)` يقبل سجل جلسة مطابقًا في الهوية والمدة بلا `transactionId`، ثم يضيف إليه معرّف المعاملة؛ هذا تبنٍّ بأثر رجعي لا يثبت أن الجلسة نتجت عن المعاملة.
+- أزيل مسار إضافة معرّف المعاملة إلى سجل Legacy. إذا تطابق سجل بلا هوية معاملة مع جلسة معاملة مطلوبة، يرفض التسجيل دون تعديل السجل.
+- أضيف فحص مبكر في `_recoverPendingStopwatchSave()` قبل أي تغيير على المهمة: أي سجل Legacy يطابق هوية المهمة والبداية والنمط والمرحلة يوقف الاسترداد بأمان. تبقى قيمة `task.actual` كما هي، ويبقى journal والمؤقت دون تصفير، ويُطلب تدخل يدوي.
+- عُدّل `_withStopwatchTransactionLock()` إلى مسار `finally` واحد يخفض عمق الملكية بعد نجاح callback أو رميه أو رفض Promise، قبل أن يتابع طلب القفل التالي.
 
-### الاختبارات والتحقق
-- لم تُغيّر سياسة الفشل الجزئي: عند عدم اكتمال الحذف تبقى حالة الاسترداد والحظر قائمة.
-- تم فحص وجود التغييرين على رأس الفرع بعد الكتابة؛ رأس الفرع الحالي: `b7d2438365d2c1b6b14487f59d250a96c2f61284`.
-- لم يُسجّل نجاح CI بعد لهذا الرأس؛ يجب ربط نتائج التشغيل بالـSHA نفسه.
+### اختبارات الانحدار المضافة
+- Legacy مطابق و`task.actual === previousActual`: يجب أن تبقى المهمة بلا marker، والسجل القديم كما هو، والـjournal محفوظًا، والمؤقت 125 ثانية دون تصفير، والنتيجة فشل آمن.
+- Legacy مطابق و`task.actual === targetActual` مع marker مطابق على المهمة: يحافظ على القيمة الصحيحة دون زيادة أو تراجع، ولا يتبنى الجلسة القديمة، ويبقي journal والمؤقت.
+- جلسة ذات `transactionId` الصحيح وتفاصيل مطابقة: يستكمل الاسترداد ويصفر المؤقت ويمسح journal بصورة طبيعية.
+- Web Lock: اختبار مستقل لرمي استثناء متزامن وآخر لرفض Promise؛ في كليهما تنتظر نافذة ثانية ثم تحصل على القفل، ويثبت الاختبار أن عمق ملكية النافذة السابقة عاد إلى صفر.
+- نتائج هذه الاختبارات لا تُسجل قبل تشغيل CI على SHA النهائي؛ تُستكمل أدناه بعد ظهور تشغيلات GitHub Actions.
 
-### المراجعة والعوائق
-- لا توجد مراجعة مستقلة أو موافقة `APPROVED` على هذا الرأس حتى الآن.
-- لا يزال اختبار Android الفعلي وRelease الموقّع وحماية `main` خارج نطاق التنفيذ المتاح.
+### نتائج التحقق
+- لم يُجرَ اختبار محلي في بيئة المحادثة؛ سيُعتمد على GitHub Actions لإثبات مجموعة الاختبارات كاملة واختبارات Chromium متعددة النوافذ.
+- Android Debug CI لا يثبت تشغيل Android WebView ميدانيًا، ولا يُغلق اختبار Force Stop أو Doze.
+- تُربط أرقام التشغيل والنتائج وعدد الاختبارات وسبب أي تخطٍ وArtifact ID وبصمته بالـSHA النهائي بعد اكتمال التشغيلات.
+
+
+### ملحق نتائج CI النهائية على الرأس `8b85862b5592a653a3dd2fb2b59acc80543d7c1e` — 23 نوفمبر 2026
+
+**تصحيح ربط التشغيلات بالـSHA — هذه التشغيلات ليست كلها على commit واحد:**
+
+- **Push PWA** — [run 45183548503](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548503): فحص رأس فرع الإصلاح مباشرةً عند SHA `8b85862b5592a653a3dd2fb2b59acc80543d7c1e`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل تثبيت Playwright/Chromium وتشغيل اختبارات المتصفح الحقيقية.
+- **Android Debug** — [run 45183548817](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548817): فحص رأس فرع الإصلاح مباشرةً عند SHA نفسه `8b85862b5592a653a3dd2fb2b59acc80543d7c1e`؛ **260 ناجحًا، 0 فشل، 7 متخطاة من أصل 267**. سبب التخطي أن Playwright مثبت في خطوة اختبار المتصفح المخصصة، وليس في workflow Android Debug. الاختبارات السبعة المتخطاة هي:
+  1. two real same-origin pages exchange storage events and block stale main/timer writes
+  2. a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal
+  3. two same-origin pages cannot commit duplicate task-linked Stopwatch transactions
+  4. non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere
+  5. a rejected rolling snapshot is rolled back and cannot outrank the previous valid slot
+  6. real Chromium pages release Web Lock after owner callback throws synchronously
+  7. real Chromium pages release Web Lock after owner callback Promise rejects
+- **PR PWA** — [run 45183561775](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183561775): لم يفحص SHA الفرع مباشرةً؛ فحص merge commit `ae22808e2f931a8d6aaf8f58fc9b43741d31beb1` الناتج عن دمج رأس الفرع `8b85862b5592a653a3dd2fb2b59acc80543d7c1e` مع قاعدة PR `ba14adaaf09474b9d432d31569f5e5067d58193d`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. شمل Chromium الفعلي.
+- **إعادة PR PWA على رأس PR الأحدث آنذاك** — [run 45183997086](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183997086): فحص merge commit `2ef0f12e4d6baae926734f4c9608fea1afc3b1e4` الناتج عن دمج رأس PR `b8b5c6d18543de14d1bbc9c0a99e9a51b7dc2ad0` مع قاعدة PR `ba14adaaf09474b9d432d31569f5e5067d58193d`؛ **267 ناجحًا، 0 فشل، 0 تخطٍ**. لا يُعد تشغيلًا مباشرًا على SHA الفرع.
+
+- **ملحوظة Android Debug:** نجح `Gradle BUILD SUCCESSFUL` وفحص Manifest لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`. لا تُحسب الاختبارات السبعة المتخطاة نجاحًا على Android، ولا يثبت هذا البناء اختبار Android WebView ميدانيًا.
+
+### الحالات الجديدة المسجلة في PWA/Chromium
+في كل من Push PWA وPR PWA:
+- `recovery does not adopt an exact legacy session when task.actual is previousActual`: **PASS** (test 243).
+- `recovery does not adopt an exact legacy session when task.actual is targetActual`: **PASS** (test 244).
+- `recovery accepts an existing session only when its saved transaction ID and details match`: **PASS** (test 245).
+- `Web Lock ownership is released after a synchronous callback throw before the next page acquires it`: **PASS** (test 246).
+- `Web Lock ownership is released after a rejected callback Promise before the next page acquires it`: **PASS** (test 247).
+- `real Chromium pages release Web Lock after owner callback throws synchronously`: **PASS** (test 109).
+- `real Chromium pages release Web Lock after owner callback Promise rejects`: **PASS** (test 110).
+
+### Android Debug artifact
+- Artifact ID: `14821928573` — [time-tasks-app-apk](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45183548817/artifacts/14821928573).
+- الحجم: 5,453,499 بايت.
+- البصمة المعلنة من GitHub Actions هي **SHA-256 لأرشيف artifact ZIP**: `d7b63569114eff25408366a0cfe4f18e656a25442190c0c5840b7ed2435eb3a6`. ليست بصمة APK الخام؛ لم أستخرج APK من الأرشيف لحساب بصمته المستقلة.
+
+### القرار والقيود المتبقية
+- اختبارات PWA/Chromium الجديدة نجحت على الرأس أعلاه، بما فيها الاختبارات الفعلية لصفحتين في Chromium.
+- Android Debug نجح في البناء وفحص Manifest، لكن **Android WebView الميداني، وForce Stop، وDoze لم تُختبر**.
+- لم تُطلب أو تُسجل مراجعة GitHub مستقلة جديدة. يبقى PR #10 مفتوحًا Draft وغير مدمج حتى يراجعه حساب مستقل.
+- لم يتغير `main` أو PR #6، ولم يتغير رقم الإصدار، ولم يُنشأ Release أو نشر إنتاجي.
+
+
+---
+
+## إغلاق D-01 إلى D-04 — تكليف 25 نوفمبر 2026
+
+- **فرع التنفيذ:** `codex/v2.9.1-stopwatch-integrity-fix`.
+- **الرأس المرجعي قبل العمل:** `624b98cc392fd7b0e7357e934b9d64c8d4fbb3cd`.
+- **النطاق:** D-01 إلى D-04 فقط، واختبارات Chromium/Playwright وبوابات التحقق المرتبطة بها.
+- **تشغيلات Actions على فرع الإصلاح:** https://github.com/abac332211-droid/time-tasks-app1/actions?query=branch%3Acodex%2Fv2.9.1-stopwatch-integrity-fix
+- **ربط SHA:** بوابة PWA وAndroid تطبع `Verified source SHA` وتفشل إن لم يطابق الرأس المتوقع؛ بوابة PR PWA تختبر `pull_request.head.sha` مباشرةً بدل merge commit افتراضي.
+
+### معايير القبول وقرار كل بند
+
+| البند | دليل القبول المطلوب | القرار قبل ظهور سجلات CI |
+|---|---|---|
+| D-01 | بعد Reset في صفحة Chromium نفسها: حفظ خاطرة ومشروع وبدء مؤقت وقراءة القيم من localStorage مع تطابق خطوط الأساس وغياب التعارض/الحماية. اختبار الاسترداد المنقطع يمسح `_projectsCache` والتنبيه القديم. | اختبارات القبول أضيفت؛ لا يغلق قبل نجاح الاختبارين في Chromium دون تخطٍ. |
+| D-02 | Chromium لمسار `resetTimer()` وحوار الحفظ، وانتقال حقيقي ناجح، وفشل كتابة يثبت عدم بدء المهمة التالية أو إعلان نجاح زائف. | المحرك الموحد لم يُعد كتابته؛ الإغلاق مشروط باجتياز الاختبارات الثلاثة. |
+| D-03 | صفحتان من الأصل نفسه تنتظران قفل Web Locks حقيقيًا؛ النافذة الثانية تثبت مزامنة tasks والخطوط والذاكرة والتعارضات والتهيئة والواجهة بعد استرداد الأولى. | الإغلاق مشروط بنجاح D-03.2 في Chromium وإثبات الانتظار والتحرير. |
+| D-04 | سجل Pomodoro من 500 جلسة، حفظ فعلي عند السعة، حذف الأقدم وحده، ID فريد، فشل مسح journal ثم استرداد دون حذف صف ثانٍ أو تكرار جلسة/دقائق؛ مع اختبار Stopwatch الحالي. | حد `_saveSessions() <= 500` محفوظ؛ الإغلاق مشروط بنجاح Pomodoro وStopwatch. |
+
+**قاعدة القرار:** لا تعتبر البنود مغلقة بمجرد تعديل الملفات. يتطلب كل بند سجل Chromium ناجحًا على SHA نهائي واحد، وتفسير أي تخطٍ دون احتسابه نجاحًا. Android Debug دليل بناء واختبارات Node وManifest فقط، وليس اختبار جهاز فعلي.
+
+
+
+---
+
+## إغلاق D-01 إلى D-04 بنتائج CI — 25 نوفمبر 2026
+
+### الرأس الذي اجتاز بوابات القبول
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`
+- SHA: `0b64faa61787ff996f3ab6bc65a27639ecfd66e1`
+- لاختبارات PWA/Chromium:
+  - [Push PWA — run 45539949615](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539949615): **327/327 ناجحًا، 0 فشل، 0 إلغاء، 0 تخطٍ**.
+  - [PR PWA — run 45539958765](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539958765): **327/327 ناجحًا، 0 فشل، 0 إلغاء، 0 تخطٍ**.
+  - تحقق كلا التشغيلين من SHA المصدر نفسه، وثبّتا Playwright/Chromium وشغّلا اختبارات المتصفح الحقيقية.
+- Android Debug — [run 45539949797](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539949797): **BUILD SUCCESSFUL**، 297 ناجحًا، 0 فشل، 30 تخطٍ من أصل 327. الاختبارات الثلاثون المتخطاة تخص Playwright/Chromium غير المثبت في وظيفة Android؛ لا تُحتسب نجاحًا على Android، وقد اجتازت كلها ضمن بوابتي PWA أعلاه.
+- فحوص Android Manifest نجحت لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- Artifact: [time-tasks-app-apk — ID 14987724788](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45539949797/artifacts/14987724788)، الحجم 5,477,026 بايت، وبصمة SHA-256 لأرشيف ZIP: `a089f9c49f75e234c99f5f0673582ee6bc5183352fa0a9e1939e02bd564f6020` (ليست بصمة APK الخام).
+
+### نتائج معايير القبول
+- **D-01 — مغلق باختبارات Chromium:** `D-01 Reset allows same-page thought, project and timer writes without stale baselines` و`startup reset recovery waits for the shared lock and makes an older queued backup callback inert` اجتازا. يثبتان عدم بقاء المشروع/التنبيه القديمين، ونجاح الكتابة بعد Reset بلا إعادة تحميل، وتطابق خطوط الأساس وغياب التعارض والحماية.
+- **D-02 — مغلق باختبارات Chromium:** `D-02 resetTimer save dialog commits the linked Stopwatch transaction exactly once` و`D-02 transition commits the old task before starting the next task timer` و`D-02 transition failure does not start the next task or report success` اجتازت. اختبار `finishTimer()` القائم اجتاز ضمن المجموعة أيضًا.
+- **D-03 — مغلق باختبار Chromium متعدد النوافذ:** `D-03.2 two real same-origin tabs wait for Web Locks and the second page synchronizes memory, baselines and UI` اجتاز، مع تحقق الانتظار الفعلي على Web Locks، ومزامنة النافذة الثانية للذاكرة وخطوط الأساس والواجهة دون تعارض زائف.
+- **D-04 — مغلق باختبارات Chromium:** `D-04 Pomodoro transaction at 500 sessions evicts once and startup retry does not evict another row` و`Stopwatch recovery at the 500-session limit evicts once and retry does not evict a second row` اجتازا. بقي حد `_saveSessions()` الصارم 500 كما هو، واختبار إعادة المحاولة لم يحذف صفًا ثانيًا.
+
+### تصحيحات أدوات الاختبار أثناء الإغلاق
+- جعل مهلة الاختبارات محددة حتى لا تبقى مجموعة المتصفح معلقة بلا تشخيص.
+- أصلح اختبار تنافس النافذتين حاجز `BroadcastChannel` كي ترسل كل صفحة إشارة للصفحة الأخرى؛ القناة لا تعيد الرسالة إلى مُرسلها.
+- التقط اختبارا D-02 مرجع وعد الحفظ فور النقر، بدل قراءة المتغير العام بعد أن يمسحه `finally`.
+- عُدّل تحقق D-01 ليقبل إعادة تحميل الواجهة لقائمة مشاريع فارغة بعد إبطال الذاكرة، مع اشتراط عدم بقاء المشروع القديم.
+
+### القرار والحدود
+- القرار: **D-01 وD-02 وD-03 وD-04 مغلقة من ناحية معايير القبول والاختبارات الآلية على SHA أعلاه.**
+- هذا لا يثبت اختبار Android WebView على جهاز فعلي أو حالات Force Stop/Doze أو الإشعارات بعد إعادة التشغيل؛ تبقى هذه اختبارات ميدانية منفصلة.
+- PR #10 بقي مفتوحًا Draft وغير مدمج، وقاعدته `codex/v2.9.1-stability`. لم يتغير `main`، ولم يُنشأ Release أو نشر إنتاجي.
+
+
+---
+
+## تحديث إثبات الإغلاق بعد تعزيز اختباري D-03 وD-04 — 25 نوفمبر 2026
+
+### الرأس المختبَر مباشرةً
+
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`
+- SHA الذي فحصته التشغيلات الثلاثة حرفيًا: `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`
+- الالتزام: `Strengthen D-03 UI and D-04 FIFO acceptance assertions`.
+- هذا التحديث يحل محل أي إشارة سابقة إلى أن تشغيلات `45539949615` و`45539958765` و`45539949797` هي أحدث دليل. تلك التشغيلات تخص الرأس السابق `0b64faa61787ff996f3ab6bc65a27639ecfd66e1`، ولا تُنسب إلى الرأس الحالي.
+
+### نتائج GitHub Actions على SHA واحد
+
+- **Push PWA** — [run 45548163268](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45548163268): اكتمل بنجاح؛ **327/327 ناجحًا، 0 فشل، 0 تخطٍ**.
+- **PR PWA** — [run 45548169476](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45548169476): اكتمل بنجاح؛ **327/327 ناجحًا، 0 فشل، 0 تخطٍ**.
+- كلا سجلّي PWA يثبتان:
+  `Verified source SHA: cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`
+  و
+  `Expected source SHA: cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`.
+- ثبّت كل تشغيل Playwright/Chromium وشغّل اختبارات المتصفح الحقيقية؛ لا توجد تخطّيات في أي من بوابتي PWA.
+
+### تعزيزات القبول التي اجتازت Chromium
+
+- **D-03:** اجتاز اختبار `D-03.2 two real same-origin tabs wait for Web Locks and the second page synchronizes memory, baselines and UI`. إضافة إلى إثبات انتظار القفل ومزامنة الذاكرة والخطوط الأساسية، يفحص الآن العرض الفعلي لقيمة المؤقت، ووسم وضع Stopwatch، وبطاقة الجلسات المستردة في النافذة الثانية.
+- **D-04:** اجتاز اختبار `D-04 Pomodoro transaction at 500 sessions evicts once and startup retry does not evict another row`. بعد الاسترداد يتحقق الاختبار من أن معرّفات الجلسات الـ500 هي بالتسلسل من 2 إلى 501، وفريدة جميعها، وبترتيب FIFO؛ فلا يكتفي بفحص أول وآخر معرّف.
+- **D-01:** اجتاز اختبار الكتابة بعد Reset في الصفحة نفسها واختبار الاسترداد المنقطع الذي يتحقق من جعل callback النسخة الاحتياطية القديم غير مؤثر.
+- **D-02:** اجتازت اختبارات حفظ `resetTimer()` والانتقال الناجح وفشل الانتقال دون تشغيل المهمة التالية أو إظهار نجاح زائف.
+
+### Android Debug على SHA نفسه
+
+- [run 45548162829](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45548162829): **نجاح**.
+- تحقّق السجل من SHA المصدر نفسه `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`.
+- نتائج اختبارات Node: **297 ناجحًا، 0 فشل، 30 تخطٍ من أصل 327**. الثلاثون تخص اختبارات Playwright/Chromium التي لا تُشغّل في وظيفة Android؛ لا تُحتسب نجاحًا على Android، وقد اجتازت ضمن بوابتي PWA أعلاه.
+- البناء: `BUILD SUCCESSFUL`.
+- نجحت فحوص Manifest لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- APK Debug artifact: [ID 14992226842](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45548162829/artifacts/14992226842)، الحجم 5,477,029 بايت، وبصمة ZIP SHA-256: `8f1e44c6be0414ba461040ace603674d103fe38369f0371811b1b236763b5225`. هذه بصمة أرشيف artifact وليست بصمة APK الخام.
+
+### القرار المحدث وحالة المستودع
+
+- **D-01 وD-02 وD-03 وD-04: مغلقة من ناحية معايير القبول والاختبارات الآلية** على SHA المختبَر أعلاه.
+- PR #10: [مفتوح كمسودة وغير مدمج](https://github.com/abac332211-droid/time-tasks-app1/pull/10)، ورأسه عند التحقق `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`، وقاعدته `codex/v2.9.1-stability`.
+- `main` لم يتغير؛ SHA القاعدة `0a4dcd13af4fd3bb1779550907234cfc64b05523`.
+- لا دمج، ولا تغيير حالة PR، ولا Release، ولا نشر.
+- لا يثبت Android Debug اختبار WebView ميدانيًا أو Force Stop أو Doze أو الإشعارات بعد إعادة التشغيل. كما أن المراجعة المستقلة واختبار الجهاز الفعلي يظلان بوابتين منفصلتين.
+
+### ملاحظة توثيقية حول هذا الالتزام
+
+هذا الملحق يوثّق نتائج الكود والاختبارات على `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`. الالتزام الذي يضيف هذا الملحق توثيقي فقط؛ تُربط به عملية التوثيق، بينما تظل بصمة الكود التي اجتازت الاختبارات هي `cd14c13aed7cb43b6e8c9e17e56547acdbe63a8c`.
+
+
+---
+
+## مراجعة تسمية زر Stopwatch — 25 نوفمبر 2026
+
+### الرأس المرجعي وقرار النطاق
+- PR: [#10 — Stopwatch transaction identity and stale backup safeguards](https://github.com/abac332211-droid/time-tasks-app1/pull/10).
+- الرأس الذي راجعته قبل هذه الإضافة: `ca87a145f3e6a0b42babd1ae5dc78bb427ad9639`.
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`، والقاعدة: `codex/v2.9.1-stability`.
+- PR #10 مفتوح كمسودة وغير مدمج.
+- مصدر التسمية في `index.html` داخل `_renderFocusTimer()`: يُعرض «▶ استئناف» عندما يكون `_focusTimer.mode === 'stopwatch'` و`_focusTimer.running === false` والزمن المعروض أكبر من صفر. يعتمد القرار على حالة المؤقت الفعلية لا على نص الزر السابق.
+- لم أعدّل `index.html`؛ لم تكن هناك حاجة لتغيير منطق المؤقت.
+
+### استكمال اختبار الانحدار
+- عُزز اختبار Chromium الموجود `Stopwatch button label distinguishes fresh, running and paused states without starting a new session on resume` في `tests/multi-window-browser.test.cjs`.
+- يلتقط الاختبار `taskId` و`task.actual` وعلامة `lastStopwatchTransactionId` و`pendingStopwatchTransaction.id` ونسخة JSON كاملة من السجلات التاريخية.
+- بعد الإيقاف المؤقت والاستئناف وإعادة الضبط، يتحقق الاختبار من عدم تغير دقائق المهمة أو معرّفات المعاملات، وعدم إضافة جلسة أو تعديل أي حقل في السجلات السابقة، مع بقاء `sessionStartAt` كما هو عبر الاستئناف واستمرار الزمن المتراكم.
+- لم يتغير كود المعاملات أو التخزين أو الاستعادة أو الأقفال.
+
+### الملفات
+- `tests/multi-window-browser.test.cjs`: تأكيدات الانحدار الإضافية أعلاه فقط.
+- `docs/DAILY-PROGRESS.md`: هذا السجل.
+- `index.html`: لم يتغير في هذه الخطوة؛ مصدر تسمية «استئناف» موجود على الرأس المرجعي.
+
+### نتائج CI السابقة على الرأس المرجعي `ca87a145f3e6a0b42babd1ae5dc78bb427ad9639`
+- [PWA / regression / Chromium — run 45569036158](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569036158): نجاح، `330/330` ناجحة، 0 فشل، 0 تخطٍ؛ سجل checkout أكد SHA نفسه.
+- [Android Debug — run 45569036271](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569036271): نجاح؛ `297/330` ناجحة، 0 فشل، و33 تخطٍ لاختبارات Playwright/Chromium غير المشغلة ضمن وظيفة Android؛ سجل Gradle انتهى بـ`BUILD SUCCESSFUL`، وفحوص Manifest ورفع APK نجحت.
+- Artifact Debug: [ID 15001412023](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569036271/artifacts/15001412023)، حجم ZIP ‏5,477,262 بايت، digest ‏`sha256:86d42ccdcf3c43fe595ed30451e4e80d88792a049c4a251906ac4fbc6c1d2b34`.
+- هذه النتائج تخص الرأس المرجعي قبل إضافة تأكيدات الاختبار الجديدة؛ يجب ربط تشغيلات CI التالية بالرأس الجديد قبل اعتبار الإضافة متحققة.
+
+### المراجعة والقيود
+- المراجعة الرسمية المسجلة PR review حالتها `COMMENTED` ومؤرخة 23 نوفمبر 2026 ومربوطة برأس أقدم. التعليقات اللاحقة صادرة من حساب مالك المستودع؛ لا أعدّها مراجعة مستقلة.
+- لا توجد موافقة مستقلة `APPROVED` على الرأس الحالي.
+- نتائج CI لا تحل محل استكمال الاختبار الميداني لسيناريوهات البدء والإيقاف والاستئناف والإنهاء وإعادة الضبط وإعادة الفتح على APK ذي SHA معلوم.
 
 ### الخطوة التالية
-التحقق من CI وقراءة عداد الاختبارات وسجل Android Debug على الرأس الجديد، ثم طلب مراجعة مستقلة للرأس الناتج.
+اكتمال PWA/Chromium وAndroid Debug على الرأس الجديد الناتج عن هذه الإضافة، ثم مراجعة مستقلة من حساب مختلف، واستكمال سجل الاختبار الميداني على APK المطابق للرأس قبل أي قرار دمج.
 
+
+---
+
+## نتائج CI لتأكيدات استئناف Stopwatch — 25 نوفمبر 2026
+
+### الرأس البرمجي الذي اختُبر
+- Commit: [`74e06065c8b45c4e0a95aeefaba31b862a7d92f4`](https://github.com/abac332211-droid/time-tasks-app1/commit/74e06065c8b45c4e0a95aeefaba31b862a7d92f4).
+- الملفات البرمجية المتغيرة في الالتزام: `tests/multi-window-browser.test.cjs` فقط. الالتزام الأب هو `ca87a145f3e6a0b42babd1ae5dc78bb427ad9639`.
+- لم يتغير `index.html` أو أي من ملفات التخزين/المعاملات.
+
+### نتائج PWA/Chromium
+- [run 45569887739](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569887739): **330/330 ناجحًا، 0 فشل، 0 تخطٍ**.
+- سجل التشغيل أكد `Verified source SHA` و`Expected source SHA` متطابقين مع `74e06065c8b45c4e0a95aeefaba31b862a7d92f4`.
+- ثُبت Playwright Chromium ونُفذت اختبارات المتصفح متعددة النوافذ.
+
+### نتائج Android Debug
+- [run 45569887776](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569887776): نجاح كامل.
+- اختبارات Node: **297 ناجحًا، 0 فشل، 33 متخطاة من أصل 330**. التخطي يخص اختبارات Playwright/Chromium غير المشغلة في وظيفة Android؛ لا تُحتسب هذه الاختبارات نجاحًا على Android، وقد اجتازت كلها في بوابة PWA أعلاه.
+- سجل checkout أكد تطابق SHA المصدر مع `74e06065c8b45c4e0a95aeefaba31b862a7d92f4`.
+- Gradle: `BUILD SUCCESSFUL`.
+- نجح فحص Manifest لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- Artifact: [time-tasks-app-apk — ID 15000814588](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45569887776/artifacts/15000814588)، الحجم 5,477,259 بايت، digest أرشيف ZIP ‏`sha256:9124ba4e3ffea317072666a674f57fc9d784900685a99a76d7e0d05cc1325115`. هذه بصمة أرشيف ZIP وليست بصمة APK المستخرج.
+
+### حالة المراجعة والقبول
+- PR #10 باقٍ مفتوحًا كمسودة وغير مدمج.
+- لم تظهر مراجعة مستقلة جديدة أو `APPROVED`؛ المراجعة الرسمية المسجلة `COMMENTED` من حساب مالك المستودع وعلى رأس أقدم.
+- اختبار Android Debug آلي فقط؛ لا يثبت Android WebView الفعلي أو Doze أو Force Stop أو إعادة التشغيل على جهاز.
+- تقرير اللقطات الميداني السابق يؤكد تفاعل البدء/الإيقاف بعد الاستعادة، لكنه لا يحدد SHA أو Artifact الذي اختُبر، ولا يغطي كامل الإنهاء وإعادة الضبط وإعادة الفتح؛ لذلك لا يغلق بوابة الاختبار الميداني.
+
+### القرار
+نجحت بوابات PWA/Chromium وAndroid Debug على الرأس البرمجي `74e06065c8b45c4e0a95aeefaba31b862a7d92f4`. تحسين تسمية «استئناف» مغطى آليًا مع ثوابت عدم تكرار دقائق المهمة أو إنشاء معاملة/جلسة جديدة أو تعديل السجلات التاريخية. **PR #10 غير جاهز للدمج بعد** بسبب غياب المراجعة المستقلة واكتمال الاختبار الميداني المطابق لـAPK/SHA.
+
+
+---
+
+## توثيق مانع دمج PR #10 بعد مراجعة Stopwatch — 25 نوفمبر 2026
+
+- الرأس وقت الفحص: `667271562c5ae4897056a85435c5f99c49a4014d`.
+- GitHub API يعرض PR #10 مفتوحًا كـDraft وغير مدمج، مع `mergeable=false` و`mergeable_state=dirty` و`rebaseable=false`.
+- فرع الأساس في PR: `codex/v2.9.1-stability`. رأس فرع الاستقرار عند الفحص: `0e24770af42041569f050f9d597e17e89ede5f9d`؛ SHA الأساس الذي يعرضه كائن PR: `ba14adaaf09474b9d432d31569f5e5067d58193d`.
+- لم أجرِ rebase أو merge أو حل تعارضات؛ ذلك خارج نطاق تعديل تسمية الزر ويحتاج مراجعة مستقلة للتباعد قبل مزامنة الفرعين.
+- لا تزال المراجعة المستقلة `APPROVED` غير متوفرة، كما أن اختبار Android WebView الميداني المطابق لـArtifact/SHA غير مكتمل.
+- PR #6 ما زال Open/Draft وغير مدمج، وPR #4 Open وغير مدمج؛ `main` بقي عند `0a4dcd13af4fd3bb1779550907234cfc64b05523`.
+- **قرار البوابة:** لا دمج. تُعالج تعارضات الفرع ويُعاد فحصها بواسطة مراجع مستقل بعد إغلاق الاختبار الميداني؛ لا يُفترض أن نجاح CI يلغي حالة `dirty`.
+
+
+---
+
+## مزامنة فرع الاستقرار مع PR #10 — 25 نوفمبر 2026
+
+- **رأس PR قبل المزامنة:** `d88e557175158d5c21ce9ed50e5c4272b0ff8eac`.
+- **رأس فرع الاستقرار المدمج:** `0e24770af42041569f050f9d597e17e89ede5f9d`.
+- **التزامات الأساس الأربعة التي أُدخلت في تاريخ الفرع:** `67af8f00a9ada96aaead1597058215a80091310f`، `f7fa2d004d06226d4284adad78fd0cd7f0db5129`، `b7d2438365d2c1b6b14487f59d250a96c2f61284`، `0e24770af42041569f050f9d597e17e89ede5f9d`.
+- أُضيف سجل التدقيق `docs/audits/index-v2.9.0-engineering-audit.md` كما هو من فرع الاستقرار.
+- **معالجة تداخل `index.html`:** تغيير الأساس الذي أضاف `_resetSecondaryStorageTracking()` لم يُنسخ حرفيًا؛ لأن تطبيق PR يحتوي بديلًا أقوى هو `_resetSecondaryStorageTrackingAfterReset()`. هذا البديل يعيد قراءة baselines للقيم الثانوية المحفوظة، ولا يمسحها إلى null افتراضيًا، ويزيل التعارضات بعد نجاح القراءة فقط، ويصون علامة Reset عند فشل القراءة. يُستدعى داخل `_recoverInterruptedReset()` قبل حذف علامة الاسترداد.
+- **معالجة تداخل `tests/regression.test.cjs`:** اختبار الأساس الذي كان يستدعي المساعد القديم مباشرة لم يُنقل بصيغته القديمة؛ لأن المساعد لم يعد مستخدمًا. سلوك التنظيف نفسه مغطى باختبارات D-01 في Chromium بعد Reset في الصفحة نفسها وبعد الاسترداد المنقطع. وأضيف إلى اختبار Stopwatch إعادة الضبط فحص ثبات رابط المهمة ومعرّفات المعاملة في الذاكرة والتخزين.
+- لم تُحذف تغييرات التطبيق أو اختبارات PR. لم يحدث Rebase قسري أو إسقاط للالتزامات؛ أُنشئ دمج ذو أبوين للحفاظ على تاريخ الجانبين.
+- يبقى PR #10 مفتوحًا كمسودة وغير مدمج. لا تغيير على `main` أو رقم الإصدار، ولا Release أو نشر.
+- هذه المزامنة لا تغلق اختبار Android WebView الميداني أو المراجعة المستقلة أو بوابات CI الجديدة على رأس الدمج.
+
+
+
+---
+
+## تحديث متابعة PR #10 بعد مزامنة القاعدة واختبارات الرأس — 25 نوفمبر 2026
+
+### الرأس وعلاقة الفرعين
+- **رأس الكود والاختبارات:** `247075e20736403a99e49c685d6ff2fad895d454`.
+- **فرع الأساس:** `codex/v2.9.1-stability` عند `0e24770af42041569f050f9d597e17e89ede5f9d`.
+- المقارنة المباشرة: PR متقدم 145 التزامًا، ومتأخر صفرًا؛ لم تعد حالة التباعد/التعارض `dirty`.
+- المزامنة حُفظت في commit ذي أبوين `3a36b4857e83f359f159c48f258ff868ececc3e5`؛ لم يُستخدم force-push أو rebase قسري. احتُفظ بتغييرات PR وبملف التدقيق القادم من قاعدة الاستقرار.
+- تغيير الأساس الذي أضاف `_resetSecondaryStorageTracking()` لم يُنقل حرفيًا؛ تنفيذ PR الأقوى `_resetSecondaryStorageTrackingAfterReset()` يعيد مزامنة القيم المخزنة ويحتفظ بعلامة الاسترداد إذا فشلت القراءة. اختبار السلوك الفعلي موجود في تغطية D-01.
+
+### تقوية اختبار Stopwatch Reset
+- أُضيفت إلى اختبار Chromium مقارنة `taskId` في الذاكرة والتخزين، و`lastStopwatchTransactionId`، و`pendingStopwatchTransaction.id` في الذاكرة والتخزين قبل Reset وبعده.
+- التغيير في `tests/multi-window-browser.test.cjs`، ولا يغيّر منطق التطبيق.
+- أضيفت معلومات تشخيص مفاتيح التخزين التي تتغير إذا فشل اختبار منع التصدير/النسخ الدوّارة من النافذة القديمة.
+
+### نتائج CI على الرأس أعلاه
+| البوابة | التشغيل | النتيجة |
+|---|---:|---|
+| Push PWA / Chromium | [45573337307](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45573337307) | 330/330، صفر فشل، صفر تخطٍ |
+| PR PWA / Chromium | [45573346047](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45573346047) | 330/330، صفر فشل، صفر تخطٍ |
+| Android Debug | [45573337311](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45573337311) | 297 ناجحًا، صفر فشل، 33 تخطيًا لاختبارات Chromium |
+
+- سجلات PWA وAndroid تطابق `Verified source SHA` و`Expected source SHA` مع `247075e20736403a99e49c685d6ff2fad895d454`.
+- Android: `BUILD SUCCESSFUL`، وفحوص Manifest للأذونات `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK` ناجحة.
+- APK Debug: Artifact ID `15002913277`، الحجم 5,477,258 بايت، digest `sha256:e77b801c351b885d21d38ca7c7a408ebb657043ce98d415dbdfb1f2a8dd45ae2`.
+- حزمة المصدر للمراجعة: Artifact ID `15002149252`، الحجم 983,073 بايت، digest `sha256:d4763ee5c840dc401c13bed44ae6420aa3fcb5e2cb3d59bbb60de7b4408080bd`. تشمل أرشيف المصدر والاختبارات وWorkflows والفرق الثنائي الكامل من merge-base وسجل الالتزامات وmanifest وSHA256SUMS.
+
+### ملاحظة شفافية عن إعادة التشغيل
+- تشغيل PR PWA السابق على `6920b3c9480ed82a795920933b7a975bdc8b29f8` سجل إخفاقًا واحدًا في تأكيد عدم تغير التخزين أثناء انتظار النسخة الدوّارة؛ Push PWA على ذلك الرأس نجح. أضيفت تفاصيل تشخيصية للمتغيرات المتغيرة، ثم اجتاز كلا التشغيلين الجديدين على `247075e20736403a99e49c685d6ff2fad895d454` جميع الاختبارات 330/330 دون تخطٍ. لا يُخفى التشغيل السابق ولا يُحتسب نجاحًا.
+
+### بوابات لم تُغلق
+- لا يوجد اختبار مثبت على جهاز Android فعلي/Android System WebView لهذا الـAPK؛ لم يُقَس بعد `window.location.origin` و`window.isSecureContext` ووجود `navigator.locks.request` على الجهاز، ولم تُنفذ دورة Finish/Reset/Force Stop/إعادة فتح ميدانية.
+- لا توجد مراجعة `APPROVED` مستقلة على الرأس الحالي. المراجعة الوحيدة المسجلة `COMMENTED` من مؤلف PR، ومثبتة على SHA أقدم.
+- PR #10 ما زال Open/Draft وغير مدمج. لا تغيير على `main`، ولا Release أو نشر أو تغيير إصدار.
+
+
+
+---
+
+## متابعة F-07 وF-08 وإعادة بوابات CI — 25 نوفمبر 2026
+
+### رأس الاختبارات
+
+- الفرع: `codex/v2.9.1-stopwatch-integrity-fix`
+- SHA الموحد الذي اختبرته Push PWA وPR PWA وAndroid Debug: `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7`
+- الالتزام: `test: trace stale backup writers and cover Reset baseline read retry`
+- تغيير هذا الالتزام محصور في `tests/multi-window-browser.test.cjs`؛ لا تغيير في `index.html` أو منطق الإنتاج.
+
+### F-07 — تشخيص كاتب التخزين في اختبار النافذة القديمة
+
+- الإخفاق التاريخي [PR PWA run 45572927743](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45572927743) على SHA `6920b3c9480ed82a795920933b7a975bdc8b29f8` سجل فشل `storageUnchanged`، لكنه لم يسجل أسماء المفاتيح المتغيرة ولا مصدر الكتابة. لذلك لا يمكن إثبات السبب الجذري لذلك التشغيل بأثر رجعي.
+- عُدّل اختبار `a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal` ليرصد عمليات `setItem/removeItem/clear` ومكدس الاستدعاء في صفحة المالك والصفحة القديمة، ويلتقط أحداث `storage` الواردة ويصنف تغيّر المفاتيح بحسب مصدره.
+- يكرر الاختبار محاولة التصدير والنسخة الدوّارة **ثلاث مرات** في كل تشغيل. في Push PWA وPR PWA (ست محاولات إجمالًا):
+  - `exportChangedKeys=[]`
+  - `stalePageWrites=[]`
+  - `changedKeys=[]`
+  - رفض النسخة الدوّارة كان بالسبب المتوقع `external_storage_conflict`.
+  - كتابتا إعداد المعاملة المرصودتان من صفحة المالك حدثتا في مرحلة تجهيز المعاملة قبل نافذة القياس؛ لم تُرصد كتابة من الصفحة القديمة أو تغيير متزامن خلالها.
+- **القرار:** اختبار الحماية المعزّز ناجح ويثبت أن النافذة القديمة لا تكتب في السيناريو المعاد تشغيله. لكن **السبب التاريخي للإخفاق الأصلي يظل غير محسوم** لأن سجله لم يحفظ المفاتيح المتغيرة؛ لا ندّعي إثبات أنه كان سباقًا من المالك أو خللًا في التطبيق.
+
+### F-08 — فشل قراءة baseline بعد Reset ثم إعادة المحاولة
+
+- أضيف اختبار Chromium: `Reset baseline read failure retains its marker and write gate until a verified retry`.
+- يحقن الاختبار فشل `localStorage.getItem(PROJECTS_KEY)` في القراءة الثانية بعد حذف المفتاح والتحقق من حذفه؛ أي في مرحلة إعادة مزامنة baseline بعد Reset، وليس أثناء فحص الحذف نفسه.
+- في المحاولة الأولى يثبت الاختبار:
+  - Reset لا يعلن النجاح.
+  - علامة Reset الدائمة تبقى.
+  - `storageRecoveryRequired=true` وتعارض `PROJECTS_KEY` مفعّل، والكتابة محظورة.
+  - cache المشاريع وإشعار الجلسات غير الصالحة وإشعار تعارض المؤقت لا تُنظف قبل اكتمال جميع قراءات baseline.
+- بعد إزالة حقن الفشل ينفذ الاختبار `retryStorageRecovery()` الحقيقي، ويثبت نجاح الاسترداد، ومسح العلامة، وإزالة التعارض، وتحديث baseline إلى null، وعودة بوابة الكتابة، وتنظيف cache والإشعارات.
+- **القرار:** فجوة تغطية فشل baseline ثم إعادة المحاولة أُغلقت باختبار Chromium ناجح. لم يتغير منطق الإنتاج في هذا الالتزام.
+
+### CI على SHA واحد
+
+| البوابة | التشغيل | النتيجة |
+|---|---:|---|
+| Push PWA / Chromium | [45581160191](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160191) | **331/331، 0 فشل، 0 تخطٍ** |
+| PR PWA / Chromium | [45581169405](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581169405) | **331/331، 0 فشل، 0 تخطٍ** |
+| Android Debug | [45581160102](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160102) | **297 نجاحًا، 0 فشل، 34 تخطيًا من 331** |
+
+- سجلات التشغيل الثلاثة تثبت تطابق `Verified source SHA` و`Expected source SHA` مع `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7`.
+- في Android، التخطيّات الـ34 تخص اختبارات Playwright/Chromium التي لا تُنفّذ في وظيفة Android؛ لا تُحسب نجاحات Android، وقد اجتازت في بوابتي PWA.
+- Android: `BUILD SUCCESSFUL`، وفحوص Manifest ناجحة لوجود `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK`.
+- APK Debug artifact: [ID 15007070724](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160102/artifacts/15007070724)، الحجم 5,477,259 بايت، ZIP SHA-256: `62a45150c07ed83a4b1b410c9e5baedc8366932a163a1d437587e88cfc8e2d92`.
+- حزمة المصدر: [Artifact 15006188172](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/45581160191/artifacts/15006188172)، الحجم 991,559 بايت، ZIP SHA-256: `45837101062ec2b0dbadd48619dd0a8f8d2bfb1861350a3a674076d2275bb3e1`.
+
+### حالة المستودع والبوابات الخارجية
+
+- PR #10 مفتوح كـDraft وغير مدمج، ورأسه عند `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7` وقاعدته `codex/v2.9.1-stability` عند `0e24770af42041569f050f9d597e17e89ede5f9d`. المقارنة: 147 التزامًا متقدمًا وصفر متأخرة؛ `mergeable=true` يثبت قابلية دمج التاريخ فقط ولا يمثل موافقة.
+- سجل المراجعات لا يزال يحوي `COMMENTED` واحدة من مؤلف PR نفسه على رأس قديم؛ لا توجد `APPROVED` مستقلة.
+- لا يوجد اختبار Android System WebView فعلي على جهاز؛ لا يثبت CI وجود `navigator.locks` على الجهاز أو دورة Reset/Force Stop/إعادة الفتح الميدانية.
+- `main` لم يتغير: `0a4dcd13af4fd3bb1779550907234cfc64b05523`.
+- لا دمج، ولا تغيير حالة PR، ولا Release أو نشر أو تغيير إصدار.
+
+### القرار
+
+- **F-08:** تغطية الفشل وإعادة المحاولة ناجحة؛ تُعد هذه الفجوة في الاختبار مغلقة.
+- **F-07:** اختبار الحماية المعزّز ناجح عبر 6 محاولات PWA، لكن تفسير الإخفاق التاريخي يظل غير محسوم؛ لا يُعلن إغلاق السبب الجذري.
+- **بوابات الدمج:** ما زالت المراجعة المستقلة واختبار Android الميداني مطلوبين. لا دمج.
+
+
+---
+
+## قرار استكمال الاعتماد واختبار Redmi Note 10 5G — 25 نوفمبر 2026
+
+### قرار مالك المشروع بشأن F-07
+- وجّه صاحب المشروع صراحةً بعدم جعل الإخفاق التاريخي القديم في اختبار `storageUnchanged` مانعًا مستقلًا للدمج. يُسجّل ذلك **قبولًا واعيًا للتحفظ التاريخي**، وليس إثباتًا لسبب الإخفاق أو ادعاءً بأنه أُصلح بأثر رجعي.
+- يظل السجل التاريخي محفوظًا: تشغيل PR PWA رقم `45572927743` لم يسجل المفاتيح المتغيرة أو هوية الكاتب؛ لذلك يظل سببه الجذري غير محسوم.
+- ما يزال شرط الحماية الحالية قائمًا: اختبار Chromium المعزّز يعيد محاولات التصدير والنسخ الدوّارة ثلاث مرات، ويرفضها بسبب التعارض المتوقع، ولا يرصد كتابة من الصفحة القديمة أو تغيّرًا خلال نافذة القياس. Push وPR على SHA `efc8ca02ff13a9c0a423d1eefce51ad1021a46a7` اجتازا `331/331`.
+- وفق توجيه المالك، لا يُمنع الدمج مستقبلًا بسبب عدم تفسير الإخفاق التاريخي وحده؛ لكن أي فشل جديد أو كتابة غير مصرح بها في الاختبار الحالي يعيد فتح F-07 فورًا.
+
+### جهاز الاختبار الميداني المعتمد
+- الجهاز الذي حدده المالك: **Xiaomi Redmi Note 10 5G**.
+- إصدار Android: **13**.
+- مزوّد Android System WebView ورقم إصداره: **بانتظار القياس من الجهاز**؛ لا يُفترض أنه مطابق لإصدار Chrome.
+- لم يُنفذ الاختبار الميداني بعد، ولم تُنسب أي نتيجة للجهاز. أنشئ دليل التنفيذ والتسجيل في `docs/ANDROID-FIELD-TEST-2.9.1-REDMI-NOTE-10-5G.md`.
+- يُعاد بناء APK Debug بعد هذا الالتزام على SHA الجديد، ويُستخدم Artifact الناتج من تشغيل Android Debug المرتبط بذلك SHA فقط. لا يُستخدم APK سابق على أنه مطابق للرأس النهائي.
+
+### بوابات الدمج التي ما زالت لازمة
+1. نجاح Push PWA وPR PWA وAndroid Debug على SHA نهائي واحد، مع تطابق SHA في سجلات كل وظيفة.
+2. تنفيذ وتسجيل اختبار الجهاز الفعلي وفق دليل Redmi، وبالأخص Web Locks وStopwatch المرتبط بمهمة وReset ثم Force Stop وإعادة الفتح، مع مطابقة APK إلى SHA النهائي.
+3. مراجعة مستقلة من حساب غير مؤلف PR، مع `APPROVED` على الرأس النهائي.
+4. بعد ذلك فقط يُعاد تقييم جاهزية الدمج. لا تفويض هنا للدمج أو لتغيير حالة PR أو لتعديل `main`.
+
+### حالة الصلاحيات
+PR #10 يظل مفتوحًا كمسودة وغير مدمج. `main` لم يتغير. لا PR #6 merge، ولا تغيير إصدار، ولا Release أو نشر.
 
 ---
 
