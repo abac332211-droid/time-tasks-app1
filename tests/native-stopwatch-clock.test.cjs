@@ -14,7 +14,15 @@ function extractFunction(name) {
   assert.notEqual(start, -1, 'Missing app function: ' + name);
   const end = html.indexOf('\n}', start);
   assert.notEqual(end, -1, 'Could not locate end of function: ' + name);
-  return html.slice(start, end + 2);
+  const source = html.slice(start, end + 2);
+  const helpers = [];
+  if (/\b_isTaskStorageLockHeld\s*\(/.test(source)) {
+    helpers.push('function _isTaskStorageLockHeld() { return true; }');
+  }
+  if (/\b_withTaskStorageLock\s*\(/.test(source)) {
+    helpers.push('function _withTaskStorageLock(callback) { return callback(); }');
+  }
+  return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
 function makeHarness(anchor = {}) {
@@ -184,6 +192,10 @@ test('a manual pause and its following resume use distinct foreground-service to
   const sandbox = {
     _focusTimer: timer,
     _focusElapsedRemainderMs: 0,
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock: callback => callback(),
+    _nativeStopwatchClockAttachScheduled: false,
+    setTimeout(callback) { callback(); return 1; },
     _focusTimerExternalConflict: false,
     _nativeStopwatchPlugin: () => ({}),
     _createNativeStopwatchSessionToken: () => UUID_NEW_SESSION,
@@ -216,7 +228,8 @@ test('a manual pause and its following resume use distinct foreground-service to
     showAlertModal() {}
   };
   vm.runInNewContext(
-    [extractFunction('_isNativeStopwatchUuid'), extractFunction('toggleTimer')].join('\n'),
+    [extractFunction('_isNativeStopwatchUuid'), extractFunction('_scheduleNativeStopwatchClockAttach'),
+      extractFunction('toggleTimer')].join('\n'),
     sandbox
   );
 
@@ -479,6 +492,8 @@ function makeNotificationActionHarness(action, options = {}) {
     console,
     _focusTimer: focusTimer,
     _focusElapsedRemainderMs: 0,
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock: callback => Promise.resolve(callback()),
     _focusMonotonicStart: 10,
     _focusMonotonicLastSample: 20,
     _focusMonotonicLastWallSample: 30,

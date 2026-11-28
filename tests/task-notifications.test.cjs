@@ -82,6 +82,8 @@ function makeNotificationHarness({ enabled = true, permission = 'granted', tasks
     console,
     tasks,
     _getNotificationsPref: () => ({ enabled: enabledState }),
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock(callback) { return Promise.resolve(callback()); },
     _hasCapacitorLocalNotifications: () => true,
     window: { Capacitor: { Plugins: { LocalNotifications: LN } } },
     isValidCalendarDate: validDate,
@@ -209,7 +211,7 @@ test('native focus transition does not prompt for permission when a timer phase 
 
 test('first native toggle requests permission instead of silently switching off the default preference', async () => {
   const harness = makeNotificationHarness({ enabled: true, permission: 'prompt' });
-  const fns = loadFunctions(['_setCapacitorNotificationsEnabled', '_toggleCapacitorNotifications'], harness.context);
+  const fns = loadFunctions(['_setNotificationsPrefWithLock', '_setCapacitorNotificationsEnabled', '_toggleCapacitorNotifications'], harness.context);
   const result = await fns._toggleCapacitorNotifications();
   assert.equal(result.enabled, true);
   assert.equal(result.ok, true);
@@ -221,7 +223,7 @@ test('enabling notifications reports a failed reminder reconciliation instead of
   const harness = makeNotificationHarness({ enabled: false, permission: 'granted' });
   harness.context._queueAllTaskReminderSync = async () => false;
   const { _setCapacitorNotificationsEnabled } = loadFunctions(
-    ['_setCapacitorNotificationsEnabled'],
+    ['_setNotificationsPrefWithLock', '_setCapacitorNotificationsEnabled'],
     harness.context
   );
 
@@ -274,7 +276,7 @@ test('failed native cancel-all restores the prior enabled preference', async () 
     ]
   });
   const { _setCapacitorNotificationsEnabled } = loadFunctions(
-    ['_setCapacitorNotificationsEnabled'],
+    ['_setNotificationsPrefWithLock', '_setCapacitorNotificationsEnabled'],
     harness.context
   );
 
