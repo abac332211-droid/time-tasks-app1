@@ -376,6 +376,8 @@ function createTaskFocusMutationHarness(options = {}) {
       if (Array.isArray(options.failFocusWrites)
           && options.failFocusWrites.includes(focusWriteCount)) return false;
       values.set(focusKey, JSON.stringify(sandbox._focusTimer));
+      if (Array.isArray(options.failFocusWritesAfterPersist)
+          && options.failFocusWritesAfterPersist.includes(focusWriteCount)) return false;
       return true;
     },
     saveData() {
@@ -490,5 +492,20 @@ test('failed Focus-link rollback leaves the verified detached state and blocks w
   assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
   assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
   assert.equal(h.sandbox._focusTimer.taskId, null);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
+
+
+test('Focus write that persists but fails verification blocks the task mutation', () => {
+  const h = createTaskFocusMutationHarness({ failFocusWritesAfterPersist: [1] });
+  h.sandbox.toggleTask(31);
+  const result = h.prompts[0][4]('40');
+
+  assert.equal(result, false);
+  assert.deepEqual(h.writes, ['focus']);
+  assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
+  assert.equal(h.sandbox._focusTimer.taskId, null);
+  assert.equal(h.sandbox.tasks[0].status, 'pending');
   assert.equal(h.sandbox.storageRecoveryRequired, true);
 });
