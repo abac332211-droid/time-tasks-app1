@@ -258,13 +258,31 @@ test('durable completion writes its journal before detaching and clears it after
 
   Object.assign(original, targetRow);
   assert.equal(h.sandbox.saveData(), true);
-  assert.equal(h.sandbox._finishTaskFocusLinkMutationDurable(detachment, true), true);
+  assert.equal(h.sandbox._finishTaskFocusLinkMutationDurable(detachment, true), 'committed');
 
   const committed = h.readMain();
   assert.equal(committed.tasks.find((row) => row.id === 7).status, 'done');
   assert.equal(Object.hasOwn(committed, 'pendingTaskFocusLinkMutation'), false);
   assert.equal(h.readFocus().taskId, null);
   assert.equal(h.sandbox._taskFocusLinkMutationWriteDepth, 0);
+});
+
+test('an ambiguous task write that actually committed returns the verified task snapshot to the caller', () => {
+  const h = transactionHarness({ saveFailure: 'after' });
+  const task = h.sandbox.tasks.find((row) => row.id === 7);
+  const targetRow = { ...task, status: 'done', actual: 18, completedAt: '2026-11-28T10:00:00' };
+  const detachment = h.sandbox._beginTaskFocusLinkMutationDurable(7, 'complete', targetRow);
+  assert.equal(detachment.ok, true);
+
+  Object.assign(task, targetRow);
+  assert.equal(h.sandbox.saveData(), false, 'the simulated writer reports an ambiguous failure after persisting');
+  const outcome = h.sandbox._finishTaskFocusLinkMutationDurable(detachment, false);
+
+  assert.equal(outcome, 'committed');
+  assert.equal(detachment.committedTasks[0].status, 'done');
+  assert.equal(h.readMain().tasks[0].status, 'done');
+  assert.equal(Object.hasOwn(h.readMain(), 'pendingTaskFocusLinkMutation'), false);
+  assert.equal(h.readFocus().taskId, null);
 });
 
 test('startup recovery replays completion after a cold start immediately following Focus detachment', () => {
