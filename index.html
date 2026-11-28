@@ -7802,7 +7802,7 @@ function deleteTask(id) {
       showToast("🗑️ تم تثبيت الحذف والتحقق من الحفظ بعد نتيجة كتابة غير مؤكدة");
       return true;
     }
-    if (_taskFocusOutcome === "rolled_back" || !_taskFocusDetachment.linked) {
+    if (_taskFocusOutcome === "rolled_back" || _taskFocusOutcome === "rollback_failed" || !_taskFocusDetachment.linked) {
       tasks = _snap;
     } else {
       storageRecoveryRequired = true;
