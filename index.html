@@ -5136,9 +5136,6 @@ function _retryMemoryOnlyPendingFocusCommit(expectedJournal) {
           && row.phase === expectedJournal.session.phase));
     });
     if (duplicateSession) throw new Error("focus_retry_session_identity_exists");
-    if (!_secondaryStorageWriteAllowed(FOCUS_TIMER_KEY))
-      throw new Error("focus_retry_timer_write_gate_closed");
-
     // _storageWriteAllowed normally rejects while recovery is required. Open
     // only the lock-owned startup-recovery write scope for this one validated
     // journal write; all transaction replay remains on the existing V2 path.
@@ -5148,6 +5145,8 @@ function _retryMemoryOnlyPendingFocusCommit(expectedJournal) {
     _startupStopwatchRecoveryWriteDepth = previousWriteDepth + 1;
     var journalSaved = false;
     try {
+      if (!_secondaryStorageWriteAllowed(FOCUS_TIMER_KEY))
+        throw new Error("focus_retry_timer_write_gate_closed");
       journalSaved = _withPendingFocusCommitWrite(
         expectedJournal.operationId,
         function() { return _saveFocusTimer(); },
