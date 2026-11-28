@@ -7303,9 +7303,12 @@ function _validatePendingTaskFocusLinkMutation(record) {
       || record.otherTasksFingerprint.length > 2000000) return false;
   try {
     var others = JSON.parse(record.otherTasksFingerprint);
+    var otherIds = new Set();
     if (!Array.isArray(others) || others.some(function(row) {
-      return !row || typeof row !== "object" || Array.isArray(row)
-        || !Number.isSafeInteger(row.id) || row.id <= 0 || row.id === record.taskId;
+      if (!_isValidTaskFocusLinkTaskSnapshot(row)
+          || row.id === record.taskId || otherIds.has(row.id)) return true;
+      otherIds.add(row.id);
+      return false;
     })) return false;
   } catch (e) { return false; }
   if (record.operation === "delete") return record.targetTask === null;
