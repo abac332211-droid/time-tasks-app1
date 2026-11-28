@@ -3447,34 +3447,32 @@ test('a second real page refuses backup export while another page leaves a Stopw
     });
 
     await pageB.waitForFunction(
-      raw => localStorage.getItem('timeTasksApp_focusTimer') === raw,
-      pendingRaw,
-      { timeout: 5_000 }
-    );
-    await pageB.reload({ waitUntil: 'domcontentloaded' });
-    await pageB.waitForFunction(
-      () => window._focusTimer
-        && window._focusTimer.pendingStopwatchTransaction
-        && window._focusTimer.pendingStopwatchTransaction.id === 'tx-from-page-a',
+      () => window._focusTimerExternalConflict === true,
       null,
-      { timeout: 20_000 }
+      { timeout: 5_000 }
     );
 
     const result = await pageB.evaluate(() => {
       let alertArgs = null;
       window.showAlertModal = (...args) => { alertArgs = args; };
       const before = localStorage.getItem('timeTasksApp_focusTimer');
+      const persistedTimer = JSON.parse(before);
       exportBackup();
       return {
         alertArgs,
         before,
-        after: localStorage.getItem('timeTasksApp_focusTimer')
+        after: localStorage.getItem('timeTasksApp_focusTimer'),
+        pendingTransactionId: persistedTimer.pendingStopwatchTransaction
+          && persistedTimer.pendingStopwatchTransaction.id
       };
     });
 
     assert.ok(result.alertArgs, 'the export attempt must surface a blocking error');
     assert.match(result.alertArgs[0], /خطأ التصدير/);
-    assert.match(result.alertArgs[1], /توجد عملية Stopwatch غير مكتملة/);
+    assert.match(result.alertArgs[1], /نافذة أخرى|أعد تحميل التطبيق/,
+      'the stale second page must refuse export until it reloads the shared timer state');
+    assert.equal(result.pendingTransactionId, 'tx-from-page-a',
+      'the durable Stopwatch transaction must still be pending during the refused export');
     assert.equal(result.after, result.before,
       'a refused export must not mutate the pending transaction journal');
 
