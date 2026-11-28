@@ -564,3 +564,97 @@ test('startup recovery completes a TASK_COMMITTED journal without repeating the 
   assert.equal(Object.hasOwn(restarted.readMain(), 'pendingTaskFocusLinkMutation'), false);
   assert.equal(restarted.sandbox.saveCount, 0);
 });
+
+
+test('storage snapshot restore refuses a rollback snapshot containing a pending Task–Focus journal before any write', () => {
+  const restore = extract('_restoreStorageSnapshot');
+  const values = new Map([
+    ['main', JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] })],
+    ['sessions', '[]'], ['focusTimer', '{}'], ['mentalInbox', '[]'],
+    ['thoughts', '[]'], ['projects', '[]'], ['focusSettings', '{}'], ['notifications', '{}']
+  ]);
+  const writes = [];
+  const sandbox = {
+    STORAGE_KEY: 'main',
+    FOCUS_SESSIONS_KEY: 'sessions',
+    FOCUS_TIMER_KEY: 'focusTimer',
+    MENTAL_INBOX_KEY: 'mentalInbox',
+    THOUGHTS_KEY: 'thoughts',
+    PROJECTS_KEY: 'projects',
+    FOCUS_SETTINGS_KEY: 'focusSettings',
+    NOTIFICATIONS_KEY: 'notifications',
+    _stopwatchTransactionLockDepth: 1,
+    storageRecoveryRequired: false,
+    _hasPersistedPendingStopwatchTransaction: () => false,
+    _hasPersistedPendingFocusCommit: () => false,
+    console: { error() {} },
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { writes.push(['set', key]); values.set(key, String(value)); },
+      removeItem(key) { writes.push(['remove', key]); values.delete(key); }
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(restore, sandbox);
+  const snapshot = {
+    main: JSON.stringify({
+      schemaVersion: 2, tasks: [], dailyLogs: [],
+      pendingTaskFocusLinkMutation: { deliberately: 'pending' }
+    }),
+    focusSessions: '[]', focusTimer: '{}', mentalInbox: '[]',
+    thoughts: '[]', projects: '[]', focusSettings: '{}', notifications: '{}'
+  };
+
+  assert.equal(sandbox._restoreStorageSnapshot(snapshot), false);
+  assert.equal(writes.length, 0, 'the restore must stop before the first storage mutation');
+  assert.equal(sandbox.storageRecoveryRequired, true);
+});
+
+test('storage snapshot restore will not overwrite a live Task–Focus journal with an otherwise clean rollback', () => {
+  const restore = extract('_restoreStorageSnapshot');
+  const liveJournal = {
+    version: 1, id: '123e4567-e89b-42d3-a456-426614174000',
+    taskId: 7, operation: 'delete', phase: 'FOCUS_DETACHED'
+  };
+  const values = new Map([
+    ['main', JSON.stringify({
+      schemaVersion: 2, tasks: [], dailyLogs: [],
+      pendingTaskFocusLinkMutation: liveJournal
+    })],
+    ['sessions', '[]'], ['focusTimer', '{}'], ['mentalInbox', '[]'],
+    ['thoughts', '[]'], ['projects', '[]'], ['focusSettings', '{}'], ['notifications', '{}']
+  ]);
+  const writes = [];
+  const sandbox = {
+    STORAGE_KEY: 'main',
+    FOCUS_SESSIONS_KEY: 'sessions',
+    FOCUS_TIMER_KEY: 'focusTimer',
+    MENTAL_INBOX_KEY: 'mentalInbox',
+    THOUGHTS_KEY: 'thoughts',
+    PROJECTS_KEY: 'projects',
+    FOCUS_SETTINGS_KEY: 'focusSettings',
+    NOTIFICATIONS_KEY: 'notifications',
+    _stopwatchTransactionLockDepth: 1,
+    storageRecoveryRequired: false,
+    _hasPersistedPendingStopwatchTransaction: () => false,
+    _hasPersistedPendingFocusCommit: () => false,
+    console: { error() {} },
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { writes.push(['set', key]); values.set(key, String(value)); },
+      removeItem(key) { writes.push(['remove', key]); values.delete(key); }
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(restore, sandbox);
+  const snapshot = {
+    main: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [] }),
+    focusSessions: '[]', focusTimer: '{}', mentalInbox: '[]',
+    thoughts: '[]', projects: '[]', focusSettings: '{}', notifications: '{}'
+  };
+
+  assert.equal(sandbox._restoreStorageSnapshot(snapshot), false);
+  assert.equal(writes.length, 0, 'the live Task–Focus transaction must remain untouched');
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.ok(JSON.parse(values.get('main')).pendingTaskFocusLinkMutation);
+});
