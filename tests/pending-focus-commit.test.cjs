@@ -429,6 +429,235 @@ function pendingFocusOwnerContext(options = {}) {
   return sandbox;
 }
 
+
+function memoryOnlyFocusRetryHarness(options = {}) {
+  const journal = validPendingFocusCommit();
+  const task = {
+    id: journal.taskId,
+    actualSeconds: journal.creditBefore.actualSeconds,
+    actual: journal.creditBefore.actual,
+    creditRevision: journal.creditBefore.creditRevision,
+    creditSchemaVersion: journal.creditBefore.creditSchemaVersion,
+    lastCreditOperationId: journal.creditBefore.lastCreditOperationId
+  };
+  const mainData = {
+    schemaVersion: 2,
+    tasks: [task],
+    dailyLogs: [],
+    creditOperations: []
+  };
+  const timerRecord = {
+    ...journal.timerBefore,
+    pendingStopwatchTransaction: null,
+    pendingFocusCommit: null
+  };
+  const state = {
+    mainRaw: JSON.stringify(mainData),
+    timerRaw: JSON.stringify(timerRecord),
+    sessionsRaw: '[]',
+    markers: Object.create(null),
+    saveCalls: 0,
+    recoveryCalls: 0,
+    failWrite: options.failWrite === true,
+    failReplay: options.failReplay === true
+  };
+  const baselines = Object.create(null);
+  baselines.timer = state.timerRaw;
+  baselines.sessions = state.sessionsRaw;
+  const sandbox = {
+    FOCUS_TIMER_KEY: 'timer',
+    FOCUS_SESSIONS_KEY: 'sessions',
+    STORAGE_KEY: 'main',
+    RESET_IN_PROGRESS_KEY: 'reset-marker',
+    ROLLING_RESTORE_IN_PROGRESS_KEY: 'rolling-marker',
+    IMPORT_IN_PROGRESS_KEY: 'import-marker',
+    MIGRATION_IN_PROGRESS_KEY: 'migration-marker',
+    _stopwatchTransactionLockDepth: 0,
+    _startupStopwatchRecoveryWriteDepth: 0,
+    _startupStopwatchRecoveryInFlight: false,
+    _startupStopwatchRecoveryFailed: false,
+    _startupStopwatchRecoveryPromise: null,
+    _stopwatchRetryRecoveryPromise: null,
+    _appInitCompleted: false,
+    _focusCommitInFlight: false,
+    _resetInFlight: false,
+    _resetRecoveryInFlight: false,
+    _startupResetRecoveryInFlight: false,
+    storageRecoveryRequired: true,
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    _mainStorageBaselineRaw: state.mainRaw,
+    _secondaryStorageBaselines: baselines,
+    _secondaryStorageConflicts: Object.create(null),
+    _pendingCorruptStorageSnapshots: [],
+    _focusTimer: {
+      ...journal.timerBefore,
+      pendingFocusCommit: journal,
+      pendingStopwatchTransaction: null
+    },
+    tasks: [task],
+    localStorage: {
+      getItem(key) {
+        if (Object.prototype.hasOwnProperty.call(state.markers, key)) return state.markers[key];
+        if (key === 'main') return state.mainRaw;
+        if (key === 'timer') return state.timerRaw;
+        if (key === 'sessions') return state.sessionsRaw;
+        return null;
+      }
+    },
+    navigator: { locks: { request() {} } },
+    _isTaskStorageLockHeld() { return sandbox._stopwatchTransactionLockDepth > 0; },
+    _withStopwatchTransactionLock(callback) {
+      sandbox._stopwatchTransactionLockDepth++;
+      return Promise.resolve().then(callback).finally(() => {
+        sandbox._stopwatchTransactionLockDepth--;
+      });
+    },
+    _validatePendingFocusCommit: record =>
+      JSON.stringify(record) === JSON.stringify(journal),
+    _focusTimerSnapshotMatchesRecord: (projection, record) =>
+      JSON.stringify(projection) === JSON.stringify(timerProjection({
+        ...record,
+        handledNotificationActionIds: record.handledNotificationActionIds || [],
+        pendingNotificationFinish: record.pendingNotificationFinish || null
+      })) || projection.baseElapsed === record.baseElapsed
+        && projection.elapsedRemainderMs === record.elapsedRemainderMs
+        && projection.sessionStartAt === record.sessionStartAt
+        && projection.taskId === record.taskId,
+    _capturePendingFocusTimerProjection: () => journal.timerBefore,
+    _focusCommitLedgerCanAcceptOperation: () => true,
+    _classifyCreditOperationAttempt: () => ({ status: 'new' }),
+    _pendingFocusTaskMatchesCreditSnapshot: (candidate, snapshot) =>
+      !!candidate && JSON.stringify({
+        actualSeconds: candidate.actualSeconds,
+        actual: candidate.actual,
+        creditRevision: candidate.creditRevision,
+        creditSchemaVersion: candidate.creditSchemaVersion,
+        lastCreditOperationId: candidate.lastCreditOperationId
+      }) === JSON.stringify(snapshot),
+    _readPendingFocusSessions() {
+      return { ok: true, raw: state.sessionsRaw, rows: [] };
+    },
+    _readAndValidateResyncBundle() {
+      return {
+        mainRaw: state.mainRaw,
+        mainData: JSON.parse(state.mainRaw),
+        timerRaw: state.timerRaw,
+        timerObj: JSON.parse(state.timerRaw),
+        sessionsRaw: state.sessionsRaw,
+        sessionsArr: JSON.parse(state.sessionsRaw)
+      };
+    },
+    _secondaryStorageWriteAllowed(key) {
+      return key === 'timer'
+        && sandbox.storageRecoveryRequired === false
+        && sandbox._startupStopwatchRecoveryWriteDepth > 0;
+    },
+    _withPendingFocusCommitWrite(operationId, callback, allowCreate) {
+      assert.equal(operationId, journal.operationId);
+      assert.equal(allowCreate, true);
+      return callback();
+    },
+    _saveFocusTimer() {
+      state.saveCalls++;
+      if (state.failWrite) return false;
+      const record = JSON.parse(state.timerRaw);
+      record.pendingFocusCommit = journal;
+      state.timerRaw = JSON.stringify(record);
+      baselines.timer = state.timerRaw;
+      return true;
+    },
+    _probeStartupStopwatchRecovery() {
+      const record = JSON.parse(state.timerRaw);
+      const expectedFocusCommit = record.pendingFocusCommit || null;
+      return {
+        error: null,
+        pending: !!expectedFocusCommit,
+        expectedFocusCommit,
+        expectedTx: null
+      };
+    },
+    _recoverPendingFocusCommitFromStartup(expected, current, initial) {
+      state.recoveryCalls++;
+      assert.equal(JSON.stringify(expected), JSON.stringify(journal));
+      assert.equal(JSON.stringify(current.expectedFocusCommit), JSON.stringify(journal));
+      assert.equal(JSON.stringify(initial.expectedFocusCommit), JSON.stringify(journal));
+      if (state.failReplay) return { ok: false, reason: 'injected_replay_failure' };
+      const record = JSON.parse(state.timerRaw);
+      record.pendingFocusCommit = null;
+      state.timerRaw = JSON.stringify(record);
+      baselines.timer = state.timerRaw;
+      sandbox._focusTimer.pendingFocusCommit = null;
+      sandbox.storageRecoveryRequired = false;
+      sandbox._startupStopwatchRecoveryFailed = false;
+      sandbox._appInitCompleted = true;
+      return { ok: true, recovered: 'replayed' };
+    },
+    showToast() {},
+    showAlertModal() {},
+    console: { error() {} }
+  };
+  vm.runInNewContext([
+    extractFunction('_parseStrictFocusSessionTimestamp'),
+    extractFunction('_validateCreditOperationRecord'),
+    extractFunction('_validateFocusSessionRecordV2'),
+    extractFunction('_validatePendingFocusTimerProjection'),
+    extractFunction('_validatePendingFocusCreditSnapshot'),
+    extractFunction('_validatePendingFocusCommit'),
+    extractFunction('_focusCommitDeepEqual'),
+    extractFunction('_retryMemoryOnlyPendingFocusCommit')
+  ].join('\n'), sandbox);
+  return { sandbox, state, journal, baselines };
+}
+
+test('retry persists a memory-only prepared focus journal only after every durable baseline still matches', async () => {
+  const harness = memoryOnlyFocusRetryHarness();
+  const result = await harness.sandbox._retryMemoryOnlyPendingFocusCommit(harness.journal);
+
+  assert.equal(result, true);
+  assert.equal(harness.state.saveCalls, 1, 'the prepared journal is persisted once');
+  assert.equal(harness.state.recoveryCalls, 1, 'the existing V2 replay path runs once');
+  assert.equal(JSON.parse(harness.state.timerRaw).pendingFocusCommit, null,
+    'the durable journal clears only after replay verifies completion');
+  assert.equal(harness.sandbox._focusTimer.pendingFocusCommit, null);
+  assert.equal(harness.sandbox.storageRecoveryRequired, false);
+  assert.equal(harness.sandbox._appInitCompleted, true);
+  assert.equal(harness.sandbox._startupStopwatchRecoveryWriteDepth, 0);
+  assert.equal(harness.sandbox._stopwatchTransactionLockDepth, 0);
+});
+
+test('retry refuses a memory-only focus journal when the main record changed and performs no write', async () => {
+  const harness = memoryOnlyFocusRetryHarness();
+  harness.state.mainRaw = JSON.stringify({
+    schemaVersion: 2,
+    tasks: [{ id: harness.journal.taskId, actualSeconds: 10 }],
+    dailyLogs: [],
+    creditOperations: []
+  });
+
+  const result = await harness.sandbox._retryMemoryOnlyPendingFocusCommit(harness.journal);
+  assert.equal(result, false);
+  assert.equal(harness.state.saveCalls, 0);
+  assert.equal(harness.state.recoveryCalls, 0);
+  assert.ok(harness.sandbox._focusTimer.pendingFocusCommit,
+    'the in-memory journal is not discarded when its baseline changed');
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  assert.equal(harness.sandbox._stopwatchTransactionLockDepth, 0);
+});
+
+test('retry refuses a memory-only focus journal when a recovery marker exists', async () => {
+  const harness = memoryOnlyFocusRetryHarness();
+  harness.state.markers['reset-marker'] = '1';
+
+  const result = await harness.sandbox._retryMemoryOnlyPendingFocusCommit(harness.journal);
+  assert.equal(result, false);
+  assert.equal(harness.state.saveCalls, 0);
+  assert.equal(harness.state.recoveryCalls, 0);
+  assert.ok(harness.sandbox._focusTimer.pendingFocusCommit);
+  assert.equal(harness.sandbox.storageRecoveryRequired, true);
+});
+
+
 test('pending focus writes require the shared lock and the exact durable operation owner', () => {
   const app = pendingFocusOwnerContext();
   assert.equal(app._pendingStopwatchWriteAllowed(), false);
