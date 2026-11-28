@@ -7340,7 +7340,8 @@ function _writeTaskFocusLinkJournal(journal, clearJournal) {
   try {
     var raw = localStorage.getItem(STORAGE_KEY);
     if (raw === null || !_mainStorageBaselineReady
-        || _mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw) return false;
+        || _mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw)
+      throw new Error("main storage baseline changed before journal write");
     var mainData = JSON.parse(raw);
     if (!mainData || mainData.schemaVersion !== CURRENT_SCHEMA_VERSION || !validateV2(mainData))
       return false;
@@ -7348,8 +7349,11 @@ function _writeTaskFocusLinkJournal(journal, clearJournal) {
     var operationId = clearJournal === true
       ? (typeof journal === "string" ? journal : journal.id) : journal.id;
     if (current && (!_validatePendingTaskFocusLinkMutation(current)
-        || current.id !== operationId)) return false;
-    if (!current && (clearJournal === true || journal.phase !== "PREPARED")) return false;
+        || current.id !== operationId))
+      throw new Error("pending Task–Focus journal identity changed");
+    if (!current && clearJournal === true)
+      throw new Error("pending Task–Focus journal disappeared before clear");
+    if (!current && journal.phase !== "PREPARED") return false;
     if (clearJournal === true) delete mainData.pendingTaskFocusLinkMutation;
     else mainData.pendingTaskFocusLinkMutation = journal;
     var serialized = JSON.stringify(mainData);
@@ -7382,7 +7386,10 @@ function _setTaskFocusLinkOnDurableTimer(expectedTaskId, nextTaskId) {
   var record;
   try {
     raw = localStorage.getItem(FOCUS_TIMER_KEY);
-    if (raw === null) return false;
+    if (raw === null) {
+      storageRecoveryRequired = true;
+      return false;
+    }
     record = JSON.parse(raw);
     if (!record || typeof record !== "object" || Array.isArray(record)) return false;
   } catch (error) {
@@ -7390,12 +7397,18 @@ function _setTaskFocusLinkOnDurableTimer(expectedTaskId, nextTaskId) {
     return false;
   }
   var currentTaskId = record.taskId === undefined ? null : record.taskId;
-  if (currentTaskId !== expectedTaskId && currentTaskId !== nextTaskId) return false;
+  if (currentTaskId !== expectedTaskId && currentTaskId !== nextTaskId) {
+    storageRecoveryRequired = true;
+    return false;
+  }
   if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)) {
     _secondaryStorageBaselines[FOCUS_TIMER_KEY] = raw;
   }
   if (_secondaryStorageConflicts[FOCUS_TIMER_KEY]
-      || _secondaryStorageBaselines[FOCUS_TIMER_KEY] !== raw) return false;
+      || _secondaryStorageBaselines[FOCUS_TIMER_KEY] !== raw) {
+    storageRecoveryRequired = true;
+    return false;
+  }
   if (currentTaskId !== nextTaskId) {
     record.taskId = nextTaskId;
     if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, JSON.stringify(record))) return false;
