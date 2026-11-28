@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dependency-audit-\${{ github.ref }}
+  group: dependency-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,13 +24,13 @@ jobs:
       - name: Checkout exact source revision
         uses: actions/checkout@v7
         with:
-          ref: \${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Verify checked-out source SHA
         env:
-          EXPECTED_SHA: \${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           ACTUAL_SHA="$(git rev-parse HEAD)"
@@ -62,7 +62,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: npm-audit-\${{ github.sha }}
+          name: npm-audit-${{ github.sha }}
           path: npm-audit.json
           if-no-files-found: error
           retention-days: 30
