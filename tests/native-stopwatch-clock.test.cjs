@@ -762,3 +762,202 @@ test('Android foreground start must be confirmed by the service before the JS ti
   assert.match(script, /stopSelf\(startId\)/);
 });
 
+
+
+test('Android Finish persists and acknowledges 0, 500, and 999 ms before opening the confirmation', async () => {
+  for (const elapsedMs of [0, 500, 999]) {
+    const action = makeNotificationAction({
+      action: 'finish',
+      elapsedRealtimeMs: 1000 + elapsedMs,
+      anchorElapsedRealtimeMs: 1000,
+      anchorBaseMs: 0,
+      elapsedMs
+    });
+    const h = makeNotificationActionHarness(action);
+    h.focusTimer.baseElapsed = 0;
+    h.focusTimer.nativeAnchorBaseMs = 0;
+    h.sandbox._focusElapsedRemainderMs = 0;
+
+    const result = await h.sandbox._consumeNativeStopwatchNotificationAction();
+    assert.equal(result, 'finish', elapsedMs + ' ms Finish is accepted');
+    assert.equal(h.focusTimer.baseElapsed, 0);
+    assert.equal(h.sandbox._focusElapsedRemainderMs, elapsedMs,
+      elapsedMs + ' ms remainder must survive as a separate exact value');
+    assert.equal(h.focusTimer.pendingNotificationFinish.elapsedMs, elapsedMs);
+    assert.equal(h.focusTimer.pendingNotificationFinish.actionId, UUID_ACTION);
+    assert.equal(h.focusTimer.pendingNotificationFinish.sessionToken, UUID_SESSION);
+    assert.deepEqual(h.ackCalls.map(call => ({
+      actionId: call.actionId,
+      sessionToken: call.sessionToken,
+      stopMatchingService: call.stopMatchingService
+    })), [{
+      actionId: UUID_ACTION,
+      sessionToken: UUID_SESSION,
+      stopMatchingService: true
+    }]);
+    assert.deepEqual(h.actionOrder, ['save', 'ack', 'finish'],
+      'the intent is durable before ACK, and the confirmation is opened only after ACK');
+  }
+});
+
+function renderFinishButtonState(timerOverrides = {}, remainderMs = 0) {
+  const elements = Object.create(null);
+  function element() {
+    return {
+      textContent: '', innerHTML: '', style: {}, dataset: {},
+      value: '',
+      classList: {
+        toggle() {}, add() {}, remove() {}, contains() { return false; }
+      },
+      appendChild() {}
+    };
+  }
+  const sandbox = {
+    _focusTimer: {
+      mode: 'stopwatch', phase: 'work', running: false, baseElapsed: 0,
+      cyclePosition: 0, taskId: null, pendingNotificationFinish: null,
+      ...timerOverrides
+    },
+    _focusElapsedRemainderMs: remainderMs,
+    _getElapsedSec: () => 0,
+    _formatFocusTime: () => '00:00',
+    _formatDuration: () => '0s',
+    _phaseTargetSec: () => 1500,
+    _todaySessionsStats: () => ({ count: 0, totalSec: 0 }),
+    tasks: [],
+    isTaskDone: () => false,
+    isTaskCancelled: () => false,
+    _isTimerControlBlocked: () => false,
+    _renderTimerSettings() {},
+    document: {
+      getElementById(id) { return elements[id] || (elements[id] = element()); },
+      querySelectorAll() { return []; }
+    }
+  };
+  vm.runInNewContext(extractFunction('_renderFocusTimer'), sandbox);
+  sandbox._renderFocusTimer();
+  return elements.timerFinishBtn.disabled;
+}
+
+test('Finish control remains enabled for a saved Android intent and for a sub-second elapsed remainder', () => {
+  assert.equal(renderFinishButtonState({ baseElapsed: 0 }, 500), false,
+    '500 ms is elapsed time even though baseElapsed is still zero');
+  assert.equal(renderFinishButtonState({
+    baseElapsed: 0,
+    pendingNotificationFinish: {
+      actionId: UUID_ACTION, sessionToken: UUID_SESSION,
+      action: 'finish', elapsedMs: 0, bootCount: 17
+    }
+  }, 0), false, 'a zero-ms Finish request must remain user-accessible');
+  assert.equal(renderFinishButtonState({ baseElapsed: 0 }, 0), true,
+    'a truly empty timer without a pending intent does not need Finish');
+});
+
+function finishDialogHarness(timerRecord, remainderMs = 0) {
+  const elements = Object.create(null);
+  const overlay = {
+    hidden: true,
+    classList: {
+      contains(name) { return name === 'hidden' ? overlay.hidden : false; },
+      remove(name) { if (name === 'hidden') overlay.hidden = false; },
+      add(name) { if (name === 'hidden') overlay.hidden = true; }
+    }
+  };
+  function element() {
+    const node = {
+      children: [], textContent: '', style: {}, className: '',
+      appendChild(child) { this.children.push(child); },
+      classList: {
+        add() {}, remove() {}, contains() { return false; }
+      }
+    };
+    let html = '';
+    Object.defineProperty(node, 'innerHTML', {
+      get() { return html; },
+      set(value) { html = String(value); this.children = []; }
+    });
+    return node;
+  }
+  const continued = [];
+  const sandbox = {
+    _focusTimer: { ...timerRecord },
+    _focusElapsedRemainderMs: remainderMs,
+    _pendingFinishDialogShown: false,
+    _modalKeyHandler: null,
+    _isTaskStorageLockHeld: () => true,
+    _isTimerControlBlocked: () => false,
+    _isFocusCommitBlocked: () => false,
+    _freezeFocusTimerForDecision: () => Object.freeze({
+      mode: 'stopwatch', phase: 'work', running: false,
+      baseElapsed: timerRecord.baseElapsed,
+      elapsedRemainderMs: remainderMs,
+      cyclePosition: 0, taskId: null, sessionStartAt: 1000,
+      awaitingConfirmation: false, pendingPhaseEndedAt: null,
+      clockAdjusted: false, nativeSessionToken: timerRecord.nativeSessionToken,
+      handledNotificationActionIds: timerRecord.handledNotificationActionIds.slice(),
+      pendingNotificationFinish: { ...timerRecord.pendingNotificationFinish }
+    }),
+    _formatDuration: value => String(value) + 's',
+    _setupModalFocusTrap: () => () => {},
+    document: {
+      getElementById(id) {
+        if (id === 'customModalOverlay') return overlay;
+        return elements[id] || (elements[id] = element());
+      },
+      createElement() { return element(); },
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    closeModal() { overlay.classList.add('hidden'); },
+    _continueFocusTimerFinish(snapshot) {
+      continued.push(snapshot);
+      sandbox._focusTimer.pendingNotificationFinish = null;
+      return Promise.resolve(true);
+    },
+    _renderFocusTimer() {},
+    showToast() {},
+    showAlertModal() {}
+  };
+  vm.runInNewContext(extractFunction('finishTimer'), sandbox);
+  return { sandbox, overlay, elements, continued };
+}
+
+test('saved Android Finish can be reopened after closing its confirmation and remains available after reload', async () => {
+  const persistedTimer = {
+    mode: 'stopwatch', phase: 'work', running: false, baseElapsed: 0,
+    nativeClockActive: false, nativeSessionToken: UUID_SESSION,
+    handledNotificationActionIds: [UUID_ACTION],
+    pendingNotificationFinish: {
+      actionId: UUID_ACTION, sessionToken: UUID_SESSION,
+      action: 'finish', elapsedMs: 500, bootCount: 17,
+      elapsedRealtimeMs: 1500, wallTimeMs: 20000
+    }
+  };
+  const first = finishDialogHarness(persistedTimer, 500);
+  assert.equal(first.sandbox.finishTimer(), true);
+  assert.equal(first.overlay.hidden, false);
+  assert.equal(first.sandbox._pendingFinishDialogShown, true);
+
+  // Simulate a page-level modal close that does not execute the button's cancel handler.
+  first.sandbox.closeModal();
+  assert.equal(first.overlay.hidden, true);
+  assert.equal(first.sandbox.finishTimer(), true,
+    'the stale visible flag must not strand a durable Finish request');
+  assert.equal(first.overlay.hidden, false);
+  const confirm = first.elements.modalFooter.children.find(button => button.textContent === 'تأكيد الإنهاء');
+  assert.ok(confirm);
+  confirm.onclick();
+  await Promise.resolve();
+  assert.equal(first.continued.length, 1);
+  assert.equal(first.continued[0].elapsedRemainderMs, 500);
+  assert.equal(first.continued[0].pendingNotificationFinish.actionId, UUID_ACTION);
+
+  // Rehydrate a distinct page from the durable record and verify the action remains accessible.
+  const reloaded = JSON.parse(JSON.stringify(persistedTimer));
+  const second = finishDialogHarness(reloaded, 500);
+  assert.equal(second.sandbox.finishTimer(), true);
+  assert.equal(second.overlay.hidden, false);
+  assert.equal(second.sandbox._pendingFinishDialogShown, true);
+  assert.equal(second.sandbox._focusTimer.pendingNotificationFinish.actionId, UUID_ACTION);
+  assert.equal(second.sandbox._focusTimer.nativeSessionToken, UUID_SESSION);
+});
