@@ -8457,6 +8457,8 @@ function buildBackupObject() {
   if (!data || typeof data !== "object" || Array.isArray(data)
       || !Array.isArray(data.tasks) || !Array.isArray(data.dailyLogs))
     throw new Error("تعذر تصدير النسخة: بنية بيانات المهام والسجلات غير مكتملة.");
+  if (Object.prototype.hasOwnProperty.call(data, "pendingTaskFocusLinkMutation"))
+    throw new Error("تعذر تصدير النسخة: توجد معاملة ربط مهمة ومؤقت غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
   // A missing ledger is valid only for pre-ledger data. A present malformed
   // value must fail closed; silently replacing it with [] would erase identities.
   if (Object.prototype.hasOwnProperty.call(data, "creditOperations")
@@ -8654,6 +8656,8 @@ function validateBackup(obj) {
   const d = obj.data;
   if (!d || typeof d !== "object" || Array.isArray(d))
     return { valid: false, reason: "لا يوجد كائن بيانات." };
+  if (Object.prototype.hasOwnProperty.call(d, "pendingTaskFocusLinkMutation"))
+    return { valid: false, reason: "النسخة تحتوي على معاملة ربط مهمة ومؤقت غير مكتملة." };
   if (!Array.isArray(d.tasks))
     return { valid: false, reason: "حقل المهام ليس مصفوفة." };
   if (!Array.isArray(d.dailyLogs))
