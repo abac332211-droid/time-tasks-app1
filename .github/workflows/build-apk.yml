@@ -3,22 +3,46 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, codex/v2.9.0-stability, codex/v2.9.1-stability, codex/v2.9.1-stopwatch-integrity-fix, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-v1, codex/pending-focus-v2-writer-unification]
+  pull_request:
+    branches: [codex/v2.9.1-stability, codex/pomodoro-storage-gates-pwa-integration, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-fix-v1]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify checked-out source SHA
+        run: |
+          EXPECTED_SHA="${{ github.sha }}"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Verified source SHA: $ACTUAL_SHA"
+          echo "Expected source SHA: $EXPECTED_SHA"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
+          package-manager-cache: false
+
+      - name: Install Playwright Chromium for real multi-window tests
+        run: |
+          npm install --no-save --no-package-lock playwright@1.65.1
+          npx playwright install --with-deps chromium
+
+      - name: Run regression tests
+        run: npm test
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -30,8 +54,8 @@ jobs:
           cp *.png web/ 2>/dev/null || true
           ls -la web/
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Install dependencies from lockfile
+        run: npm ci --no-audit --no-fund
 
       - name: Force-create Capacitor config
         run: |
@@ -47,6 +71,15 @@ jobs:
 
       - name: Add Android platform
         run: npx cap add android
+
+      - name: Configure native stopwatch clock and foreground service
+        run: python3 scripts/configure-android-stopwatch.py
+
+      - name: Align Android version with app sources
+        run: python3 scripts/configure-android-version.py
+
+      - name: Isolate Debug APK from production installation
+        run: python3 scripts/configure-android-debug.py
 
       - name: Fix Android project
         run: |
@@ -73,8 +106,25 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
+      - name: Verify merged Android notification permissions
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          BADGING="$("$AAPT" dump badging "$APK")"
+          printf '%s\n' "$BADGING" | grep -F "package: name='com.abac332211.timetasks.debug'"
+          PERMISSIONS="$("$AAPT" dump permissions "$APK")"
+          printf '%s\n' "$PERMISSIONS"
+          grep -q "android.permission.POST_NOTIFICATIONS" <<< "$PERMISSIONS"
+          grep -q "android.permission.RECEIVE_BOOT_COMPLETED" <<< "$PERMISSIONS"
+          grep -q "android.permission.WAKE_LOCK" <<< "$PERMISSIONS"
+          grep -q "android.permission.FOREGROUND_SERVICE" <<< "$PERMISSIONS"
+          grep -q "android.permission.FOREGROUND_SERVICE_SPECIAL_USE" <<< "$PERMISSIONS"
+          grep -q 'android:foregroundServiceType="specialUse"' android/app/src/main/AndroidManifest.xml
+          grep -q "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android/app/src/main/AndroidManifest.xml
+
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: time-tasks-app-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
