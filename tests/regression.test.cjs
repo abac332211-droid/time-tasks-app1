@@ -2304,6 +2304,7 @@ function resetAllHarness(faults = {}) {
       + extractFunction('_invalidateRollingRecoveryBackupRequests') + '\n'
       + extractFunction('_withResetTransactionLock') + '\n'
       + extractFunction('_resetStorageRemovalKeys') + '\n'
+      + extractFunction('_resetSecondaryStorageTracking') + '\n'
       + extractFunction('_resetSecondaryStorageTrackingAfterReset') + '\n'
       + extractFunction('_recoverInterruptedReset') + '\n'
       + extractFunction('_probeStartupStopwatchRecovery') + '\n'
