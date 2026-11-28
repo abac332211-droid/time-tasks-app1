@@ -24,6 +24,7 @@ function extract(name) {
 }
 
 const sandbox = {
+  CURRENT_SCHEMA_VERSION: 2,
   validateV2(record) {
     return !!record && record.schemaVersion === 2
       && Array.isArray(record.tasks) && record.tasks.length === 1
