@@ -1533,6 +1533,25 @@ var _rollingRecoveryBackupLastFailure = null;
 var _rollingRecoveryBackupLastSuccessAt = null;
 var _rollingRecoveryBackupStale = false;
 let _pendingUncompleteConfirm = false;
+var _explicitTaskCreditClearIntent = null;
+function _withExplicitTaskCreditClearIntent(taskId, previousSeconds, callback) {
+  if (!Number.isSafeInteger(taskId) || taskId <= 0
+      || !Number.isSafeInteger(previousSeconds) || previousSeconds < 0
+      || typeof callback !== "function" || _explicitTaskCreditClearIntent !== null) {
+    showAlertModal("تعذر مسح الرصيد", "لا يمكن مسح هذا الرصيد قبل تجهيز هوية V2 الموثوقة. بقي الوقت المسجل كما هو.");
+    return false;
+  }
+  var intent = Object.freeze({
+    taskId: taskId,
+    previousSeconds: previousSeconds,
+    targetSeconds: null
+  });
+  _explicitTaskCreditClearIntent = intent;
+  try { return callback() === true; }
+  finally {
+    if (_explicitTaskCreditClearIntent === intent) _explicitTaskCreditClearIntent = null;
+  }
+}
 var _mainStorageBaselineRaw = null;
 var _mainStorageBaselineReady = false;
 var _mainStorageExternalChangeObserved = false;
@@ -4892,6 +4911,17 @@ function saveData() {
             || nextTask.actual !== Math.floor(targetSeconds / 60)) return false;
       }
 
+      if (targetSeconds === null && previousTask.actualSeconds !== null) {
+        var clearIntent = typeof _explicitTaskCreditClearIntent !== "undefined"
+          ? _explicitTaskCreditClearIntent : null;
+        if (!clearIntent || clearIntent.taskId !== nextTask.id
+            || clearIntent.previousSeconds !== previousTask.actualSeconds
+            || clearIntent.targetSeconds !== null) {
+          showAlertModal("رفض مسح رصيد غير مؤكد",
+            "لم يُمسح الوقت الفعلي؛ يلزم إجراء مسح صريح ومؤكد مرتبط بعملية اعتماد V2. أعد المحاولة من خيار مسح الرصيد بعد مراجعة قيمته.");
+          return false;
+        }
+      }
       if (targetSeconds === previousTask.actualSeconds) {
         nextTask.actualSeconds = targetSeconds;
         nextTask.actual = targetSeconds === null ? null : Math.floor(targetSeconds / 60);
@@ -6923,8 +6953,9 @@ function performShutdown() {
       t.plannedDate = tomorrow;
       moved++;
     } else if (decision === 'cancel') {
+      // Shutdown cancellation changes lifecycle state only; the recorded
+      // actual balance and V2 operation identity remain intact.
       t.status = 'cancelled';
-      t.actual = null;
       cancelled++;
     } else {
       kept++;
@@ -7027,10 +7058,10 @@ function saveTask() {
     const actualRaw = document.getElementById("taskActual").value.trim();
     const hadActualBefore = (t.actual !== null && t.actual !== undefined);
 
-    if (actualRaw === "" && hadActualBefore && t.status === "done" && !_pendingUncompleteConfirm) {
+    if (actualRaw === "" && hadActualBefore && !_pendingUncompleteConfirm) {
       showConfirmModal(
-        "⚠️ تأكيد إلغاء الإنجاز",
-        "كانت المهمة منجزة بمدة فعلية سابقة.<br>تفريغ حقل المدة الفعلية سيُلغي الإنجاز.<br>هل تريد المتابعة؟",
+        "⚠️ تأكيد مسح الوقت الفعلي",
+        "تحتوي المهمة على وقت فعلي سابق.<br>تفريغ الحقل سيمسح الرصيد من خلال عملية تعديل V2 موثقة، ولن يكتفي بتغيير حالة المهمة.<br>هل تريد مسح الرصيد والاستمرار؟",
         function() {
           if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
             showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
@@ -7079,7 +7110,20 @@ function saveTask() {
     t.priority = priority;
     t.recurrence = recurrence;
 
-    if (saveData()) {
+    var taskSaveSucceeded = false;
+    if (newActual === null && hadActualBefore) {
+      if (Number.isSafeInteger(t.actualSeconds) && t.actualSeconds >= 0) {
+        taskSaveSucceeded = _withExplicitTaskCreditClearIntent(
+          t.id, t.actualSeconds, function() { return saveData(); }
+        );
+      } else {
+        showAlertModal("يلزم ترحيل رصيد المهمة",
+          "هذه المهمة لا تملك بعد هوية رصيد V2 موثوقة. لم نمسح وقتها؛ أكمل ترحيل البيانات ثم أعد المحاولة.");
+      }
+    } else {
+      taskSaveSucceeded = saveData();
+    }
+    if (taskSaveSucceeded) {
       cancelEdit();
       showToast("✏️ تم تعديل المهمة");
       renderAll();
@@ -7190,7 +7234,6 @@ function reviveTask(id) {
   if (!t || !isTaskCancelled(t)) return;
   const _old = { status: t.status, actual: t.actual, completedAt: t.completedAt };
   t.status = "pending";
-  t.actual = null;
   t.completedAt = null;
   if (saveData()) {
     renderAll();
@@ -7228,7 +7271,9 @@ function toggleTask(id) {
         const valStr = String(raw).trim();
         let _newActual;
         if (valStr === "") {
-          _newActual = null;
+          // An empty completion duration is a status-only action, not a request
+          // to erase a previously earned task balance.
+          _newActual = t.actual;
         } else {
           const n = Number(valStr);
           if (!Number.isFinite(n) || n < 1) { showAlertModal("تنبيه", "المدة الفعلية يجب أن تكون دقيقة واحدة على الأقل"); return; }
@@ -7259,7 +7304,7 @@ function toggleTask(id) {
     );
   } else {
     const _old = { actual: t.actual, status: t.status, completedAt: t.completedAt };
-    t.status = "pending"; t.actual = null; t.completedAt = null;
+    t.status = "pending"; t.completedAt = null;
     if (saveData()) {
       renderAll();
       showToast("↩️ تم التراجع عن الإنجاز");
