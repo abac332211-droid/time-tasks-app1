@@ -1199,3 +1199,42 @@ PR #10 يظل مفتوحًا كمسودة وغير مدمج. `main` لم يتغ�
 - 51 اختبار Android متخطٍ؛ توحيد تثبيت Playwright لم ينفذ.
 - لا يوجد اختبار هاتف Redmi Note 10 5G على رأس نهائي، ولا مراجعة مستقلة `APPROVED`، ولا اعتماد توقيع Release، ولا موافقة إصدار.
 - لا دمج، ولا تغيير لـ`main`، ولا رفع إصدار 2.9.1، ولا Release أو نشر.
+
+
+---
+
+## تفعيل اختبارات Chromium في Android Debug — تحقق على SHA `aafd0b9aca328d1139a6e6c0e539841dad6b10bd` — 28 نوفمبر 2026
+
+### سبب الخطوة والتغيير الوحيد
+- في تشغيل Android السابق `46116026559` كانت حصيلة الاختبار 545 حالة، منها 494 ناجحة و51 متخطاة. أوضحت السجلات أن اختبارات المتصفح تخطت لغياب Playwright، برسالة: `Playwright is installed only in the dedicated CI browser step`.
+- أضيفت إلى `.github/workflows/build-apk.yml` خطوة قبل `npm test` تثبت Playwright `1.65.1` وChromium واعتماديات النظام باستخدام نفس أمر التثبيت الموجود في `verify-pwa.yml`.
+- الالتزام: `aafd0b9aca328d1139a6e6c0e539841dad6b10bd` — `ci: run Chromium browser regressions in Android build`.
+- فحص diff الالتزام: ملف واحد فقط، وهو سير عمل Android. لا تعديل على `index.html` أو الاختبارات أو `package.json` أو `package-lock.json`، ولا تغيير لإصدار التطبيق.
+
+### نتائج التحقق على SHA الدقيق
+- [PWA Pull Request — run 46121101261](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46121101261): نجاح؛ **545/545 ناجحًا، 0 فشل، 0 تخطٍ**.
+- [PWA Push — run 46121097539](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46121097539): نجاح؛ **545/545 ناجحًا، 0 فشل، 0 تخطٍ**.
+- [Android Debug — run 46121097712](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46121097712): نجاح كامل؛ **545/545 ناجحًا، 0 فشل، 0 تخطٍ**. نجح `assembleDebug` وظهر `BUILD SUCCESSFUL in 1m 3s`، ونجح فحص Manifest ورفع APK.
+- فحوص Manifest أثبتت هوية Debug `com.abac332211.timetasks.debug` مع `versionName=2.9.0-debug` و`versionCode=2009000`، ووجود الأذونات `POST_NOTIFICATIONS` و`RECEIVE_BOOT_COMPLETED` و`WAKE_LOCK` و`FOREGROUND_SERVICE` و`FOREGROUND_SERVICE_SPECIAL_USE`، وبيانات نوع الخدمة `specialUse`.
+
+### APK Debug — فحص artifact مستقل
+- Artifact ID: `15254151740`، الاسم `time-tasks-app-apk`.
+- ZIP: **5,541,590 بايت**؛ SHA-256: `ea9ecdb3f88a8f8c0a91c848a22dba55206ac6f075fed0bdc1c1c18e531586fb`.
+- ملف APK المستخرج `app-debug.apk`: **6,176,758 بايت**؛ SHA-256: `0cb7033ad2700c2415b7f2b17d1223a129545ca51b53ecbc47db11f769e3cb85`.
+- البصمتان لملفين مختلفين: الأولى لأرشيف artifact والثانية لملف APK الخام داخله. هذا أثر Debug وليس Release موقّعًا، ولم يُثبّت أو يُختبر على هاتف فعلي.
+
+### تدقيق التبعيات على SHA نفسه
+- [Dependency audit Push — run 46121097533](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46121097533): أُنتج JSON ورُفع بنجاح، ثم فشل فقط في `Enforce audit result` بسبب نتيجة `npm audit`.
+- التقرير: Artifact ID `15254086668`، الحجم 1,996 بايت. metadata: 100 dependency، وخمس حزم متأثرة: 1 Critical و1 High و3 Moderate.
+- الحزم: `tar` (Critical)، `@capacitor/cli` (High)، `rimraf` و`glob` و`minimatch` (Moderate). يقترح npm `@capacitor/cli@8.6.3` مع `isSemVerMajor=true`. لم تُجرَ ترقية أو `npm audit fix --force`، ولم يتغير lockfile؛ يتطلب الحل تحليل توافق مستقلًا مع Capacitor 6.
+
+### حالة PR والبوابات المتبقية
+- PR #6 عند SHA أعلاه مفتوح كمسودة وغير مدمج؛ 960 commit و59 ملفًا متغيرًا. قاعدة PR هي `main`، ورأسها بقي `0a4dcd13af4fd3bb1779550907234cfc64b05523`.
+- خمس مراجعات PR #6 ما زالت `COMMENTED` من حساب مالك المستودع نفسه؛ لا توجد `APPROVED` مستقلة أو خيوط inline.
+- PR #4 مفتوح وغير مدمج، ولا توجد له مراجعات أو خيوط inline في الفحص. PR #25 ما زال مسودة منفصلة؛ لم يُدمج.
+- تفعيل Chromium أزال تخطي 51 اختبارًا من مسار Android وأثبت اجتياز مجموعة الاختبارات الآلية. لكنه لا يغلق وحده M-01: يلزم اختبار Chromium محدد يحقن فشل أول كتابة journal قبل أن يصبح دائمًا، ثم يعيد فتح التطبيق ويثبت استعمال V2 writer الإنتاجي وكتابة الرصيد والجلسة مرة واحدة فقط دون تكرار.
+- ما زال اختبار الهاتف الفعلي، والمراجعة المستقلة `APPROVED`، ومعالجة ثغرات npm، والتحقق من التوقيع الأصلي، وموافقة الإصدار غير مكتملة. رقم الإصدار بقي `2.9.0`.
+- **لا دمج، ولا تعديل لـ`main`، ولا Release أو نشر.**
+
+### الخطوة العملية التالية
+إضافة اختبار Chromium end-to-end يعيد إنتاج فشل أول كتابة `pendingFocusCommit` قبل استدامة journal، ثم ينشئ سياقًا/صفحة جديدة ويستعمل مسار الكاتب V2 الإنتاجي الفعلي؛ والتحقق من دفتر الرصيد وسجل الجلسة وإعادة ضبط المؤقت مرة واحدة فقط، مع اختبار إعادة المحاولة عند فشل الكتابة. لا تغيير في كود الإنتاج قبل أن يحدد هذا الاختبار فجوة فعلية قابلة للإصلاح.
