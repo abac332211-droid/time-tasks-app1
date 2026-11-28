@@ -7442,15 +7442,24 @@ function _beginTaskFocusLinkMutationDurable(taskId, operation, targetTask) {
   try {
     mainRaw = localStorage.getItem(STORAGE_KEY);
     if (mainRaw === null || !_mainStorageBaselineReady || _mainStorageExternalChangeObserved
-        || mainRaw !== _mainStorageBaselineRaw) return { ok: false, linked: true };
+        || mainRaw !== _mainStorageBaselineRaw) {
+      storageRecoveryRequired = true;
+      return { ok: false, linked: true };
+    }
     mainData = JSON.parse(mainRaw);
     if (!validateV2(mainData) || JSON.stringify(mainData.tasks) !== JSON.stringify(tasks)
         || Object.prototype.hasOwnProperty.call(mainData, "pendingTaskFocusLinkMutation"))
       return { ok: false, linked: true };
     focusRaw = localStorage.getItem(FOCUS_TIMER_KEY);
-    if (focusRaw === null || _secondaryStorageConflicts[FOCUS_TIMER_KEY]) return { ok: false, linked: true };
+    if (focusRaw === null || _secondaryStorageConflicts[FOCUS_TIMER_KEY]) {
+      storageRecoveryRequired = true;
+      return { ok: false, linked: true };
+    }
     if (Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)
-        && _secondaryStorageBaselines[FOCUS_TIMER_KEY] !== focusRaw) return { ok: false, linked: true };
+        && _secondaryStorageBaselines[FOCUS_TIMER_KEY] !== focusRaw) {
+      storageRecoveryRequired = true;
+      return { ok: false, linked: true };
+    }
     focusRecord = JSON.parse(focusRaw);
     if (!focusRecord || typeof focusRecord !== "object" || Array.isArray(focusRecord)
         || focusRecord.taskId !== taskId) return { ok: false, linked: true };
