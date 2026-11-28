@@ -1686,8 +1686,8 @@ test('task deletion restores the task and linked focus timer when persistence fa
     'function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {',
     '  if (!detachment || !detachment.linked) return true;',
     '  if (taskSaveSucceeded === true) return "committed";',
-    '  _focusTimer.taskId = detachment.previousTaskId;'
-    '  return _saveFocusTimer() ? "rolled_back" : false;'
+    '  _focusTimer.taskId = detachment.previousTaskId;',
+    '  return _saveFocusTimer() ? "rolled_back" : false;',
     '}',
     deleteFunctionMatch[0]
   ].join('\n'), sandbox);
