@@ -5358,7 +5358,8 @@ function retryStorageRecovery() {
     showToast('✅ لا يوجد حظر حاليًّا');
     return Promise.resolve(true);
   }
-  if (hasRetryMarker || retryProbe.expectedTx || retryProbe.expectedFocusCommit || hasQueuedForensics) {
+  if (hasRetryMarker || retryProbe.expectedTx || retryProbe.expectedFocusCommit
+      || retryProbe.expectedTaskMutation || hasQueuedForensics) {
     if (_startupStopwatchRecoveryInFlight || _stopwatchRetryRecoveryPromise) {
       showToast("⏳ استرداد التخزين قيد التنفيذ بالفعل...");
       return _stopwatchRetryRecoveryPromise || _startupStopwatchRecoveryPromise || Promise.resolve(false);
