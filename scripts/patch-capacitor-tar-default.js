@@ -6,7 +6,6 @@
 // the module as __esModule. Add the expected default interop alias without
 // changing the tar API or downgrading its security fixes.
 const fs = require("node:fs");
-const path = require("node:path");
 
 function fail(message) {
   process.stderr.write("[capacitor-tar-interop] " + message + "\n");
@@ -14,6 +13,11 @@ function fail(message) {
 }
 
 try {
+  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  if (nodeMajor !== 20 && nodeMajor < 22) {
+    throw new Error("This dependency tree requires Node.js 20 or >=22; detected " + process.versions.node);
+  }
+
   const entry = require.resolve("tar");
   const packageJsonPath = require.resolve("tar/package.json");
   const metadata = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
