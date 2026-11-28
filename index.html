@@ -7243,6 +7243,114 @@ function reviveTask(id) {
   }
 }
 
+function _beginTaskFocusLinkMutation(taskId) {
+  if (!_isTaskStorageLockHeld()) {
+    console.error("Task/Focus link mutation refused without the shared Stopwatch lock.");
+    return { ok: false, linked: false };
+  }
+  if (!_focusTimer || _focusTimer.taskId !== taskId) {
+    return { ok: true, linked: false };
+  }
+
+  var previousMainRaw;
+  try {
+    previousMainRaw = localStorage.getItem(STORAGE_KEY);
+  } catch (readError) {
+    storageRecoveryRequired = true;
+    showAlertModal("تعذر التحقق من بيانات المهمة",
+      "لم نفصل المؤقت أو نعدّل المهمة لأن سجل المهام الحالي تعذر قراءته.");
+    return { ok: false, linked: true };
+  }
+
+  var previousTaskId = _focusTimer.taskId;
+  _focusTimer.taskId = null;
+  if (_saveFocusTimer() !== true) {
+    // A failed verified write may still have changed storage. Reconcile the
+    // in-memory link with the durable record before returning to the caller.
+    try {
+      var durableFocusRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+      if (durableFocusRaw === null) throw new Error("focus timer record is missing");
+      var durableFocus = JSON.parse(durableFocusRaw);
+      if (!durableFocus || typeof durableFocus !== "object"
+          || Array.isArray(durableFocus)) throw new Error("focus timer record is invalid");
+      if (durableFocus.taskId === previousTaskId) {
+        _focusTimer.taskId = previousTaskId;
+      } else if (durableFocus.taskId === null) {
+        _focusTimer.taskId = null;
+        storageRecoveryRequired = true;
+      } else {
+        storageRecoveryRequired = true;
+      }
+    } catch (reconcileError) {
+      storageRecoveryRequired = true;
+    }
+    if (_focusTimer.taskId === null) _renderFocusTimer();
+    showAlertModal("تعذر فصل المؤقت",
+      "لم نعدّل حالة المهمة لأن حفظ فصل المؤقت لم ينجح أو تعذر التحقق منه. أعد تحميل التطبيق بعد معالجة حالة التخزين.");
+    return { ok: false, linked: true };
+  }
+
+  return {
+    ok: true,
+    linked: true,
+    previousTaskId: previousTaskId,
+    previousMainRaw: previousMainRaw
+  };
+}
+
+function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {
+  if (!detachment || detachment.linked !== true) return true;
+  if (taskSaveSucceeded === true) {
+    _renderFocusTimer();
+    return true;
+  }
+
+  // Restore the association only if the primary record is byte-for-byte
+  // unchanged and the storage layer has not entered recovery mode.
+  var mainRecordUnchanged = false;
+  try {
+    mainRecordUnchanged = localStorage.getItem(STORAGE_KEY) === detachment.previousMainRaw;
+  } catch (readError) {
+    mainRecordUnchanged = false;
+  }
+
+  if (mainRecordUnchanged && !storageRecoveryRequired) {
+    _focusTimer.taskId = detachment.previousTaskId;
+    if (_saveFocusTimer() === true) {
+      _renderFocusTimer();
+      return true;
+    }
+  }
+
+  // Do not reattach to a task whose durable state may already have changed.
+  // Keep memory aligned with the last readable Focus record where possible.
+  try {
+    var currentFocusRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (currentFocusRaw === null) throw new Error("focus timer record is missing");
+    var currentFocus = JSON.parse(currentFocusRaw);
+    if (!currentFocus || typeof currentFocus !== "object" || Array.isArray(currentFocus))
+      throw new Error("focus timer record is invalid");
+    if (currentFocus.taskId === null) {
+      _focusTimer.taskId = null;
+    } else if (mainRecordUnchanged && currentFocus.taskId === detachment.previousTaskId) {
+      // The rollback reached storage, but its verification may have failed.
+      _focusTimer.taskId = detachment.previousTaskId;
+    } else {
+      storageRecoveryRequired = true;
+      _focusTimer.taskId = null;
+    }
+  } catch (reconcileError) {
+    storageRecoveryRequired = true;
+    _focusTimer.taskId = null;
+  }
+
+  storageRecoveryRequired = true;
+  _renderFocusTimer();
+  showAlertModal("تعذر استعادة ربط المؤقت",
+    "تعذر إثبات أن سجل المهمة بقي كما كان أو تعذر التحقق من إعادة ربط المؤقت. أبقينا المؤقت مفصولًا وأوقفنا الكتابة حمايةً من ربط جلسة بمهمة مكتملة أو محذوفة.");
+  return false;
+}
+
 function toggleTask(id) {
   if (!_isTaskStorageLockHeld()) {
     return _withTaskStorageLock(function() { return toggleTask(id); });
@@ -7282,23 +7390,21 @@ function toggleTask(id) {
         if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
           showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
         }
+        const _taskFocusDetachment = _beginTaskFocusLinkMutation(id);
+        if (!_taskFocusDetachment.ok) return false;
         const _old = { actual: t.actual, status: t.status, completedAt: t.completedAt };
         t.actual = _newActual;
         t.status = "done";
         t.completedAt = localDateTimeString();
         if (saveData()) {
-          // FIX TI8 (E5): فصل المؤقت إذا كانت المهمة المرتبطة قد أُكملت
-          if (_focusTimer.taskId === id) {
-            _focusTimer.taskId = null;
-            _saveFocusTimer();
-            _renderFocusTimer();
-          }
+          _finishTaskFocusLinkMutation(_taskFocusDetachment, true);
           renderAll();
           showToast("🎉 ممتاز! تم إنجاز المهمة");
-        } else {
-          Object.assign(t, _old);
+          return true;
         }
-        return true;
+        Object.assign(t, _old);
+        _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+        return false;
         });
       }
     );
@@ -7329,26 +7435,20 @@ function deleteTask(id) {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
+    const _taskFocusDetachment = _beginTaskFocusLinkMutation(id);
+    if (!_taskFocusDetachment.ok) return false;
     const _snap = tasks.slice();
-    var _oldFocusTaskId = _focusTimer.taskId;
     tasks = tasks.filter(function(x) { return x.id !== id; });
-    if (editingId === id) cancelEdit();
-    var _wasLinked = false;
-    if (_focusTimer.taskId === id) {
-      _focusTimer.taskId = null;
-      _saveFocusTimer();
-      _renderFocusTimer();
-      _wasLinked = true;
-    }
     if (saveData()) {
+      _finishTaskFocusLinkMutation(_taskFocusDetachment, true);
+      if (editingId === id) cancelEdit();
       renderAll();
-      showToast("🗑️ تم حذف المهمة" + (_wasLinked ? " — فُصل المؤقت" : ""));
-    } else {
-      tasks = _snap;
-      _focusTimer.taskId = _oldFocusTaskId;
-      _saveFocusTimer();
-      _renderFocusTimer();
+      showToast("🗑️ تم حذف المهمة" + (_taskFocusDetachment.linked ? " — فُصل المؤقت" : ""));
+      return true;
     }
+    tasks = _snap;
+    _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+    return false;
 
     });
   });

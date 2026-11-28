@@ -16,7 +16,16 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists');
-  return match[0];
+  const source = match[0];
+  if (name === '_beginTaskFocusLinkMutation' || name === '_finishTaskFocusLinkMutation') return source;
+  const helpers = [];
+  if (/\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
+    helpers.push(extractFunction('_beginTaskFocusLinkMutation'));
+  }
+  if (/\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
+    helpers.push(extractFunction('_finishTaskFocusLinkMutation'));
+  }
+  return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
 const ids = {

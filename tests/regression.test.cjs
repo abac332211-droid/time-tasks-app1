@@ -24,6 +24,12 @@ function extractFunction(name) {
   const source = match[0];
   if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
   const helpers = [];
+  if (name !== '_beginTaskFocusLinkMutation' && /\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
+    helpers.push(extractFunction('_beginTaskFocusLinkMutation'));
+  }
+  if (name !== '_finishTaskFocusLinkMutation' && /\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
+    helpers.push(extractFunction('_finishTaskFocusLinkMutation'));
+  }
   if (name !== '_isClockAdjustedV2WorkSession'
       && /\b_isClockAdjustedV2WorkSession\s*\(/.test(source)) {
     helpers.push(extractFunction('_isFocusTaskCreditSchemaV2'));
@@ -1638,12 +1644,26 @@ test('task completion is rolled back when persistence fails', () => {
 test('task deletion restores the task and linked focus timer when persistence fails', () => {
   const task = { id: 12, name: 'مهمة مرتبطة', status: 'pending' };
   let timerSaveCalls = 0;
+  const values = new Map([
+    ['main', JSON.stringify({ tasks: [task] })],
+    ['focus', JSON.stringify({ taskId: 12, running: false, baseElapsed: 10 })]
+  ]);
   const sandbox = {
+    STORAGE_KEY: 'main',
+    FOCUS_TIMER_KEY: 'focus',
     tasks: [task],
     editingId: null,
     _focusTimer: { taskId: 12 },
+    storageRecoveryRequired: false,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; }
+    },
     showConfirmModal: (title, body, callback) => callback(),
-    _saveFocusTimer: () => { timerSaveCalls++; return true; },
+    _saveFocusTimer: () => {
+      timerSaveCalls++;
+      values.set('focus', JSON.stringify(sandbox._focusTimer));
+      return true;
+    },
     _renderFocusTimer: () => {},
     saveData: () => false,
     renderAll: () => { throw new Error('must not render unpersisted deletion'); },
@@ -1656,6 +1676,7 @@ test('task deletion restores the task and linked focus timer when persistence fa
   assert.equal(sandbox.tasks.length, 1);
   assert.equal(sandbox.tasks[0], task);
   assert.equal(sandbox._focusTimer.taskId, 12);
+  assert.equal(JSON.parse(values.get('focus')).taskId, 12);
   assert.equal(timerSaveCalls, 2);
 });
 
