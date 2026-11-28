@@ -25,10 +25,10 @@ function extractFunction(name) {
   if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
   const helpers = [];
   if (name !== '_beginTaskFocusLinkMutation' && /\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
-    helpers.push(extractFunction('_beginTaskFocusLinkMutation'));
+    helpers.push('function _beginTaskFocusLinkMutation() { return { ok: true, linked: false }; }');
   }
   if (name !== '_finishTaskFocusLinkMutation' && /\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
-    helpers.push(extractFunction('_finishTaskFocusLinkMutation'));
+    helpers.push('function _finishTaskFocusLinkMutation() { return true; }');
   }
   if (name !== '_isClockAdjustedV2WorkSession'
       && /\b_isClockAdjustedV2WorkSession\s*\(/.test(source)) {
@@ -1670,6 +1670,22 @@ test('task deletion restores the task and linked focus timer when persistence fa
     showToast: () => {}
   };
   vm.runInNewContext(extractFunction('deleteTask'), sandbox);
+
+  sandbox._beginTaskFocusLinkMutation = (id) => {
+    if (sandbox._focusTimer.taskId !== id) return { ok: true, linked: false };
+    const previousTaskId = sandbox._focusTimer.taskId;
+    sandbox._focusTimer.taskId = null;
+    if (!sandbox._saveFocusTimer()) {
+      sandbox._focusTimer.taskId = previousTaskId;
+      return { ok: false, linked: true };
+    }
+    return { ok: true, linked: true, previousTaskId };
+  };
+  sandbox._finishTaskFocusLinkMutation = (detachment, taskSaveSucceeded) => {
+    if (!detachment || !detachment.linked || taskSaveSucceeded === true) return true;
+    sandbox._focusTimer.taskId = detachment.previousTaskId;
+    return sandbox._saveFocusTimer();
+  };
 
   sandbox.deleteTask(12);
 
