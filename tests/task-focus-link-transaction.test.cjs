@@ -525,3 +525,42 @@ test('startup recovery refuses a missing or malformed Focus timer record', () =>
   assert.equal(restarted.sandbox.storageRecoveryRequired, true);
   assert.ok(restarted.readMain().pendingTaskFocusLinkMutation);
 });
+
+test('startup recovery completes a TASK_COMMITTED journal without repeating the task mutation', () => {
+  const first = transactionHarness();
+  const task = first.sandbox.tasks.find((row) => row.id === 7);
+  const targetTask = {
+    ...task,
+    status: 'done',
+    actual: 18,
+    completedAt: '2026-11-28T10:00:00'
+  };
+  const started = first.sandbox._beginTaskFocusLinkMutationDurable(7, 'complete', targetTask);
+  assert.equal(started.ok, true);
+
+  Object.assign(task, targetTask);
+  assert.equal(first.sandbox.saveData(), true);
+  const journal = first.sandbox._advanceTaskFocusLinkJournal(
+    first.readMain().pendingTaskFocusLinkMutation,
+    'TASK_COMMITTED'
+  );
+  assert.ok(journal);
+  assert.equal(first.readMain().pendingTaskFocusLinkMutation.phase, 'TASK_COMMITTED');
+
+  const restarted = transactionHarness({
+    mainRaw: first.values.get(first.mainKey),
+    focusRaw: first.values.get(first.focusKey)
+  });
+  restarted.sandbox._focusTimer.taskId = null;
+  const probe = makeRecoveryProbe(restarted);
+  const result = restarted.sandbox._recoverPendingTaskFocusLinkMutationFromStartup(
+    probe.expectedTaskFocusLink, probe, probe
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recovered, 'already_applied');
+  assert.equal(restarted.readMain().tasks.find((row) => row.id === 7).status, 'done');
+  assert.equal(restarted.readFocus().taskId, null);
+  assert.equal(Object.hasOwn(restarted.readMain(), 'pendingTaskFocusLinkMutation'), false);
+  assert.equal(restarted.sandbox.saveCount, 0);
+});
