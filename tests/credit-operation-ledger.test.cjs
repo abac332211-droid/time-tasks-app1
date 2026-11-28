@@ -19,13 +19,13 @@ function extractFunction(name) {
   const source = match[0];
   if (name === '_beginTaskFocusLinkMutation' || name === '_finishTaskFocusLinkMutation') return source;
   const helpers = [];
-  if (/\\b_beginTaskFocusLinkMutation\\s*\\(/.test(source)) {
+  if (/\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
     helpers.push(extractFunction('_beginTaskFocusLinkMutation'));
   }
-  if (/\\b_finishTaskFocusLinkMutation\\s*\\(/.test(source)) {
+  if (/\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
     helpers.push(extractFunction('_finishTaskFocusLinkMutation'));
   }
-  return helpers.length ? helpers.concat(source).join('\\n') : source;
+  return helpers.length ? helpers.concat(source).join('\n') : source;
 }
 
 const ids = {
