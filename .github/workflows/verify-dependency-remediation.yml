@@ -77,3 +77,37 @@ jobs:
           test -s package-lock.json
           test -s audit-exit-code.txt
           test "$(cat audit-exit-code.txt)" = "0"
+
+  persist-generated-lockfile:
+    needs: verify-dependency-overrides
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/codex/dependency-audit-remediation'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+
+      - name: Download verified generated lockfile
+        uses: actions/download-artifact@v7.0.2
+        with:
+          name: dependency-remediation-evidence-${{ github.sha }}
+          path: generated-evidence
+
+      - name: Commit lockfile generated in the isolated read-only job
+        run: |
+          test -s generated-evidence/package-lock.json
+          cp generated-evidence/package-lock.json package-lock.json
+          if git diff --quiet -- package-lock.json; then
+            echo "Generated lockfile matches the branch; no commit required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "chore: lock verified secure Capacitor toolchain"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
