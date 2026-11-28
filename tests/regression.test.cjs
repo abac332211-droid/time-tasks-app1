@@ -2350,6 +2350,93 @@ test('Reset refuses a V2 focus-commit journal held only in page memory and prese
   assert.equal(harness.sandbox.storageRecoveryRequired, true);
 });
 
+test('failed first V2 focus-journal write is detected from memory and blocks Reset without deleting data', async () => {
+  const harness = resetAllHarness();
+  const sandbox = harness.sandbox;
+  const startedAt = Date.parse('2026-11-26T10:00:00.000Z');
+  const timerBefore = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 65, elapsedRemainderMs: 500, cyclePosition: 0,
+    taskId: 99, sessionStartAt: startedAt,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null,
+    clockAdjusted: false, nativeSessionToken: null,
+    handledNotificationActionIds: [], pendingNotificationFinish: null
+  };
+  const mainData = {
+    schemaVersion: 2,
+    tasks: [{ id: 99, name: 'Reset regression task' }],
+    dailyLogs: [],
+    creditOperations: []
+  };
+  const mainRaw = JSON.stringify(mainData);
+  harness.values.set(harness.keys.main, mainRaw);
+  sandbox._mainStorageBaselineReady = true;
+  sandbox._mainStorageBaselineRaw = mainRaw;
+  sandbox._mainStorageExternalChangeObserved = false;
+  sandbox._focusTimer.running = false;
+  sandbox._focusTimer.pendingFocusCommit = null;
+  sandbox._focusTimer.pendingStopwatchTransaction = null;
+  sandbox.tasks = mainData.tasks;
+
+  sandbox._isTaskStorageLockHeld = () => true;
+  sandbox._hasPersistedPendingFocusCommit = () => false;
+  sandbox._capturePendingFocusTimerProjection = () => timerBefore;
+  sandbox._capturePendingFocusCreditSnapshot = () => ({
+    actualSeconds: null, actual: null, creditRevision: 0,
+    creditSchemaVersion: 1, lastCreditOperationId: null
+  });
+  sandbox._focusCommitLedgerCanAcceptOperation = () => true;
+  sandbox._readPendingFocusSessions = () => ({ ok: true, rows: [] });
+  sandbox._newPendingFocusCommitUuid = () => '123e4567-e89b-42d3-a456-426614174000';
+  sandbox._validateFocusSessionRecordV2 = () => true;
+  sandbox._validatePendingFocusCommit = () => true;
+  sandbox._pendingFocusTimerAfterProjection = before => ({
+    ...before, baseElapsed: 0, elapsedRemainderMs: 0, sessionStartAt: null
+  });
+  sandbox._withPendingFocusCommitWrite = (operationId, callback) => callback();
+  let firstTimerSaveCalls = 0;
+  sandbox._saveFocusTimer = () => {
+    firstTimerSaveCalls++;
+    return false;
+  };
+  vm.runInNewContext(extractFunction('_commitFocusSessionV2Locked'), sandbox);
+
+  const sessionFields = {
+    mode: 'stopwatch',
+    phase: 'work',
+    durationSec: 65,
+    creditedSeconds: 65,
+    creditSource: 'measured',
+    activeDurationMs: 65500,
+    taskId: 99,
+    startedAt: new Date(startedAt).toISOString(),
+    endedAt: new Date(startedAt + 65500).toISOString()
+  };
+  assert.equal(sandbox._commitFocusSessionV2Locked(sessionFields), false,
+    'the first timer-journal write is deliberately failed');
+  assert.equal(firstTimerSaveCalls, 1);
+  assert.equal(sandbox.storageRecoveryRequired, true);
+  assert.ok(sandbox._focusTimer.pendingFocusCommit,
+    'the only remaining journal must still exist in memory');
+  assert.equal(JSON.parse(harness.values.get(harness.keys.focusTimer)).pendingFocusCommit, null,
+    'the failed first write must not have produced a durable journal');
+
+  const probe = sandbox._probeStartupStopwatchRecovery();
+  assert.ok(probe.error, 'the read-only probe must detect the memory-only journal');
+  assert.match(probe.error, /ذاكرة الصفحة/);
+  const beforeReset = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  assert.equal(await harness.run(), false,
+    'Reset must refuse to erase an unpersisted V2 focus commit');
+  const afterReset = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  assert.deepEqual(afterReset, beforeReset,
+    'Reset must not remove or rewrite durable user data');
+  assert.deepEqual(harness.removeCalls, [],
+    'Reset must stop before the first storage deletion');
+  assert.ok(sandbox._focusTimer.pendingFocusCommit,
+    'the in-memory recovery intent must remain available');
+});
+
 test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
   harness.seedResetMarker();
