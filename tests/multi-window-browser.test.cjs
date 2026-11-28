@@ -3384,3 +3384,103 @@ test('a second real page refuses backup export while another page leaves a Stopw
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
+  const address = server.address();
+  const appUrl = 'http://127.0.0.1:' + address.port + '/';
+
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    await context.addInitScript((initial) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null) {
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(initial.main));
+      }
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null) {
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(initial.timer));
+      }
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null) {
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+      }
+      if (localStorage.getItem('timeTasksApp_mentalInbox') === null) {
+        localStorage.setItem('timeTasksApp_mentalInbox', '[]');
+      }
+      if (localStorage.getItem('timeTasksApp_thoughts_v1') === null) {
+        localStorage.setItem('timeTasksApp_thoughts_v1', '[]');
+      }
+      if (localStorage.getItem('timeTasksApp_projects_v1') === null) {
+        localStorage.setItem('timeTasksApp_projects_v1', '[]');
+      }
+      if (localStorage.getItem('timeTasksApp_focusSettings') === null) {
+        localStorage.setItem('timeTasksApp_focusSettings', JSON.stringify({}));
+      }
+      if (localStorage.getItem('timeTasksApp_notifications') === null) {
+        localStorage.setItem('timeTasksApp_notifications', JSON.stringify({ enabled: false }));
+      }
+    }, seed);
+
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await Promise.all([
+      pageA.goto(appUrl, { waitUntil: 'domcontentloaded' }),
+      pageB.goto(appUrl, { waitUntil: 'domcontentloaded' })
+    ]);
+    await Promise.all([pageA, pageB].map(page => page.waitForFunction(
+      () => typeof window.exportBackup === 'function'
+        && window._mainStorageBaselineReady === true,
+      null,
+      { timeout: 20_000 }
+    )));
+
+    const pendingRaw = await pageA.evaluate(() => {
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      timer.pendingStopwatchTransaction = {
+        version: 1,
+        id: 'tx-from-page-a',
+        taskId: null,
+        mode: 'stopwatch',
+        phase: 'work',
+        deltaSec: 30,
+        targetActual: 30
+      };
+      localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(timer));
+      return localStorage.getItem('timeTasksApp_focusTimer');
+    });
+
+    await pageB.waitForFunction(
+      raw => localStorage.getItem('timeTasksApp_focusTimer') === raw,
+      pendingRaw,
+      { timeout: 5_000 }
+    );
+    await pageB.reload({ waitUntil: 'domcontentloaded' });
+    await pageB.waitForFunction(
+      () => window._focusTimer
+        && window._focusTimer.pendingStopwatchTransaction
+        && window._focusTimer.pendingStopwatchTransaction.id === 'tx-from-page-a',
+      null,
+      { timeout: 20_000 }
+    );
+
+    const result = await pageB.evaluate(() => {
+      let alertArgs = null;
+      window.showAlertModal = (...args) => { alertArgs = args; };
+      const before = localStorage.getItem('timeTasksApp_focusTimer');
+      exportBackup();
+      return {
+        alertArgs,
+        before,
+        after: localStorage.getItem('timeTasksApp_focusTimer')
+      };
+    });
+
+    assert.ok(result.alertArgs, 'the export attempt must surface a blocking error');
+    assert.match(result.alertArgs[0], /خطأ التصدير/);
+    assert.match(result.alertArgs[1], /توجد عملية Stopwatch غير مكتملة/);
+    assert.equal(result.after, result.before,
+      'a refused export must not mutate the pending transaction journal');
+
+    await context.close();
+  } finally {
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
