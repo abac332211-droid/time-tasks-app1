@@ -63,6 +63,8 @@ function createStorageHarness() {
     storageRecoveryRequired: false,
     _focusTimerExternalConflict: false,
     _focusTimerConflictNoticeShown: false,
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock(callback) { return callback(); },
     _focusElapsedRemainderMs: 250,
     _focusTimer: {
       running: true,

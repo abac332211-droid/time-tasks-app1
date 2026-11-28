@@ -17,7 +17,11 @@ function extractFunction(name) {
   const pattern = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
-  return match[0];
+  if (name === '_isTaskStorageLockHeld') return match[0];
+  return [
+    'function _isTaskStorageLockHeld() { return true; }',
+    match[0]
+  ].join('\n');
 }
 
 const baseStart = 1_700_000_000_000;
@@ -47,6 +51,7 @@ function createLogHarness({
   const toasts = [];
   const sandbox = {
     FOCUS_MAX_SESSIONS: maxSessions,
+    _stopwatchTransactionLockDepth: 1,
     _focusTimer: {
       mode: 'stopwatch',
       phase: 'work',
@@ -126,13 +131,14 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
     FOCUS_MAX_SESSIONS: 500,
     FOCUS_SESSIONS_KEY: 'focus-sessions',
     storageRecoveryRequired: false,
+    _stopwatchTransactionLockDepth: 1,
     _sessionsCache: [],
     _storageWriteAllowed: () => true,
     _writeSecondaryStorageVerified: () => { writes++; return true; },
     _storeRollingRecoveryBackup: () => true
   };
   vm.runInNewContext(
-    extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
+    extractFunction('_isTaskStorageLockHeld') + '\n' + extractFunction('_parseStrictFocusSessionTimestamp') + '\n' + extractFunction('_validateFocusSessionRecord') + '\n' + extractFunction('_saveSessions'),
     sandbox
   );
 
@@ -144,6 +150,25 @@ test('session saver rejects duplicate IDs and invalid end-before-start records b
   const overLimit = Array.from({ length: 501 }, (_, index) => validSession({ id: index + 1 }));
   assert.equal(sandbox._saveSessions(overLimit), false,
     'the low-level saver must keep rejecting arrays above the retention limit');
+  assert.equal(writes, 0);
+  assert.deepEqual(sandbox._sessionsCache, []);
+});
+
+test('session saver refuses to write without shared Web Lock ownership', () => {
+  let writes = 0;
+  const sandbox = {
+    FOCUS_MAX_SESSIONS: 500,
+    FOCUS_SESSIONS_KEY: 'focus-sessions',
+    _stopwatchTransactionLockDepth: 0,
+    _sessionsCache: [],
+    _storageWriteAllowed: () => true,
+    _writeSecondaryStorageVerified: () => { writes++; return true; },
+    _storeRollingRecoveryBackup: () => true,
+    console
+  };
+  sandbox._isTaskStorageLockHeld = () => false;
+  vm.runInNewContext(extractFunction('_saveSessions'), sandbox);
+  assert.equal(sandbox._saveSessions([validSession()]), false);
   assert.equal(writes, 0);
   assert.deepEqual(sandbox._sessionsCache, []);
 });
