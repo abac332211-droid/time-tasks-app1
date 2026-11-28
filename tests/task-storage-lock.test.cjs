@@ -554,3 +554,20 @@ test('Focus write that persists but fails verification blocks the task mutation'
   assert.equal(h.sandbox.tasks[0].status, 'pending');
   assert.equal(h.sandbox.storageRecoveryRequired, true);
 });
+
+test('delete restores the in-memory task snapshot when Focus rollback fails', () => {
+  const h = createTaskFocusMutationHarness({
+    mainFailure: 'before',
+    failFocusWrites: [2]
+  });
+  h.sandbox.deleteTask(31);
+  const result = h.confirmations[0][2]();
+
+  assert.equal(result, false);
+  assert.deepEqual(h.writes, ['focus', 'main', 'focus']);
+  assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
+  assert.equal(h.sandbox.tasks.length, 1);
+  assert.equal(h.sandbox.tasks[0].status, 'pending');
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
