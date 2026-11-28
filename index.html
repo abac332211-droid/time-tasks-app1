@@ -11509,6 +11509,12 @@ function _loadFocusTimer() {
     }
     _focusTimer.clockAdjusted = _focusTimer.clockAdjusted
       || (_focusTimerSavedAtAtLoad !== null && Date.now() < _focusTimerSavedAtAtLoad - 60000);
+    // A cold-started PWA timer has no trusted clock during the page/process gap.
+    // Keep the last durable elapsed checkpoint, discard the hidden interval, and
+    // persist that discontinuity so later UI/session logic cannot treat it as continuous.
+    if (_focusTimerColdStartWasRunning && !_focusTimer.nativeClockActive) {
+      _focusTimer.clockAdjusted = true;
+    }
     var changed = normalized.migrated || _focusTimerColdStartWasRunning || _focusTimer.clockAdjusted;
     var nowAtRestore = Date.now();
     if (_focusTimer.sessionStartAt !== null && _focusTimer.sessionStartAt > nowAtRestore) {
