@@ -6,11 +6,11 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 
-let chromium = null;
+let chromium;
 try {
   ({ chromium } = require('playwright'));
-} catch (_error) {
-  // Playwright/Chromium are installed by the dedicated verify-pwa workflow.
+} catch (error) {
+  throw new Error('Playwright is a required dependency for this test suite: ' + error.message);
 }
 
 const root = path.resolve(__dirname, '..');
@@ -461,7 +461,7 @@ async function releaseStopwatchLock(page) {
 }
 
 test('D-03.1 startup remains read-only across every localStorage key while the Stopwatch lock is held', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ corruptSecondaryKey: 'timeTasksApp_mentalInbox' });
   let controller;
@@ -536,7 +536,7 @@ test('D-03.1 startup remains read-only across every localStorage key while the S
 });
 
 test('D-02 task-linked save waits for real startup and records every persistence attempt', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -720,7 +720,7 @@ test('D-02 task-linked save waits for real startup and records every persistence
 });
 
 test('D-02 resetTimer save dialog commits linked exact Stopwatch credit through V2 exactly once', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -800,7 +800,7 @@ test('D-02 resetTimer save dialog commits linked exact Stopwatch credit through 
 });
 
 test('D-02 transition commits the old task before starting the next task timer', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -883,7 +883,7 @@ test('D-02 transition commits the old task before starting the next task timer',
 });
 
 test('D-02 transition failure does not start the next task or report success', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -970,7 +970,7 @@ test('D-02 transition failure does not start the next task or report success', {
 });
 
 test('a Pomodoro-migrated task commits a later adjusted Stopwatch session through the durable V2 ledger', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -1189,7 +1189,7 @@ test('a Pomodoro-migrated task commits a later adjusted Stopwatch session throug
 });
 
 test('a user-adjusted Stopwatch V2 journal replays after interruption without duplicate credit or session', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -1352,7 +1352,7 @@ test('a user-adjusted Stopwatch V2 journal replays after interruption without du
 });
 
 test('D-04 V2 Pomodoro credit commit at 500 sessions evicts once and startup retry does not evict another row', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -1496,7 +1496,7 @@ test('D-04 V2 Pomodoro credit commit at 500 sessions evicts once and startup ret
 
 for (const recoveryMarker of ['reset', 'import', 'rolling', 'migration']) {
   test('D-03 refuses ' + recoveryMarker + ' recovery when a Stopwatch journal is also pending', {
-    skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+    skip: false
   }, async () => {
     const runtime = await startBrowserContext({ recoveryMarker });
     let controller, appPage;
@@ -1560,7 +1560,7 @@ for (const recoveryMarker of ['reset', 'import', 'rolling', 'migration']) {
 
 for (const recoveryMarker of ['import', 'rolling']) {
   test('D-03 recovers a lone ' + recoveryMarker + ' marker under the Stopwatch lock', {
-    skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+    skip: false
   }, async () => {
     const runtime = await startBrowserContext({
       recoveryMarker, withoutPendingStopwatchTransaction: true
@@ -1599,7 +1599,7 @@ for (const recoveryMarker of ['import', 'rolling']) {
 }
 
 test('D-03 recovers a lone Migration marker under the Stopwatch lock', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({
     recoveryMarker: 'migration', withoutPendingStopwatchTransaction: true
@@ -1623,7 +1623,7 @@ test('D-03 recovers a lone Migration marker under the Stopwatch lock', {
 });
 
 test('D-03 refuses overlapping group-recovery markers without changing sources', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({
     recoveryMarker: 'import', withoutPendingStopwatchTransaction: true
@@ -1660,7 +1660,7 @@ test('D-03 refuses overlapping group-recovery markers without changing sources',
   }
 });
 test('D-03.2 two real same-origin tabs wait for Web Locks and the second page synchronizes memory, baselines and UI', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext();
   let controller;
@@ -1803,7 +1803,7 @@ test('D-03.2 two real same-origin tabs wait for Web Locks and the second page sy
 });
 
 test('D-03.3 a journal removed while waiting for the lock without proof remains blocked', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext();
   let controller;
@@ -1846,7 +1846,7 @@ test('D-03.3 a journal removed while waiting for the lock without proof remains 
 });
 
 test('D-03.4 invalid or orphaned transaction fails closed while reset remains callable', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ invalidTransaction: true });
   let page;
@@ -1885,7 +1885,7 @@ test('D-03.4 invalid or orphaned transaction fails closed while reset remains ca
 });
 
 test('D-03.6 missing Web Locks at startup preserves the journal and performs no protected writes', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutLocks: true });
   let page;
@@ -1920,7 +1920,7 @@ test('D-03.6 missing Web Locks at startup preserves the journal and performs no 
 
 
 test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discard do not credit', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2061,7 +2061,7 @@ test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discar
 });
 
 test('V2 Stopwatch finish button records 125 measured seconds and 120 approved seconds as user_adjusted', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2129,7 +2129,7 @@ test('V2 Stopwatch finish button records 125 measured seconds and 120 approved s
 });
 
 test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-transition UI', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2285,7 +2285,7 @@ test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-tra
 });
 
 test('V2 resetTimer UI reports failure without credit, session, timer reset, or success toast', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2361,7 +2361,7 @@ test('V2 resetTimer UI reports failure without credit, session, timer reset, or 
 
 
 test('V2 save-and-switch failure keeps the old task paused and never starts the next task', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2577,7 +2577,7 @@ async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
 }
 
 test('V2 Pomodoro save-and-switch commits all 83 measured seconds before starting the next task', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2696,7 +2696,7 @@ test('V2 Pomodoro save-and-switch commits all 83 measured seconds before startin
 });
 
 test('V2 durable UI commits preserve a 139-second Pomodoro accumulation and separate 181 measured from 180 user-adjusted seconds', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;
@@ -2804,7 +2804,7 @@ test('V2 durable UI commits preserve a 139-second Pomodoro accumulation and sepa
 });
 
 test('V2 QuotaExceededError leaves a durable journal that recovers once after a cold reload', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
   let page;

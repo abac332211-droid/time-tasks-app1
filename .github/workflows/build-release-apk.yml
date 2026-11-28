@@ -41,6 +41,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Install dependencies from the locked manifest
+        run: npm ci --no-audit --no-fund
+
+      - name: Install and verify pinned Playwright Chromium
+        run: |
+          npx playwright install --with-deps chromium
+          node -e "const fs=require('node:fs');const {chromium}=require('playwright');const p=chromium.executablePath();if(!fs.existsSync(p)){console.error('Chromium executable missing:',p);process.exit(1)}"
+
       - name: Run regression tests
         run: npm test
 
@@ -49,9 +57,6 @@ jobs:
           mkdir -p web
           cp index.html manifest.json sw.js web/
           cp *.png web/ 2>/dev/null || true
-
-      - name: Install dependencies from lockfile
-        run: npm ci --no-audit --no-fund
 
       - name: Configure Capacitor
         run: |

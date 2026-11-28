@@ -19,6 +19,7 @@ on:
       - codex/pending-focus-commit-v1
       - codex/pending-focus-commit-integrated-v1
       - codex/pending-focus-v2-writer-unification
+      - codex/2.9.1-integrity-followup
   pull_request:
     branches:
       - main
@@ -64,10 +65,12 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Install Playwright Chromium for real multi-window tests
+      - name: Install dependencies from the locked manifest
+        run: npm ci --no-audit --no-fund
+      - name: Install and verify pinned Playwright Chromium
         run: |
-          npm install --no-save --no-package-lock playwright@1.65.1
           npx playwright install --with-deps chromium
+          node -e "const fs=require('node:fs');const {chromium}=require('playwright');const p=chromium.executablePath();if(!fs.existsSync(p)){console.error('Chromium executable missing:',p);process.exit(1)}"
       - name: Run regression tests
         run: npm test
 

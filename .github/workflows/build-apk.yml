@@ -3,7 +3,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/v2.9.0-stability, codex/v2.9.1-stability, codex/v2.9.1-stopwatch-integrity-fix, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-v1, codex/pending-focus-v2-writer-unification]
+    branches: [main, codex/v2.9.0-stability, codex/v2.9.1-stability, codex/v2.9.1-stopwatch-integrity-fix, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-v1, codex/pending-focus-v2-writer-unification, codex/2.9.1-integrity-followup]
   pull_request:
     branches: [codex/v2.9.1-stability, codex/pomodoro-storage-gates-pwa-integration, codex/pomodoro-credit-schema-v2, codex/pomodoro-credit-operation-ledger-v1, codex/pending-focus-commit-integrated-fix-v1]
 
@@ -33,10 +33,13 @@ jobs:
           node-version: '22'
           package-manager-cache: false
 
-      - name: Install Playwright Chromium for real multi-window tests
+      - name: Install dependencies from the locked manifest
+        run: npm ci --no-audit --no-fund
+
+      - name: Install and verify pinned Playwright Chromium
         run: |
-          npm install --no-save --no-package-lock playwright@1.65.1
           npx playwright install --with-deps chromium
+          node -e "const fs=require('node:fs');const {chromium}=require('playwright');const p=chromium.executablePath();if(!fs.existsSync(p)){console.error('Chromium executable missing:',p);process.exit(1)}"
 
       - name: Run regression tests
         run: npm test
@@ -53,9 +56,6 @@ jobs:
           cp index.html manifest.json sw.js web/
           cp *.png web/ 2>/dev/null || true
           ls -la web/
-
-      - name: Install dependencies from lockfile
-        run: npm ci --no-audit --no-fund
 
       - name: Force-create Capacitor config
         run: |

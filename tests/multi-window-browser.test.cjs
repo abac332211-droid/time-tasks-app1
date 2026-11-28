@@ -6,12 +6,11 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 
-let chromium = null;
+let chromium;
 try {
   ({ chromium } = require('playwright'));
-} catch (_error) {
-  // Local Node-only runs may not install Playwright. The required CI workflow
-  // installs the pinned package and Chromium before running this suite.
+} catch (error) {
+  throw new Error('Playwright is a required dependency for this test suite: ' + error.message);
 }
 
 const root = path.resolve(__dirname, '..');
@@ -159,7 +158,7 @@ async function waitForSafeStartup(page, label, timeout = 20000) {
 }
 
 test('two real same-origin pages exchange storage events and block stale main/timer writes', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -377,7 +376,7 @@ test('two real same-origin pages exchange storage events and block stale main/ti
 
 
 test('a stale page refuses manual and rolling backups while another page has a pending Stopwatch journal', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  skip: false,
   timeout: 30000
 }, async () => {
   const server = createStaticServer();
@@ -567,7 +566,7 @@ test('a stale page refuses manual and rolling backups while another page has a p
   }
 });
 test('two same-origin pages cannot commit duplicate task-linked Stopwatch transactions', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  skip: false,
   timeout: 25000
 }, async () => {
   const server = createStaticServer();
@@ -856,7 +855,7 @@ test('two same-origin pages cannot commit duplicate task-linked Stopwatch transa
 });
 
 test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopwatch journal is locked elsewhere', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -1008,7 +1007,7 @@ test('non-owner page cannot write main, timer or Pomodoro sessions while a Stopw
 });
 
 test('a rejected rolling snapshot is rolled back and cannot outrank the previous valid slot', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -1169,7 +1168,7 @@ function makeColdStartStopwatchSeed() {
 }
 
 test('cold-start restores a persisted running Stopwatch as paused and keeps start, stop and finish usable', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const initial = makeColdStartStopwatchSeed();
   await withBrowserPages(async ({ pageA }) => {
@@ -1258,7 +1257,7 @@ test('cold-start restores a persisted running Stopwatch as paused and keeps star
 });
 
 test('cold-start Stopwatch reset discards only the current interval and preserves historical sessions', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const initial = makeColdStartStopwatchSeed();
   await withBrowserPages(async ({ pageA }) => {
@@ -1305,7 +1304,7 @@ test('cold-start Stopwatch reset discards only the current interval and preserve
 });
 
 test('Stopwatch button label distinguishes fresh, running and paused states without starting a new session on resume', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const initial = makeColdStartStopwatchSeed();
   initial.timer.running = false;
@@ -1475,7 +1474,7 @@ test('Stopwatch button label distinguishes fresh, running and paused states with
 });
 
 test('real Chromium pages release Web Lock after owner callback throws synchronously', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
     await pageA.evaluate(() => {
@@ -1499,7 +1498,7 @@ test('real Chromium pages release Web Lock after owner callback throws synchrono
 });
 
 test('real Chromium pages release Web Lock after owner callback Promise rejects', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
     await pageA.evaluate(() => {
@@ -1535,7 +1534,7 @@ test('real Chromium pages release Web Lock after owner callback Promise rejects'
 
 
 test('two real Chromium pages serialize concurrent Reset transactions and both report success', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
     await Promise.all([pageA, pageB].map(page => page.waitForFunction(
@@ -1713,7 +1712,7 @@ test('two real Chromium pages serialize concurrent Reset transactions and both r
 });
 
 test('D-01 Reset allows same-page thought, project and timer writes without stale baselines', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
     await pageB.close();
@@ -1817,7 +1816,7 @@ test('D-01 Reset allows same-page thought, project and timer writes without stal
 });
 
 test('Reset baseline read failure retains its marker and write gate until a verified retry', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  skip: false,
   timeout: 30000
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
@@ -1923,7 +1922,7 @@ test('Reset baseline read failure retains its marker and write gate until a veri
 });
 
 test('retryStorageRecovery keeps writes blocked while queued and after injected cleanup failure', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
     await Promise.all([pageA, pageB].map(page => page.waitForFunction(
@@ -2064,7 +2063,7 @@ test('retryStorageRecovery keeps writes blocked while queued and after injected 
 });
 
 test('startup reset recovery waits for the shared lock and makes an older queued backup callback inert', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB, context }) => {
     await Promise.all([pageA, pageB].map(page => page.waitForFunction(
@@ -2174,7 +2173,7 @@ test('startup reset recovery waits for the shared lock and makes an older queued
 });
 
 test('Reset refuses to mutate storage when Web Locks is unavailable', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   await withBrowserPages(async ({ pageA, pageB }) => {
     await Promise.all([pageA, pageB].map((page, index) =>
@@ -2220,7 +2219,7 @@ test('Reset refuses to mutate storage when Web Locks is unavailable', {
 
 
 test('PWA visibility, pagehide, pageshow and failed pagehide persistence never resume or credit an untrusted interval', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  skip: false,
   timeout: 60000
 }, async () => {
   const server = createStaticServer();
@@ -2449,7 +2448,7 @@ test('PWA visibility, pagehide, pageshow and failed pagehide persistence never r
 
 
 test('closing a real Chromium page never resumes or credits a PWA timer on the next cold start', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  skip: false,
   timeout: 60000
 }, async () => {
   const server = createStaticServer();
@@ -2581,7 +2580,7 @@ test('closing a real Chromium page never resumes or credits a PWA timer on the n
 
 
 test('credit migration readiness gate is checked under the real shared Web Lock and after cross-page contention', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  skip: false,
   timeout: 60000
 }, async () => {
   const server = createStaticServer();
@@ -2834,7 +2833,7 @@ async function openPendingFocusBrowserContext(server, initial) {
 }
 
 test('real finishTimer saves one V2 Pomodoro credit operation and survives reload without duplication', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -3019,7 +3018,7 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
 });
 
 test('a real second Chromium window waits for a pending V2 journal and recovers it once after owner release', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -3202,7 +3201,7 @@ test('a real second Chromium window waits for a pending V2 journal and recovers 
 
 
 test('real finishTimer commits an exact measured linked Stopwatch session through V2 and survives reload once', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
@@ -3298,7 +3297,7 @@ test('real finishTimer commits an exact measured linked Stopwatch session throug
 
 
 test('gap analytics use measured seconds consistently across weekly, type, and summary views', {
-  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+  skip: false
 }, async () => {
   const server = createStaticServer();
   await new Promise((resolve, reject) => {
