@@ -7672,6 +7672,8 @@ function _validateFocusTimerBackupSnapshot(timer, taskIds) {
     return { valid: false, reason: "حالة مؤقت التركيز غير صالحة." };
   if (Object.prototype.hasOwnProperty.call(timer, "pendingFocusCommit"))
     return { valid: false, reason: "لا يجوز تضمين سجل اعتماد جلسة داخلي في نسخة المستخدم الاحتياطية." };
+  if (Object.prototype.hasOwnProperty.call(timer, "pendingStopwatchTransaction"))
+    return { valid: false, reason: "لا يجوز تضمين سجل معاملة Stopwatch داخلي في نسخة المستخدم الاحتياطية." };
   if (timer.mode !== "pomodoro" && timer.mode !== "stopwatch")
     return { valid: false, reason: "وضع مؤقت التركيز غير صالح." };
   if (!["work", "short-break", "long-break"].includes(timer.phase))
