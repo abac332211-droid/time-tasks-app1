@@ -18,11 +18,23 @@ function extract(name) {
   return match[0];
 }
 
-const sandbox = {};
+const sandbox = {
+  validateV2(record) {
+    return !!record && record.schemaVersion === 2
+      && Array.isArray(record.tasks) && record.tasks.length === 1
+      && Array.isArray(record.dailyLogs) && Array.isArray(record.creditOperations)
+      && record.tasks.every(task => task && Number.isSafeInteger(task.id)
+        && typeof task.name === 'string' && task.status === 'done'
+        && typeof task.type === 'string' && Number.isFinite(task.expected)
+        && typeof task.plannedDate === 'string' && typeof task.plannedTime === 'string'
+        && typeof task.createdAt === 'number');
+  }
+};
 vm.createContext(sandbox);
 vm.runInContext([
   extract('_taskFocusLinkComparableTask'),
   extract('_taskFocusLinkOtherTasksFingerprint'),
+  extract('_isValidTaskFocusLinkTaskSnapshot'),
   extract('_validatePendingTaskFocusLinkMutation'),
   extract('_taskFocusLinkMutationState'),
   extract('_focusCommitDeepEqual')
@@ -58,6 +70,9 @@ test('Task–Focus journal schema validates and rejects corrupt or mismatched re
   assert.equal(sandbox._validatePendingTaskFocusLinkMutation({ ...journal, otherTasksFingerprint: '{bad' }), false);
   assert.equal(sandbox._validatePendingTaskFocusLinkMutation({
     ...journal, targetTask: { ...target, id: 99 }
+  }), false);
+  assert.equal(sandbox._validatePendingTaskFocusLinkMutation({
+    ...journal, targetTask: { ...target, expected: 'not-a-number' }
   }), false);
 });
 
@@ -204,6 +219,7 @@ function transactionHarness(options = {}) {
   const names = [
     '_taskFocusLinkComparableTask',
     '_taskFocusLinkOtherTasksFingerprint',
+    '_isValidTaskFocusLinkTaskSnapshot',
     '_validatePendingTaskFocusLinkMutation',
     '_taskFocusLinkMutationState',
     '_writeTaskFocusLinkJournal',
