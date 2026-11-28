@@ -3661,3 +3661,115 @@ test('verified main-write failure rolls back only while both original snapshots 
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+test('manual storage retry routes a pending linked task journal through recovery without repeating credit', {
+  skip: false
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await startLinkedTaskMutationPage(server);
+    browser = opened.browser;
+    context = opened.context;
+    const page = opened.page;
+
+    const intent = await page.evaluate(async () => _withTaskStorageLock(() => {
+      const task = tasks.find(row => row && row.id === 1);
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      if (!task || !Number.isSafeInteger(task.actualSeconds)
+          || !Number.isSafeInteger(task.creditRevision)
+          || !Array.isArray(main.creditOperations)) {
+        throw new Error('V2 task and credit ledger must be hydrated before retry test');
+      }
+      const journal = {
+        recordVersion: 1,
+        operationId: _newPendingFocusCommitUuid(),
+        kind: 'complete',
+        taskId: 1,
+        beforeTask: JSON.parse(JSON.stringify(task)),
+        beforeCreditOperationsLength: main.creditOperations.length,
+        target: {
+          status: 'done',
+          actual: 14,
+          completedAt: localDateTimeString()
+        },
+        createdAt: Date.now()
+      };
+      if (!_validatePendingTaskMutation(journal))
+        throw new Error('Production task mutation journal rejected the retry fixture');
+      _focusTimer.taskId = 1;
+      _focusTimer.pendingTaskMutation = journal;
+      _taskFocusMutationWriteDepth++;
+      let saved = false;
+      try { saved = _saveFocusTimer(); }
+      finally { _taskFocusMutationWriteDepth--; }
+      if (!saved) throw new Error('Could not persist the pending task journal');
+      storageRecoveryRequired = true;
+      _startupStopwatchRecoveryFailed = true;
+      _startupStopwatchRecoveryInFlight = false;
+      _appInitCompleted = false;
+      return {
+        operationCount: main.creditOperations.length,
+        revision: task.creditRevision,
+        operationId: journal.operationId
+      };
+    }));
+    assert.equal(intent.operationCount, 1);
+
+    await page.evaluate(() => {
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.setTimeout = function(callback, delay, ...args) {
+        if (delay === 600) {
+          window.__manualRecoveryReloadScheduled = true;
+          return 0;
+        }
+        return nativeSetTimeout(callback, delay, ...args);
+      };
+    });
+
+    const retried = await page.evaluate(async () => retryStorageRecovery());
+    assert.equal(retried, true, 'manual retry must select the task-mutation coordinator');
+    const recovered = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks.find(row => row && row.id === 1),
+        operations: main.creditOperations,
+        timer,
+        storageRecoveryRequired,
+        appInitCompleted: _appInitCompleted,
+        reloadScheduled: window.__manualRecoveryReloadScheduled === true
+      };
+    });
+    assert.equal(recovered.task.status, 'done');
+    assert.equal(recovered.task.actual, 14);
+    assert.equal(recovered.task.actualSeconds, 840);
+    assert.equal(recovered.task.creditRevision, intent.revision + 1);
+    assert.equal(recovered.operations.length, intent.operationCount + 1);
+    assert.equal(recovered.operations[1].operationId, recovered.task.lastCreditOperationId);
+    assert.equal(recovered.operations[1].kind, 'manual_adjustment');
+    assert.equal(recovered.operations[1].previousSeconds, 720);
+    assert.equal(recovered.operations[1].targetSeconds, 840);
+    assert.equal(recovered.operations[1].sessionId, null);
+    assert.equal(recovered.timer.taskId, null);
+    assert.equal(recovered.timer.pendingTaskMutation, null);
+    assert.equal(recovered.storageRecoveryRequired, false);
+    assert.equal(recovered.appInitCompleted, true);
+    assert.equal(recovered.reloadScheduled, true);
+
+    const mainAfter = await page.evaluate(() => localStorage.getItem('timeTasksApp_v1'));
+    const secondRetry = await page.evaluate(async () => retryStorageRecovery());
+    assert.equal(secondRetry, true);
+    assert.equal(await page.evaluate(() => localStorage.getItem('timeTasksApp_v1')), mainAfter,
+      'a no-op retry after success must not append another credit operation');
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
