@@ -1713,7 +1713,8 @@ test('task completion and undo rely on one centralized full reminder sync per sa
 
   sandbox.toggleTask(19);
   assert.equal(task.status, 'pending');
-  assert.equal(task.actual, null);
+  assert.equal(task.actual, 30,
+    'undoing completion changes only status; the entered actual duration remains recorded');
   assert.equal(fullSyncs, 2);
   assert.deepEqual(singleSyncs, []);
 });
