@@ -441,7 +441,7 @@ function createTaskFocusMutationHarness(options = {}) {
     '      var persisted = raw === null ? null : JSON.parse(raw);',
     '      _focusTimer.taskId = persisted && Number.isSafeInteger(persisted.taskId) ? persisted.taskId : null;',
     '    } catch (error) { _focusTimer.taskId = null; }',
-    '    storageRecoveryRequired = true; return false;',
+    '    storageRecoveryRequired = true; return "rollback_failed";',
     '  }',
     '  return "rolled_back";',
     '}'
@@ -534,6 +534,8 @@ test('failed Focus-link rollback leaves the verified detached state and blocks w
   assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
   assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
   assert.equal(h.sandbox._focusTimer.taskId, null);
+  assert.equal(h.sandbox.tasks[0].status, 'pending',
+    'the known unchanged durable task snapshot must also be restored in memory');
   assert.equal(h.sandbox.storageRecoveryRequired, true);
 });
 
