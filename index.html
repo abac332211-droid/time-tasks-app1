@@ -15497,7 +15497,7 @@ function _rollbackTaskFocusMutationBeforeMainWrite(journal, originalMainRaw, ori
         || localStorage.getItem(FOCUS_TIMER_KEY) !== originalFocusRaw) return false;
     var currentFocus = JSON.parse(originalFocusRaw);
     if (!currentFocus || currentFocus.taskId !== journal.taskId
-        || currentFocus.pendingTaskMutation) return false;
+        || !_focusCommitDeepEqual(currentFocus.pendingTaskMutation, journal)) return false;
     _focusTimer.pendingTaskMutation = null;
     if (!_saveFocusTimer()) {
       _focusTimer.pendingTaskMutation = journal;

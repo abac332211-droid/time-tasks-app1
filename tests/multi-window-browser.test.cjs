@@ -3374,3 +3374,290 @@ test('gap analytics use measured seconds consistently across weekly, type, and s
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+
+function linkedTaskMutationInitialState() {
+  const state = pendingFocusBrowserInitialState();
+  const operationId = '423e4567-e89b-42d3-a456-426614174003';
+  state.main.tasks[0] = {
+    ...state.main.tasks[0],
+    actual: 12,
+    actualSeconds: 720,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operationId
+  };
+  state.main.creditOperations = [{
+    recordVersion: 1,
+    operationId,
+    kind: 'session',
+    taskId: 1,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 720,
+    measuredSeconds: 720,
+    creditedSeconds: 720,
+    source: 'measured',
+    sessionId: operationId,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  }];
+  return state;
+}
+
+async function startLinkedTaskMutationPage(server) {
+  const opened = await openPendingFocusBrowserContext(server, linkedTaskMutationInitialState());
+  const page = await opened.context.newPage();
+  await page.goto(opened.appUrl, { waitUntil: 'domcontentloaded' });
+  await waitForSafeStartup(page, 'linked task mutation initial startup');
+  return { ...opened, page };
+}
+
+test('linked task/Focus intent recovers after a true cold reload and does not duplicate the credit ledger', {
+  skip: false
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await startLinkedTaskMutationPage(server);
+    browser = opened.browser;
+    context = opened.context;
+    const page = opened.page;
+
+    const journalInfo = await page.evaluate(async () => _withTaskStorageLock(() => {
+      const task = tasks.find(row => row && row.id === 1);
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      if (!task || !Number.isSafeInteger(task.actualSeconds)
+          || !Number.isSafeInteger(task.creditRevision)
+          || !Array.isArray(main.creditOperations)) {
+        throw new Error('V2 task and ledger were not hydrated before preparing recovery');
+      }
+      const journal = {
+        recordVersion: 1,
+        operationId: _newPendingFocusCommitUuid(),
+        kind: 'complete',
+        taskId: 1,
+        beforeTask: JSON.parse(JSON.stringify(task)),
+        beforeCreditOperationsLength: main.creditOperations.length,
+        target: {
+          status: 'done',
+          actual: 14,
+          completedAt: localDateTimeString()
+        },
+        createdAt: Date.now()
+      };
+      if (!_validatePendingTaskMutation(journal)) throw new Error('Production journal validation rejected intent');
+      _focusTimer.taskId = 1;
+      _focusTimer.pendingTaskMutation = journal;
+      _taskFocusMutationWriteDepth++;
+      let saved;
+      try { saved = _saveFocusTimer(); }
+      finally { _taskFocusMutationWriteDepth--; }
+      if (!saved) throw new Error('Could not persist task mutation intent before reload');
+      return {
+        beforeOperations: main.creditOperations.length,
+        beforeRevision: task.creditRevision,
+        journalId: journal.operationId
+      };
+    }));
+    assert.equal(journalInfo.beforeOperations, 1);
+
+    // This reload starts a new JS realm and exercises the normal startup
+    // recovery coordinator, not a unit-test copy of its in-memory state.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'cold task/focus journal replay');
+
+    const recovered = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks.find(row => row && row.id === 1),
+        operations: main.creditOperations,
+        timer,
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    assert.equal(recovered.task.status, 'done');
+    assert.equal(recovered.task.actual, 14);
+    assert.equal(recovered.task.actualSeconds, 840);
+    assert.equal(recovered.task.creditRevision, journalInfo.beforeRevision + 1);
+    assert.equal(recovered.operations.length, journalInfo.beforeOperations + 1);
+    assert.equal(recovered.operations[1].kind, 'manual_adjustment');
+    assert.equal(recovered.operations[1].previousSeconds, 720);
+    assert.equal(recovered.operations[1].targetSeconds, 840);
+    assert.equal(recovered.operations[1].sessionId, null);
+    assert.equal(recovered.timer.taskId, null);
+    assert.equal(recovered.timer.pendingTaskMutation, null);
+    assert.equal(recovered.sessions.length, 0, 'changing a task must not invent a Focus session');
+    assert.equal(recovered.recoveryRequired, false);
+
+    const mainAfterRecovery = await page.evaluate(() => localStorage.getItem('timeTasksApp_v1'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'second cold task/focus startup');
+    const repeated = await page.evaluate(() => ({
+      main: localStorage.getItem('timeTasksApp_v1'),
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
+    }));
+    assert.equal(repeated.main, mainAfterRecovery, 'a second recovery pass must not append another credit operation');
+    assert.equal(repeated.timer.pendingTaskMutation, null);
+    assert.equal(repeated.timer.taskId, null);
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('cold recovery detects a task write completed before interruption and does not replay its credit adjustment', {
+  skip: false
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await startLinkedTaskMutationPage(server);
+    browser = opened.browser;
+    context = opened.context;
+    const page = opened.page;
+
+    const interruptedAfterMainWrite = await page.evaluate(async () => _withTaskStorageLock(() => {
+      const task = tasks.find(row => row && row.id === 1);
+      const mainBefore = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const journal = {
+        recordVersion: 1,
+        operationId: _newPendingFocusCommitUuid(),
+        kind: 'complete',
+        taskId: 1,
+        beforeTask: JSON.parse(JSON.stringify(task)),
+        beforeCreditOperationsLength: mainBefore.creditOperations.length,
+        target: { status: 'done', actual: 14, completedAt: localDateTimeString() },
+        createdAt: Date.now()
+      };
+      _focusTimer.taskId = 1;
+      _focusTimer.pendingTaskMutation = journal;
+      _taskFocusMutationWriteDepth++;
+      try {
+        if (!_saveFocusTimer()) throw new Error('Intent write failed');
+        task.actual = journal.target.actual;
+        task.status = journal.target.status;
+        task.completedAt = journal.target.completedAt;
+        if (!saveData()) throw new Error('Production V2 task write failed');
+      } finally {
+        _taskFocusMutationWriteDepth--;
+      }
+      const mainAfter = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timerAfter = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        operationCount: mainAfter.creditOperations.length,
+        operationKind: mainAfter.creditOperations[mainAfter.creditOperations.length - 1].kind,
+        timerTaskId: timerAfter.taskId,
+        journalPresent: !!timerAfter.pendingTaskMutation
+      };
+    }));
+    assert.equal(interruptedAfterMainWrite.operationCount, 2);
+    assert.equal(interruptedAfterMainWrite.operationKind, 'manual_adjustment');
+    assert.equal(interruptedAfterMainWrite.timerTaskId, 1);
+    assert.equal(interruptedAfterMainWrite.journalPresent, true);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'recovery after verified main write');
+    const after = await page.evaluate(() => ({
+      main: JSON.parse(localStorage.getItem('timeTasksApp_v1')),
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'))
+    }));
+    assert.equal(after.main.tasks[0].actualSeconds, 840);
+    assert.equal(after.main.creditOperations.length, 2,
+      'recovery must recognize the exact after-state and must not append a second adjustment');
+    assert.equal(after.main.creditOperations[1].kind, 'manual_adjustment');
+    assert.equal(after.timer.taskId, null);
+    assert.equal(after.timer.pendingTaskMutation, null);
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('verified main-write failure rolls back only while both original snapshots still match', {
+  skip: false
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await startLinkedTaskMutationPage(server);
+    browser = opened.browser;
+    context = opened.context;
+    const page = opened.page;
+    const failure = await page.evaluate(async () => _withTaskStorageLock(() => {
+      const beforeMain = localStorage.getItem('timeTasksApp_v1');
+      const beforeData = JSON.parse(beforeMain);
+      const beforeTask = JSON.parse(JSON.stringify(tasks.find(row => row && row.id === 1)));
+      const beforeTimer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const beforeFocusSessions = localStorage.getItem('timeTasksApp_focusSessions');
+      const nativeSetItem = Storage.prototype.setItem;
+      let injected = false;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_v1' && !injected) {
+          injected = true;
+          throw new DOMException('Injected main storage quota failure', 'QuotaExceededError');
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+      let result = false;
+      try {
+        result = _persistLinkedTaskFocusMutation('complete', 1, {
+          actual: 14,
+          status: 'done',
+          completedAt: localDateTimeString()
+        });
+      } finally {
+        Storage.prototype.setItem = nativeSetItem;
+      }
+      const afterData = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const afterTimer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        result,
+        injected,
+        beforeMain,
+        afterMain: localStorage.getItem('timeTasksApp_v1'),
+        beforeTask,
+        afterTask: tasks.find(row => row && row.id === 1),
+        beforeTimer,
+        afterTimer,
+        beforeOps: beforeData.creditOperations.length,
+        afterOps: afterData.creditOperations.length,
+        beforeFocusSessions,
+        afterFocusSessions: localStorage.getItem('timeTasksApp_focusSessions'),
+        recoveryRequired: storageRecoveryRequired
+      };
+    }));
+    assert.equal(failure.injected, true, 'test must hit the actual main key writer');
+    assert.equal(failure.result, false, 'the failed task completion must not be reported as success');
+    assert.equal(failure.afterMain, failure.beforeMain, 'main storage must remain byte-identical');
+    assert.equal(failure.afterOps, failure.beforeOps, 'no credit operation may be added on rollback');
+    assert.equal(failure.afterFocusSessions, failure.beforeFocusSessions);
+    assert.equal(failure.afterTimer.taskId, failure.beforeTimer.taskId,
+      'the Focus Timer link must remain intact');
+    assert.equal(failure.afterTimer.pendingTaskMutation, null,
+      'the safely rolled-back journal must be cleared only after read-back verification');
+    assert.equal(failure.afterTask.actual, failure.beforeTask.actual);
+    assert.equal(failure.afterTask.status, failure.beforeTask.status);
+    assert.equal(failure.recoveryRequired, false,
+      'a fully verified conditional rollback does not need to leave recovery blocked');
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
