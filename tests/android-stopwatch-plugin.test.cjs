@@ -114,3 +114,48 @@ test('rejects ambiguous Android namespace', (t) => {
   assert.match(result.stderr, /Expected exactly one Android namespace/);
   assert.equal(fs.existsSync(path.join(f.java, 'StopwatchClockPlugin.java')), false);
 });
+
+
+test('notification queue overflow is durably flagged and shown without acknowledging the dropped action', (t) => {
+  const f = fixture(t), result = run(f.root);
+  assert.equal(result.status, 0, result.stderr);
+
+  const plugin = fs.readFileSync(path.join(f.java, 'StopwatchClockPlugin.java'), 'utf8');
+  const receiver = fs.readFileSync(path.join(f.java, 'StopwatchNotificationActionReceiver.java'), 'utf8');
+  const service = fs.readFileSync(path.join(f.java, 'StopwatchForegroundService.java'), 'utf8');
+
+  assert.match(plugin, /ACTION_QUEUE_OVERFLOW_KEY = "notificationActionQueueOverflow"/);
+  assert.match(plugin, /MAX_PENDING_ACTIONS = 20/);
+  assert.match(plugin, /queue\.length\(\) > MAX_PENDING_ACTIONS/);
+  assert.match(plugin, /result\.put\("queueOverflow", prefs\.getBoolean\(ACTION_QUEUE_OVERFLOW_KEY, false\)\)/);
+
+  const fullAt = receiver.indexOf('if (queue.length() >= MAX_PENDING_ACTIONS)');
+  assert.ok(fullAt >= 0, 'receiver must guard the 20-item boundary before appending');
+  const appendAt = receiver.indexOf('next.put(entry)', fullAt);
+  assert.ok(appendAt > fullAt, 'append must remain after the overflow guard');
+  const overflowBlock = receiver.slice(fullAt, appendAt);
+  assert.match(overflowBlock, /putBoolean\(StopwatchClockPlugin\.ACTION_QUEUE_OVERFLOW_KEY, true\)/);
+  assert.match(overflowBlock, /\.commit\(\)/);
+  assert.match(overflowBlock, /getBoolean\(StopwatchClockPlugin\.ACTION_QUEUE_OVERFLOW_KEY, false\)/);
+  assert.match(overflowBlock, /startForegroundService\(warning\)/);
+  assert.match(overflowBlock, /Do not append, replace or acknowledge the overflowing action/);
+  assert.doesNotMatch(overflowBlock, /putString\(StopwatchClockPlugin\.ACTION_QUEUE_KEY/);
+  assert.doesNotMatch(overflowBlock, /acknowledgeNotificationAction/);
+
+  assert.match(service, /ACTION_QUEUE_OVERFLOW =/);
+  assert.match(service, /لم يُحفظ آخر أمر إشعار؛ افتح التطبيق لمعالجة الطابور/);
+  assert.match(service, /إجراء غير محفوظ/);
+
+  const ackStart = plugin.indexOf('public void acknowledgeNotificationAction');
+  const ackEnd = plugin.indexOf('@PluginMethod', ackStart + 10);
+  const ack = plugin.slice(ackStart, ackEnd < 0 ? plugin.length : ackEnd);
+  assert.match(ack, /if \(nextQueue\.length\(\) == 0\) editor\.remove\(ACTION_QUEUE_OVERFLOW_KEY\)/);
+  assert.ok(ack.indexOf('nextQueue.length() == 0')
+    < ack.indexOf('if (!editor.commit())'),
+    'overflow warning may clear only in the same successful commit that drains the queue');
+
+  const peekStart = plugin.indexOf('public void peekNotificationAction');
+  const peekEnd = plugin.indexOf('@PluginMethod', peekStart + 10);
+  const peek = plugin.slice(peekStart, peekEnd < 0 ? plugin.length : peekEnd);
+  assert.match(peek, /queueOverflow/);
+});
