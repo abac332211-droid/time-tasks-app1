@@ -282,7 +282,7 @@ async function waitForStartupSuccess(page) {
 }
 
 async function primeLinkedWorkTimer(page, {
-  taskId = 7011, mode = 'stopwatch', durationSec = 180
+  taskId = 7011, mode = 'stopwatch', durationSec = 180, pauseAfterPrime = false
 } = {}) {
   await page.evaluate(async ({ taskId, mode, durationSec }) => {
     if (_focusTimer.running) await toggleTimer();
@@ -324,6 +324,90 @@ async function primeLinkedWorkTimer(page, {
     });
     if (!persisted) throw new Error('Could not persist the running timer fixture');
   }, { taskId, mode, durationSec });
+  if (pauseAfterPrime) {
+    // Ensure the real timer controls are visible. Stopwatch setup links/starts
+    // without navigating to the Tasks page, unlike startTimerForTask().
+    await page.locator('nav button[data-page="tasks"]').click();
+    await page.waitForFunction(() => {
+      const card = document.getElementById('timerCard');
+      return !!card && card.getClientRects().length > 0;
+    }, null, { timeout: 5000 });
+
+    // Exercise the real Stop control. A click dispatch does not await the
+    // asynchronous Web Lock transaction, so wait for its durable paused
+    // checkpoint and lock release before pinning the exact test measurement.
+    await page.locator('#timerStartBtn').click();
+    await page.waitForFunction(() => {
+      if (!_focusTimer || _focusTimer.running !== false
+          || _stopwatchTransactionLockDepth !== 0
+          || storageRecoveryRequired === true) return false;
+      try {
+        const stored = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return !!stored && stored.running === false;
+      } catch (_error) { return false; }
+    }, null, { timeout: 10000 });
+
+    const normalized = await page.evaluate(async (seconds) => _withTaskStorageLock(function() {
+      if (_focusTimer.running !== false) return false;
+      _focusTimer.baseElapsed = seconds;
+      _focusElapsedRemainderMs = 0;
+      _focusTimer.startedAt = null;
+      _clearFocusTimerClock();
+      return _saveFocusTimer();
+    }), durationSec);
+    if (!normalized) throw new Error('Could not persist the exact stopped timer checkpoint');
+  }
+}
+
+
+async function openFreshPomodoroFinishDialog(page, durationSec) {
+  // Closing a modal hides its overlay but retains its old footer buttons.
+  // A button-exists check alone can therefore accept a stale 180-second
+  // snapshot before finishTimer's asynchronous Web Lock callback opens the
+  // dialog for the newly prepared session.
+  await page.waitForFunction(() => {
+    const overlay = document.getElementById('customModalOverlay');
+    return !overlay || overlay.classList.contains('hidden');
+  }, null, { timeout: 5000 });
+
+  await page.locator('#timerFinishBtn').click();
+  await page.waitForFunction((seconds) => {
+    const overlay = document.getElementById('customModalOverlay');
+    const body = document.getElementById('modalBody');
+    const footer = document.getElementById('modalFooter');
+    if (!overlay || overlay.classList.contains('hidden') || !body || !footer) return false;
+    const expectedDuration = _formatDuration(seconds);
+    const hasMeasuredSave = Array.from(footer.children).some(button =>
+      button.textContent.includes('حفظ الوقت المقاس'));
+    return hasMeasuredSave && body.textContent.includes(expectedDuration);
+  }, durationSec, { timeout: 5000 });
+}
+
+async function migrateTaskToV2ThroughFinishButton(page, taskId = 7011) {
+  await primeLinkedWorkTimer(page, { taskId, mode: 'pomodoro', durationSec: 180, pauseAfterPrime: true });
+  await openFreshPomodoroFinishDialog(page, 180);
+  const committed = await page.evaluate(async () => {
+    const save = Array.from(document.getElementById('modalFooter').children)
+      .find(button => button.textContent.includes('حفظ الوقت المقاس'));
+    if (!save) throw new Error('Pomodoro measured-credit button was not rendered');
+    save.click();
+    const pending = window._focusCommitPendingPromise;
+    return pending ? await pending : false;
+  });
+  assert.equal(committed, true, 'the real Pomodoro finish button must commit V2');
+  await page.waitForFunction((id) => {
+    const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+    const task = main.tasks.find(row => row && row.id === id);
+    const operations = Array.isArray(main.creditOperations) ? main.creditOperations : [];
+    const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+    const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+    return task && task.creditSchemaVersion === 1
+      && operations.length === 1 && sessions.length === 1
+      && timer && timer.running === false && timer.baseElapsed === 0
+      && timer.pendingFocusCommit == null
+      && window._focusCommitPendingPromise === null
+      && storageRecoveryRequired === false;
+  }, taskId, { timeout: 15000 });
 }
 
 async function addSecondTask(page) {
@@ -635,7 +719,7 @@ test('D-02 task-linked save waits for real startup and records every persistence
   }
 });
 
-test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exactly once', {
+test('D-02 resetTimer save dialog commits linked exact Stopwatch credit through V2 exactly once', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
@@ -644,7 +728,7 @@ test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exact
     page = await runtime.context.newPage();
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
 
     await page.evaluate(() => resetTimer());
     await page.waitForFunction(() => {
@@ -670,19 +754,43 @@ test('D-02 resetTimer save dialog commits the linked Stopwatch transaction exact
       return {
         commitResult,
         actual: savedTask && savedTask.actual,
+        actualSeconds: savedTask && savedTask.actualSeconds,
+        creditRevision: savedTask && savedTask.creditRevision,
+        lastCreditOperationId: savedTask && savedTask.lastCreditOperationId,
+        operations: main.creditOperations || [],
         taskTransactionId: savedTask && savedTask.lastStopwatchTransactionId,
         sessions,
         timer,
-        recoveryRequired: storageRecoveryRequired
+        recoveryRequired: storageRecoveryRequired,
+        visibleModal: {
+          title: document.getElementById('modalTitle') && document.getElementById('modalTitle').textContent,
+          body: document.getElementById('modalBody') && document.getElementById('modalBody').textContent
+        },
+        guards: {
+          mainBaselineReady: _mainStorageBaselineReady,
+          mainExternalChangeObserved: _mainStorageExternalChangeObserved,
+          secondaryConflicts: _secondaryStorageConflicts,
+          timerExternalConflict: _focusTimerExternalConflict,
+          commitInFlight: _focusCommitInFlight
+        }
       };
     });
     assert.equal(result.commitResult, true);
     assert.equal(result.actual, 8);
+    assert.equal(result.actualSeconds, 480);
+    assert.equal(result.creditRevision, 1);
+    assert.equal(result.operations.length, 1);
     assert.equal(result.sessions.length, 1);
     assert.equal(result.sessions[0].taskId, 7011);
-    assert.equal(result.sessions[0].transactionId, result.taskTransactionId);
-    assert.ok(result.taskTransactionId);
+    assert.equal(result.operations[0].operationId, result.operations[0].sessionId);
+    assert.equal(result.sessions[0].sessionId, result.operations[0].operationId);
+    assert.equal(result.sessions[0].durationSec, 180);
+    assert.equal(result.sessions[0].creditedSeconds, 180);
+    assert.equal(result.sessions[0].creditSource, 'measured');
+    assert.equal(result.lastCreditOperationId, result.operations[0].operationId);
+    assert.equal(result.taskTransactionId, undefined);
     assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.timer.pendingFocusCommit, null);
     assert.equal(result.timer.running, false);
     assert.equal(result.timer.baseElapsed, 0);
     assert.equal(result.recoveryRequired, false);
@@ -701,7 +809,7 @@ test('D-02 transition commits the old task before starting the next task timer',
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await addSecondTask(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
 
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
@@ -784,7 +892,7 @@ test('D-02 transition failure does not start the next task or report success', {
     await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
     await waitForStartupSuccess(page);
     await addSecondTask(page);
-    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 181, pauseAfterPrime: true });
 
     await page.evaluate(() => startTimerForTask(7012));
     await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
@@ -826,6 +934,7 @@ test('D-02 transition failure does not start the next task or report success', {
         injected: window.__injectedMainWriteFailure,
         actual: oldTask && oldTask.actual,
         sessions,
+        operations: main.creditOperations || [],
         timer,
         recoveryRequired: storageRecoveryRequired,
         inMemoryTimer: {
@@ -841,7 +950,13 @@ test('D-02 transition failure does not start the next task or report success', {
     assert.equal(result.injected, true);
     assert.equal(result.actual, 5);
     assert.equal(result.sessions.length, 0);
-    assert.ok(result.timer.pendingStopwatchTransaction);
+    assert.ok(result.timer.pendingStopwatchTransaction,
+      'the 181s V1 Stopwatch session must retain its legacy transaction journal');
+    assert.equal(result.timer.pendingStopwatchTransaction.taskId, 7011);
+    assert.equal(result.timer.pendingStopwatchTransaction.durationSec, result.timer.baseElapsed);
+    assert.equal(result.timer.pendingFocusCommit, null,
+      'an un-migrated V1 task must not create a V2 journal');
+    assert.equal(result.operations.length, 0);
     assert.equal(result.timer.taskId, 7011);
     assert.equal(result.timer.running, false);
     assert.ok(result.timer.baseElapsed >= 180);
@@ -854,7 +969,389 @@ test('D-02 transition failure does not start the next task or report success', {
   }
 });
 
-test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry does not evict another row', {
+test('a Pomodoro-migrated task commits a later adjusted Stopwatch session through the durable V2 ledger', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+
+    const result = await page.evaluate(async () => {
+      const taskId = 7011;
+      async function commitStoppedSession(mode, durationSec, approvedMinutes, useMeasuredCredit) {
+        const saved = await _withTaskStorageLock(function() {
+          _stopDisplayTick();
+          _focusTimer.mode = mode;
+          _focusTimer.phase = 'work';
+          _focusTimer.running = false;
+          _focusTimer.baseElapsed = durationSec;
+          _focusElapsedRemainderMs = 0;
+          _focusTimer.startedAt = null;
+          _focusTimer.cyclePosition = 0;
+          _focusTimer.taskId = taskId;
+          _focusTimer.sessionStartAt = Date.now() - durationSec * 1000;
+          _focusTimer.awaitingConfirmation = false;
+          _focusTimer.pendingPhaseEndedAt = null;
+          _focusTimer.clockAdjusted = false;
+          _focusTimer.nativeClockActive = false;
+          _focusTimer.nativeRestorePending = false;
+          _focusTimer.nativeBootMismatch = false;
+          _focusTimer.nativeSessionToken = null;
+          _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+          _focusTimer.nativeAnchorBootCount = null;
+          _focusTimer.nativeAnchorBaseMs = null;
+          _focusTimer.nativeAnchorWallMs = null;
+          _focusTimer.pendingNotificationFinish = null;
+          _focusTimer.pendingStopwatchTransaction = null;
+          _focusTimer.pendingFocusCommit = null;
+          _clearFocusTimerClock();
+          return _saveFocusTimer();
+        });
+        if (!saved) throw new Error('Could not persist the ' + mode + ' test snapshot');
+        const snapshot = _captureFocusTimerSnapshot();
+        const task = tasks.find(row => row && row.id === taskId);
+        if (!task) throw new Error('The linked task disappeared');
+        return await _applyTimerFinish(
+          durationSec, task, approvedMinutes, 'work', snapshot, useMeasuredCredit
+        );
+      }
+
+      const pomodoroCommitted = await commitStoppedSession('pomodoro', 180, 3, true);
+      const afterPomodoro = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const migratedTask = afterPomodoro.tasks.find(row => row.id === taskId);
+      if (!migratedTask || migratedTask.creditSchemaVersion !== 1) {
+        throw new Error('The first Pomodoro commit did not migrate the task to V2');
+      }
+
+      const stopwatchCommitted = await commitStoppedSession('stopwatch', 125, 2, false);
+
+      // Exercise the separate reset-dialog save entry point. The task is now V2,
+      // so this path must reach the same pending-focus transaction writer.
+      const resetSnapshotSaved = await _withTaskStorageLock(function() {
+        _focusTimer.mode = 'stopwatch';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 65;
+        _focusElapsedRemainderMs = 0;
+        _focusTimer.startedAt = null;
+        _focusTimer.taskId = taskId;
+        _focusTimer.sessionStartAt = Date.now() - 65000;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        _focusTimer.pendingStopwatchTransaction = null;
+        _focusTimer.pendingFocusCommit = null;
+        _clearFocusTimerClock();
+        return _saveFocusTimer();
+      });
+      if (!resetSnapshotSaved) throw new Error('Could not persist reset-dialog Stopwatch fixture');
+      const resetSnapshot = _captureFocusTimerSnapshot();
+      const resetTask = tasks.find(row => row && row.id === taskId);
+      const resetSaveCommitted = await _applyStopwatchSave(65, resetTask, 1, resetSnapshot);
+
+      // Start a different task while a V2 task-linked Pomodoro session is paused.
+      // The real "save and switch" dialog must commit the old task through V2,
+      // then its onCommitted callback must start the next timer under the guard.
+      const secondTaskAdded = await _withTaskStorageLock(function() {
+        if (!tasks.some(row => row && row.id === 7012)) {
+          tasks.push({
+            id: 7012,
+            name: 'Next transition task',
+            type: 'معرفية',
+            status: 'pending',
+            expected: 20,
+            actual: null,
+            plannedDate: new Date().toISOString().slice(0, 10),
+            plannedTime: '',
+            completedAt: null,
+            createdAt: Date.now(),
+            projectId: null,
+            priority: null,
+            recurrence: null,
+            checklist: null
+          });
+        }
+        return saveData();
+      });
+      if (!secondTaskAdded) throw new Error('Could not persist transition target task');
+      const transitionSnapshotSaved = await _withTaskStorageLock(function() {
+        _focusTimer.mode = 'pomodoro';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 75;
+        _focusElapsedRemainderMs = 0;
+        _focusTimer.startedAt = null;
+        _focusTimer.taskId = taskId;
+        _focusTimer.sessionStartAt = Date.now() - 75000;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        _focusTimer.pendingStopwatchTransaction = null;
+        _focusTimer.pendingFocusCommit = null;
+        _clearFocusTimerClock();
+        return _saveFocusTimer();
+      });
+      if (!transitionSnapshotSaved) throw new Error('Could not persist transition Pomodoro fixture');
+      const transitionDialogOpened = await startTimerForTask(7012);
+      if (!transitionDialogOpened) throw new Error('Task transition dialog was not opened');
+
+      const mainBeforeTransitionCommit = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const previousTaskBeforeTransition = mainBeforeTransitionCommit.tasks.find(row => row.id === taskId);
+      if (!previousTaskBeforeTransition || previousTaskBeforeTransition.creditSchemaVersion !== 1) {
+        throw new Error('The transition source task lost its V2 metadata');
+      }
+      return { pomodoroCommitted, stopwatchCommitted, resetSaveCommitted, transitionDialogOpened };
+    });
+
+    if (!result.pomodoroCommitted || !result.stopwatchCommitted || !result.resetSaveCommitted
+        || !result.transitionDialogOpened) throw new Error('One of the task-linked V2 saves failed');
+    await page.waitForFunction(() => {
+      const footer = document.getElementById('modalFooter');
+      return footer && footer.children.length === 3
+        && footer.children[2].textContent.includes('حفظ والانتقال');
+    }, null, { timeout: 5000 });
+    await page.evaluate(() => document.getElementById('modalFooter').children[2].click());
+    await page.waitForFunction(() =>
+      _focusTimer.running === true && _focusTimer.taskId === 7012
+        && _focusCommitPendingPromise === null && storageRecoveryRequired === false,
+      null, { timeout: 15000 }
+    );
+
+    const resultAfterAllPaths = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === 7011);
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task,
+        operations: main.creditOperations,
+        sessions,
+        timer,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+
+    assert.equal(resultAfterAllPaths.task.actualSeconds, 735,
+      'initial 300s + measured Pomodoro 180s + adjusted Stopwatch 120s + 60s + measured transition Pomodoro 75s');
+    assert.equal(resultAfterAllPaths.task.actual, 12);
+    assert.equal(resultAfterAllPaths.task.creditRevision, 4);
+    assert.equal(resultAfterAllPaths.operations.length, 4);
+    assert.equal(resultAfterAllPaths.task.lastCreditOperationId,
+      resultAfterAllPaths.operations[3].operationId);
+
+    const expected = [
+      { mode: 'pomodoro', measured: 180, credited: 180, source: 'measured' },
+      { mode: 'stopwatch', measured: 125, credited: 120, source: 'user_adjusted' },
+      { mode: 'stopwatch', measured: 65, credited: 60, source: 'user_adjusted' },
+      { mode: 'pomodoro', measured: 75, credited: 75, source: 'measured' }
+    ];
+    assert.equal(resultAfterAllPaths.sessions.length, expected.length);
+    for (let index = 0; index < expected.length; index++) {
+      const operation = resultAfterAllPaths.operations[index];
+      const session = resultAfterAllPaths.sessions.find(row =>
+        row.sessionId === operation.sessionId);
+      assert.ok(session, 'operation ' + index + ' must have exactly one session record');
+      assert.equal(operation.kind, 'session');
+      assert.equal(operation.measuredSeconds, expected[index].measured);
+      assert.equal(operation.creditedSeconds, expected[index].credited);
+      assert.equal(operation.source, expected[index].source);
+      assert.equal(session.mode, expected[index].mode);
+      assert.equal(session.durationSec, expected[index].measured);
+      assert.equal(session.creditedSeconds, expected[index].credited);
+      assert.equal(session.creditSource, expected[index].source);
+      assert.equal(session.recordVersion, 2);
+      assert.equal(session.clockTrust, 'trusted');
+      assert.equal(session.clockAdjusted, false);
+    }
+
+    const adjustedStopwatchSession = resultAfterAllPaths.sessions.find(session =>
+      session.mode === 'stopwatch' && session.durationSec === 125);
+    assert.ok(adjustedStopwatchSession);
+    assert.equal(adjustedStopwatchSession.outcome, 'stopped');
+    assert.equal(adjustedStopwatchSession.activeDurationMs, 125000);
+    assert.equal(resultAfterAllPaths.sessions[3].mode, 'pomodoro',
+      'the save-and-switch path records a Pomodoro session on the prior task');
+    assert.equal(resultAfterAllPaths.sessions[3].taskId, 7011);
+
+    assert.equal(resultAfterAllPaths.timer.running, true,
+      'the guarded transition callback starts the next task only after V2 commit');
+    assert.equal(resultAfterAllPaths.timer.taskId, 7012);
+    assert.equal(resultAfterAllPaths.timer.baseElapsed, 0);
+    assert.equal(resultAfterAllPaths.timer.pendingFocusCommit, null);
+    assert.equal(resultAfterAllPaths.timer.pendingStopwatchTransaction, null);
+    assert.equal(resultAfterAllPaths.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('a user-adjusted Stopwatch V2 journal replays after interruption without duplicate credit or session', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+
+    const firstAttempt = await page.evaluate(async () => {
+      const taskId = 7011;
+      async function preparePaused(mode, durationSec) {
+        const saved = await _withTaskStorageLock(function() {
+          _stopDisplayTick();
+          _focusTimer.mode = mode;
+          _focusTimer.phase = 'work';
+          _focusTimer.running = false;
+          _focusTimer.baseElapsed = durationSec;
+          _focusElapsedRemainderMs = 0;
+          _focusTimer.startedAt = null;
+          _focusTimer.cyclePosition = 0;
+          _focusTimer.taskId = taskId;
+          _focusTimer.sessionStartAt = Date.now() - durationSec * 1000;
+          _focusTimer.awaitingConfirmation = false;
+          _focusTimer.pendingPhaseEndedAt = null;
+          _focusTimer.clockAdjusted = false;
+          _focusTimer.nativeClockActive = false;
+          _focusTimer.nativeRestorePending = false;
+          _focusTimer.nativeBootMismatch = false;
+          _focusTimer.nativeSessionToken = null;
+          _focusTimer.nativeAnchorElapsedRealtimeMs = null;
+          _focusTimer.nativeAnchorBootCount = null;
+          _focusTimer.nativeAnchorBaseMs = null;
+          _focusTimer.nativeAnchorWallMs = null;
+          _focusTimer.pendingNotificationFinish = null;
+          _focusTimer.pendingStopwatchTransaction = null;
+          _focusTimer.pendingFocusCommit = null;
+          _clearFocusTimerClock();
+          return _saveFocusTimer();
+        });
+        if (!saved) throw new Error('Could not persist ' + mode + ' crash-recovery fixture');
+        return _captureFocusTimerSnapshot();
+      }
+
+      const pomodoroSnapshot = await preparePaused('pomodoro', 180);
+      const taskBeforeMigration = tasks.find(row => row && row.id === taskId);
+      const migrated = await _applyTimerFinish(
+        180, taskBeforeMigration, 3, 'work', pomodoroSnapshot, true
+      );
+      if (!migrated) throw new Error('Initial Pomodoro migration commit failed');
+      const migratedMain = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const migratedTask = migratedMain.tasks.find(row => row.id === taskId);
+      if (!migratedTask || migratedTask.creditSchemaVersion !== 1) {
+        throw new Error('Pomodoro did not migrate task metadata to V2');
+      }
+
+      const stopwatchSnapshot = await preparePaused('stopwatch', 125);
+      const nativeSetItem = Storage.prototype.setItem;
+      const nativeGetItem = Storage.prototype.getItem;
+      window.__nativeSetItemBeforeAdjustedStopwatchFailure = nativeSetItem;
+      window.__injectedAdjustedStopwatchJournalClearFailure = false;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_focusTimer'
+            && !window.__injectedAdjustedStopwatchJournalClearFailure) {
+          try {
+            const next = JSON.parse(String(value));
+            const durable = JSON.parse(nativeGetItem.call(localStorage, 'timeTasksApp_focusTimer') || '{}');
+            if (durable.pendingFocusCommit
+                && !next.pendingFocusCommit && next.baseElapsed === 0) {
+              window.__injectedAdjustedStopwatchJournalClearFailure = true;
+              throw new Error('injected adjusted Stopwatch V2 journal-clear failure');
+            }
+          } catch (error) {
+            if (window.__injectedAdjustedStopwatchJournalClearFailure) throw error;
+          }
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+
+      const linkedTask = tasks.find(row => row && row.id === taskId);
+      const commitResult = await _applyTimerFinish(
+        125, linkedTask, 2, 'work', stopwatchSnapshot, false
+      );
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === taskId);
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      Storage.prototype.setItem = nativeSetItem;
+      return {
+        migrated,
+        commitResult,
+        injected: window.__injectedAdjustedStopwatchJournalClearFailure,
+        task,
+        operations: main.creditOperations,
+        sessions,
+        operations: main.creditOperations || [],
+        timer,
+        recoveryRequired: storageRecoveryRequired,
+        operationId: main.creditOperations[1] && main.creditOperations[1].operationId,
+        sessionId: sessions[1] && sessions[1].sessionId
+      };
+    });
+
+    assert.equal(firstAttempt.migrated, true);
+    assert.equal(firstAttempt.commitResult, false,
+      'the injected failure must stop the commit from reporting completion');
+    assert.equal(firstAttempt.injected, true);
+    assert.equal(firstAttempt.task.actualSeconds, 600,
+      'the V2 credit is durable before the injected final journal-clear failure');
+    assert.equal(firstAttempt.task.actual, 10);
+    assert.equal(firstAttempt.task.creditRevision, 2);
+    assert.equal(firstAttempt.operations.length, 2);
+    assert.equal(firstAttempt.operations[1].source, 'user_adjusted');
+    assert.equal(firstAttempt.operations[1].measuredSeconds, 125);
+    assert.equal(firstAttempt.operations[1].creditedSeconds, 120);
+    assert.equal(firstAttempt.sessions.length, 2);
+    assert.equal(firstAttempt.sessions[1].sessionId, firstAttempt.operationId);
+    assert.equal(firstAttempt.sessions[1].creditedSeconds, 120);
+    assert.equal(firstAttempt.timer.pendingFocusCommit.operationId, firstAttempt.operationId);
+    assert.equal(firstAttempt.timer.pendingStopwatchTransaction, null);
+    assert.equal(firstAttempt.recoveryRequired, true);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    const recovered = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === 7011);
+      const operations = main.creditOperations;
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task,
+        operations,
+        sessions,
+        timer,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+
+    assert.equal(recovered.task.actualSeconds, 600,
+      'recovery must not add the adjusted credit a second time');
+    assert.equal(recovered.task.actual, 10);
+    assert.equal(recovered.task.creditRevision, 2);
+    assert.equal(recovered.operations.length, 2);
+    assert.equal(recovered.operations.filter(row =>
+      row.operationId === firstAttempt.operationId).length, 1);
+    assert.equal(recovered.task.lastCreditOperationId, firstAttempt.operationId);
+    assert.equal(recovered.sessions.length, 2);
+    assert.equal(recovered.sessions.filter(row =>
+      row.sessionId === firstAttempt.sessionId).length, 1);
+    assert.equal(recovered.sessions[1].durationSec, 125);
+    assert.equal(recovered.sessions[1].creditedSeconds, 120);
+    assert.equal(recovered.sessions[1].creditSource, 'user_adjusted');
+    assert.equal(recovered.timer.pendingFocusCommit, null);
+    assert.equal(recovered.timer.pendingStopwatchTransaction, null);
+    assert.equal(recovered.timer.baseElapsed, 0);
+    assert.equal(recovered.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('D-04 V2 Pomodoro credit commit at 500 sessions evicts once and startup retry does not evict another row', {
   skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
 }, async () => {
   const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
@@ -899,10 +1396,10 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
           try {
             const next = JSON.parse(String(value));
             const durable = JSON.parse(nativeGetItem.call(localStorage, 'timeTasksApp_focusTimer') || '{}');
-            if (durable.pendingStopwatchTransaction
-                && !next.pendingStopwatchTransaction && next.baseElapsed === 0) {
+            if (durable.pendingFocusCommit
+                && !next.pendingFocusCommit && next.baseElapsed === 0) {
               window.__injectedJournalClearFailure = true;
-              throw new Error('injected Pomodoro journal-clear failure');
+              throw new Error('injected V2 Pomodoro journal-clear failure');
             }
           } catch (error) {
             if (window.__injectedJournalClearFailure) throw error;
@@ -925,7 +1422,10 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
       return {
         commit,
         actual: task && task.actual,
-        taskTransactionId: task && task.lastStopwatchTransactionId,
+        actualSeconds: task && task.actualSeconds,
+        creditRevision: task && task.creditRevision,
+        lastCreditOperationId: task && task.lastCreditOperationId,
+        operations: main.creditOperations,
         timer,
         sessions,
         recoveryRequired: storageRecoveryRequired,
@@ -935,12 +1435,19 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
     assert.equal(firstAttempt.commit, false);
     assert.equal(firstAttempt.injected, true);
     assert.equal(firstAttempt.actual, 8);
+    assert.equal(firstAttempt.actualSeconds, 480);
+    assert.equal(firstAttempt.creditRevision, 1);
+    assert.equal(firstAttempt.operations.length, 1);
+    assert.equal(firstAttempt.operations[0].operationId, firstAttempt.lastCreditOperationId);
+    assert.equal(firstAttempt.operations[0].kind, 'session');
     assert.equal(firstAttempt.sessions.length, 500);
     assert.equal(firstAttempt.sessions[0].id, 2);
     assert.equal(firstAttempt.sessions[499].id, 501);
     assert.equal(firstAttempt.sessions[499].mode, 'pomodoro');
-    assert.equal(firstAttempt.sessions[499].transactionId, firstAttempt.taskTransactionId);
-    assert.ok(firstAttempt.timer.pendingStopwatchTransaction);
+    assert.equal(firstAttempt.sessions[499].recordVersion, 2);
+    assert.equal(firstAttempt.sessions[499].sessionId, firstAttempt.lastCreditOperationId);
+    assert.ok(firstAttempt.timer.pendingFocusCommit);
+    assert.equal(firstAttempt.timer.pendingStopwatchTransaction, null);
     assert.equal(firstAttempt.recoveryRequired, true);
 
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -952,13 +1459,20 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
       const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
       return {
         actual: task && task.actual,
-        taskTransactionId: task && task.lastStopwatchTransactionId,
+        actualSeconds: task && task.actualSeconds,
+        creditRevision: task && task.creditRevision,
+        lastCreditOperationId: task && task.lastCreditOperationId,
+        operations: main.creditOperations,
         timer,
         sessions,
         recoveryRequired: storageRecoveryRequired
       };
     });
     assert.equal(recovered.actual, 8);
+    assert.equal(recovered.actualSeconds, 480);
+    assert.equal(recovered.creditRevision, 1);
+    assert.equal(recovered.operations.length, 1);
+    assert.equal(recovered.operations[0].operationId, recovered.lastCreditOperationId);
     assert.equal(recovered.sessions.length, 500);
     const recoveredSessionIds = recovered.sessions.map(session => session.id);
     assert.deepEqual(recoveredSessionIds, Array.from({ length: 500 }, (_, index) => index + 2));
@@ -967,9 +1481,11 @@ test('D-04 Pomodoro transaction at 500 sessions evicts once and startup retry do
     assert.equal(recovered.sessions[0].id, 2);
     assert.equal(recovered.sessions.filter(session => session.id === 1).length, 0);
     assert.equal(recovered.sessions.filter(session => session.id === 501).length, 1);
-    assert.equal(recovered.sessions.filter(session => session.transactionId === recovered.taskTransactionId).length, 1);
+    assert.equal(recovered.sessions.filter(session =>
+      session.recordVersion === 2 && session.sessionId === recovered.lastCreditOperationId).length, 1);
     assert.equal(recovered.sessions[499].id, 501);
     assert.equal(recovered.sessions[499].mode, 'pomodoro');
+    assert.equal(recovered.timer.pendingFocusCommit, null);
     assert.equal(recovered.timer.pendingStopwatchTransaction, null);
     assert.equal(recovered.timer.baseElapsed, 0);
     assert.equal(recovered.recoveryRequired, false);
@@ -1397,6 +1913,1054 @@ test('D-03.6 missing Web Locks at startup preserves the journal and performs no 
       state.writes.filter(item => item.key === MAIN_KEY || item.key === TIMER_KEY),
       []
     );
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+
+test('D-02 V2 resetTimer UI save uses the durable ledger; keep-paused and discard do not credit', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
+    await page.evaluate(() => {
+      const reset = document.querySelector('button[onclick="resetTimer()"]');
+      if (!reset) throw new Error('resetTimer control was not rendered');
+      reset.click();
+    });
+    await page.waitForFunction(() =>
+      Array.from(document.getElementById('modalFooter').children).some(button =>
+        button.textContent.includes('حفظ وإضافة 3 د')),
+    null, { timeout: 5000 });
+    const committed = await page.evaluate(async () => {
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('حفظ وإضافة 3 د'));
+      if (!save) throw new Error('V2 resetTimer save button was not rendered');
+      save.click();
+      const pending = window._focusCommitPendingPromise;
+      return pending ? await pending : false;
+    });
+    assert.equal(committed, true);
+    const saved = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === 7011);
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return { task, operations: main.creditOperations || [], sessions, timer };
+    });
+    assert.equal(saved.task.actualSeconds, 660);
+    assert.equal(saved.task.actual, 11);
+    assert.equal(saved.task.creditRevision, 2);
+    assert.equal(saved.operations.length, 2);
+    assert.equal(saved.sessions.length, 2);
+    for (let index = 0; index < saved.operations.length; index++) {
+      const operation = saved.operations[index];
+      const session = saved.sessions.find(row => row.sessionId === operation.operationId);
+      assert.ok(session, 'every V2 operation must have its matching session');
+      assert.equal(operation.operationId, operation.sessionId);
+      assert.equal(session.sessionId, operation.operationId);
+      assert.equal(session.taskId, 7011);
+    }
+    assert.equal(saved.operations[1].measuredSeconds, 180);
+    assert.equal(saved.operations[1].creditedSeconds, 180);
+    assert.equal(saved.operations[1].source, 'measured');
+    assert.equal(saved.sessions[1].durationSec, 180);
+    assert.equal(saved.sessions[1].creditedSeconds, 180);
+    assert.equal(saved.sessions[1].creditSource, 'measured');
+    assert.equal(saved.task.lastCreditOperationId, saved.operations[1].operationId);
+    assert.equal(saved.timer.running, false);
+    assert.equal(saved.timer.baseElapsed, 0);
+    assert.equal(saved.timer.pendingFocusCommit, null);
+    assert.equal(saved.timer.pendingStopwatchTransaction, null);
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      return !!overlay && overlay.classList.contains('hidden');
+    }, null, { timeout: 5000 });
+
+    // Cancel/keep-paused: the elapsed Stopwatch remains available, with no new credit or session.
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 90 });
+    await page.evaluate(() => {
+      const reset = document.querySelector('button[onclick="resetTimer()"]');
+      if (!reset) throw new Error('resetTimer control was not rendered');
+      reset.click();
+    });
+    await page.waitForFunction(() =>
+      Array.from(document.getElementById('modalFooter').children).some(button =>
+        button.textContent.includes('إبقاء متوقفة')),
+    null, { timeout: 5000 });
+    await page.evaluate(() => {
+      const keep = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('إبقاء متوقفة'));
+      if (!keep) throw new Error('Keep-paused button was not rendered');
+      keep.click();
+    });
+    await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 90);
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      return !!overlay && overlay.classList.contains('hidden');
+    }, null, { timeout: 5000 });
+    const afterKeep = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      return {
+        task: main.tasks.find(row => row.id === 7011),
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      };
+    });
+    assert.equal(afterKeep.task.actualSeconds, 660);
+    assert.equal(afterKeep.task.creditRevision, 2);
+    assert.equal(afterKeep.operations.length, 2);
+    assert.equal(afterKeep.sessions.length, 2);
+
+    // Explicit ignore/reset: clear the paused timer without writing task credit or a session.
+    await page.evaluate(() => {
+      const reset = document.querySelector('button[onclick="resetTimer()"]');
+      if (!reset) throw new Error('resetTimer control was not rendered');
+      reset.click();
+    });
+    await page.waitForFunction(() =>
+      Array.from(document.getElementById('modalFooter').children).some(button =>
+        button.textContent.includes('تجاهل وتصفير')),
+    null, { timeout: 5000 });
+    await page.evaluate(() => {
+      const discard = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('تجاهل وتصفير'));
+      if (!discard) throw new Error('Discard/reset button was not rendered');
+      discard.click();
+    });
+    await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 0);
+    const afterDiscard = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks.find(row => row.id === 7011),
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    assert.equal(afterDiscard.task.actualSeconds, 660);
+    assert.equal(afterDiscard.task.creditRevision, 2);
+    assert.equal(afterDiscard.operations.length, 2);
+    assert.equal(afterDiscard.sessions.length, 2);
+    assert.equal(afterDiscard.timer.pendingFocusCommit, null);
+    assert.equal(afterDiscard.timer.pendingStopwatchTransaction, null);
+    assert.equal(afterDiscard.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('V2 Stopwatch finish button records 125 measured seconds and 120 approved seconds as user_adjusted', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 125, pauseAfterPrime: true });
+
+    await page.locator('#timerFinishBtn').click();
+    await page.waitForFunction(() =>
+      Array.from(document.getElementById('modalFooter').children).some(button =>
+        button.textContent.includes('+ 2 د')),
+    null, { timeout: 5000 });
+    const committed = await page.evaluate(async () => {
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('+ 2 د'));
+      if (!save) throw new Error('125-second Stopwatch approval button was not rendered');
+      save.click();
+      const pending = window._focusCommitPendingPromise;
+      return pending ? await pending : false;
+    });
+    assert.equal(committed, true);
+    const result = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row.id === 7011);
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return { task, operations: main.creditOperations || [], sessions, timer,
+        recoveryRequired: storageRecoveryRequired };
+    });
+    assert.equal(result.task.actualSeconds, 600);
+    assert.equal(result.task.actual, 10);
+    assert.equal(result.task.creditRevision, 2);
+    assert.equal(result.operations.length, 2);
+    assert.equal(result.sessions.length, 2);
+    const operation = result.operations[1];
+    const session = result.sessions.find(row => row.sessionId === operation.operationId);
+    assert.ok(session);
+    assert.equal(operation.operationId, operation.sessionId);
+    assert.equal(session.sessionId, operation.operationId);
+    assert.equal(operation.measuredSeconds, 125);
+    assert.equal(operation.creditedSeconds, 120);
+    assert.equal(operation.source, 'user_adjusted');
+    assert.equal(session.mode, 'stopwatch');
+    assert.equal(session.outcome, 'stopped');
+    assert.equal(session.activeDurationMs, 125000);
+    assert.equal(session.durationSec, 125);
+    assert.equal(session.creditedSeconds, 120);
+    assert.equal(session.creditSource, 'user_adjusted');
+    assert.equal(session.clockTrust, 'trusted');
+    assert.equal(session.clockAdjusted, false);
+    assert.equal(result.task.lastCreditOperationId, operation.operationId);
+    assert.equal(Object.prototype.hasOwnProperty.call(result.task, 'lastStopwatchTransactionId'), false,
+      'the legacy stopwatch transaction must not be created for a V2 task');
+    assert.equal(result.timer.running, false);
+    assert.equal(result.timer.baseElapsed, 0);
+    assert.equal(result.timer.pendingFocusCommit, null);
+    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('V2 adjusted-clock sessions stay review-only in finish, reset, and task-transition UI', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+    await addSecondTask(page);
+
+    async function startAdjustedStopwatch(durationSec = 45) {
+      await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec, pauseAfterPrime: true });
+      const saved = await page.evaluate(async () => _withTaskStorageLock(function() {
+        _focusTimer.clockAdjusted = true;
+        return _saveFocusTimer();
+      }));
+      assert.equal(saved, true);
+    }
+    async function readCreditState() {
+      return page.evaluate(() => {
+        const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+        const task = main.tasks.find(row => row.id === 7011);
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return {
+          task,
+          operations: main.creditOperations || [],
+          sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+          timer,
+          recoveryRequired: storageRecoveryRequired
+        };
+      });
+    }
+    function assertUncredited(state, durationSec) {
+      assert.equal(state.task.actualSeconds, 480);
+      assert.equal(state.task.actual, 8);
+      assert.equal(state.task.creditRevision, 1);
+      assert.equal(state.operations.length, 1);
+      assert.equal(state.sessions.length, 1);
+      assert.equal(state.timer.running, false);
+      assert.equal(state.timer.baseElapsed, durationSec);
+      assert.equal(state.timer.clockAdjusted, true);
+      assert.equal(state.timer.pendingFocusCommit, null);
+      assert.equal(state.timer.pendingStopwatchTransaction, null);
+    }
+
+    // Finish button: no Save action is offered for adjusted-clock V2.
+    await startAdjustedStopwatch();
+    await page.locator('#timerFinishBtn').click();
+    await page.waitForFunction(() =>
+      document.getElementById('modalBody').textContent.includes('لم تُعتمد')
+        && Array.from(document.getElementById('modalFooter').children).some(button =>
+          button.textContent.includes('إبقاء متوقفة')),
+    null, { timeout: 5000 });
+    let buttons = await page.locator('#modalFooter button').allTextContents();
+    assert.ok(buttons.some(text => text.includes('إبقاء متوقفة')));
+    assert.ok(buttons.some(text => text.includes('تجاهل وتصفير')));
+    assert.ok(!buttons.some(text => text.includes('حفظ') || text.includes('تعديل')));
+    await page.evaluate(() => {
+      const keep = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('إبقاء متوقفة'));
+      keep.click();
+    });
+    await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 45);
+
+    // Behaviorally prove the dispatcher never invokes either writer for V2 clock-adjusted work.
+    const blocked = await page.evaluate(async () => {
+      const originalV2 = window._commitPendingFocusSessionV2;
+      const originalLegacy = window._commitFocusTaskSessionLocked;
+      const calls = { v2: 0, legacy: 0 };
+      window._commitPendingFocusSessionV2 = function() { calls.v2++; return Promise.resolve(false); };
+      window._commitFocusTaskSessionLocked = function() { calls.legacy++; return false; };
+      try {
+        const snapshot = _captureFocusTimerSnapshot();
+        const result = await _commitFocusTaskSession({
+          snapshot, taskId: 7011, minutesToAdd: 2, completed: true
+        });
+        return { result, calls };
+      } finally {
+        window._commitPendingFocusSessionV2 = originalV2;
+        window._commitFocusTaskSessionLocked = originalLegacy;
+      }
+    });
+    assert.equal(blocked.result, false);
+    assert.deepEqual(blocked.calls, { v2: 0, legacy: 0 });
+    await page.evaluate(() => closeModal());
+    let state = await readCreditState();
+    assertUncredited(state, 45);
+
+    // Reset dialog: it exposes keep/discard, never Save/Edit. Explicit discard clears only the timer.
+    await page.locator('button[onclick="resetTimer()"]').click();
+    await page.waitForFunction(() =>
+      document.getElementById('modalBody').textContent.includes('لم تُعتمد')
+        && Array.from(document.getElementById('modalFooter').children).some(button =>
+          button.textContent.includes('تجاهل وتصفير')),
+    null, { timeout: 5000 });
+    buttons = await page.locator('#modalFooter button').allTextContents();
+    assert.ok(!buttons.some(text => text.includes('حفظ') || text.includes('تعديل')));
+    await page.evaluate(() => {
+      const discard = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('تجاهل وتصفير'));
+      discard.click();
+    });
+    await page.waitForFunction(() => _focusTimer.running === false && _focusTimer.baseElapsed === 0);
+    state = await readCreditState();
+    assert.equal(state.task.actualSeconds, 480);
+    assert.equal(state.task.creditRevision, 1);
+    assert.equal(state.operations.length, 1);
+    assert.equal(state.sessions.length, 1);
+    assert.equal(state.timer.pendingFocusCommit, null);
+    assert.equal(state.timer.pendingStopwatchTransaction, null);
+
+    // Task transition: keeping paused must not start task 7012; only explicit discard may switch.
+    await startAdjustedStopwatch();
+    await page.evaluate(() => startTimerForTask(7012));
+    await page.waitForFunction(() =>
+      document.getElementById('modalBody').textContent.includes('لم تُعتمد')
+        && Array.from(document.getElementById('modalFooter').children).some(button =>
+          button.textContent.includes('تجاهل والانتقال')),
+    null, { timeout: 5000 });
+    buttons = await page.locator('#modalFooter button').allTextContents();
+    assert.ok(!buttons.some(text => text.includes('حفظ والانتقال')));
+    await page.evaluate(() => {
+      const keep = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('إبقاء متوقفة'));
+      keep.click();
+    });
+    await page.waitForFunction(() => _focusTimer.running === false
+      && _focusTimer.taskId === 7011 && _focusTimer.baseElapsed === 45);
+    await page.evaluate(() => startTimerForTask(7012));
+    await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
+      .some(button => button.textContent.includes('تجاهل والانتقال')),
+    null, { timeout: 5000 });
+    await page.evaluate(() => {
+      const discard = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('تجاهل والانتقال'));
+      discard.click();
+    });
+    await page.waitForFunction(() => _focusTimer.running === true
+      && _focusTimer.taskId === 7012 && _focusTimer.baseElapsed === 0);
+
+    state = await readCreditState();
+    assert.equal(state.task.actualSeconds, 480);
+    assert.equal(state.task.actual, 8);
+    assert.equal(state.task.creditRevision, 1);
+    assert.equal(state.operations.length, 1);
+    assert.equal(state.sessions.length, 1);
+    assert.equal(state.timer.pendingFocusCommit, null);
+    assert.equal(state.timer.pendingStopwatchTransaction, null);
+    assert.equal(state.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('V2 resetTimer UI reports failure without credit, session, timer reset, or success toast', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180, pauseAfterPrime: true });
+    await page.locator('button[onclick="resetTimer()"]').click();
+    await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
+      .some(button => button.textContent.includes('حفظ وإضافة 3 د')),
+    null, { timeout: 5000 });
+
+    await page.evaluate(() => {
+      const nativeSetItem = Storage.prototype.setItem;
+      window.__v2ResetNativeSetItem = nativeSetItem;
+      window.__v2ResetInjectedFailure = false;
+      window.__v2ResetToasts = [];
+      window.__v2ResetOriginalToast = window.showToast;
+      window.showToast = function(message) {
+        window.__v2ResetToasts.push(String(message));
+        return window.__v2ResetOriginalToast.apply(this, arguments);
+      };
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_v1' && !window.__v2ResetInjectedFailure) {
+          window.__v2ResetInjectedFailure = true;
+          throw new Error('injected V2 reset main-record write failure');
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('حفظ وإضافة 3 د'));
+      if (!save) throw new Error('V2 reset save button was not rendered');
+      save.click();
+      window.__v2ResetCommitPromise = window._focusCommitPendingPromise;
+      if (!window.__v2ResetCommitPromise) throw new Error('V2 reset did not start the shared commit promise');
+    });
+    const commitResult = await page.evaluate(async () => await window.__v2ResetCommitPromise);
+    const result = await page.evaluate(() => {
+      Storage.prototype.setItem = window.__v2ResetNativeSetItem;
+      window.showToast = window.__v2ResetOriginalToast;
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        injected: window.__v2ResetInjectedFailure,
+        task: main.tasks.find(row => row.id === 7011),
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer,
+        recoveryRequired: storageRecoveryRequired,
+        successToastShown: window.__v2ResetToasts.some(message =>
+          message.includes('أُنهِيَت جلسة Stopwatch وسُجلت مرة واحدة'))
+      };
+    });
+    assert.equal(commitResult, false);
+    assert.equal(result.injected, true);
+    assert.equal(result.task.actualSeconds, 480);
+    assert.equal(result.task.actual, 8);
+    assert.equal(result.task.creditRevision, 1);
+    assert.equal(result.operations.length, 1);
+    assert.equal(result.sessions.length, 1);
+    assert.ok(result.timer.pendingFocusCommit);
+    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.timer.running, false);
+    assert.equal(result.timer.baseElapsed, 180);
+    assert.equal(result.successToastShown, false);
+    assert.equal(result.recoveryRequired, true);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+
+test('V2 save-and-switch failure keeps the old task paused and never starts the next task', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+    await addSecondTask(page);
+    // V2 commit performs a metadata-only migration across every legacy task
+    // before creating its journal. Migrate the newly-created target task now,
+    // so the injected main-record fault lands at the session ledger write,
+    // not at unrelated pre-journal migration.
+    const allTasksMigrated = await page.evaluate(async () => {
+      return _withStopwatchTransactionLock(function() {
+        const migration = _migrateLegacyTaskCreditMetadataLocked();
+        if (!migration || migration.ok !== true) return false;
+        const nextTask = tasks.find(row => row && row.id === 7012);
+        return !!nextTask && nextTask.creditSchemaVersion === 1
+          && nextTask.creditRevision === 0
+          && nextTask.actualSeconds === null;
+      });
+    });
+    if (!allTasksMigrated) throw new Error('Could not migrate the transition target task before fault injection');
+    await primeLinkedWorkTimer(page, { taskId: 7011, mode: 'stopwatch', durationSec: 180 });
+    await page.evaluate(() => startTimerForTask(7012));
+    await page.waitForFunction(() => Array.from(document.getElementById('modalFooter').children)
+      .some(button => button.textContent.includes('حفظ والانتقال')),
+    null, { timeout: 5000 });
+
+    await page.evaluate(() => {
+      const nativeSetItem = Storage.prototype.setItem;
+      window.__v2TransitionNativeSetItem = nativeSetItem;
+      window.__v2TransitionInjectedFailure = false;
+      window.__v2TransitionToasts = [];
+      window.__v2TransitionOriginalToast = window.showToast;
+      window.showToast = function(message) {
+        window.__v2TransitionToasts.push(String(message));
+        return window.__v2TransitionOriginalToast.apply(this, arguments);
+      };
+      const nativeGetItem = Storage.prototype.getItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_v1' && !window.__v2TransitionInjectedFailure) {
+          window.__v2TransitionInjectedFailure = true;
+          let timerRecord = null;
+          try {
+            const rawTimer = nativeGetItem.call(localStorage, 'timeTasksApp_focusTimer');
+            timerRecord = rawTimer === null ? null : JSON.parse(rawTimer);
+          } catch (_error) {}
+          window.__v2TransitionFaultObservation = {
+            persistedPending: !!(timerRecord && timerRecord.pendingFocusCommit),
+            persistedStage: timerRecord && timerRecord.pendingFocusCommit
+              ? timerRecord.pendingFocusCommit.stage : null,
+            persistedOperationId: timerRecord && timerRecord.pendingFocusCommit
+              ? timerRecord.pendingFocusCommit.operationId : null,
+            memoryPending: !!_focusTimer.pendingFocusCommit,
+            memoryStage: _focusTimer.pendingFocusCommit ? _focusTimer.pendingFocusCommit.stage : null,
+            lockDepth: _stopwatchTransactionLockDepth,
+            stack: String(new Error('injected V2 main-record write').stack || '')
+          };
+          throw new Error('injected V2 transition main-record write failure');
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('حفظ والانتقال'));
+      if (!save) throw new Error('V2 transition save button was not rendered');
+      save.click();
+      window.__v2TransitionCommitPromise = window._focusCommitPendingPromise;
+      if (!window.__v2TransitionCommitPromise) {
+        throw new Error('V2 transition did not enter the shared commit promise');
+      }
+    });
+    const commitResult = await page.evaluate(async () => await window.__v2TransitionCommitPromise);
+    const result = await page.evaluate(() => {
+      Storage.prototype.setItem = window.__v2TransitionNativeSetItem;
+      window.showToast = window.__v2TransitionOriginalToast;
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const oldTask = main.tasks.find(row => row.id === 7011);
+      return {
+        injected: window.__v2TransitionInjectedFailure,
+        faultObservation: window.__v2TransitionFaultObservation || null,
+        task: oldTask,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer,
+        inMemoryTimer: {
+          taskId: _focusTimer.taskId,
+          mode: _focusTimer.mode,
+          running: _focusTimer.running,
+          baseElapsed: _focusTimer.baseElapsed
+        },
+        successToastShown: window.__v2TransitionToasts.some(message =>
+          message.includes('حُفظت الجلسة وتم الانتقال')),
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    assert.equal(commitResult, false);
+    assert.equal(result.injected, true);
+    assert.equal(result.task.actualSeconds, 480);
+    assert.equal(result.task.creditRevision, 1);
+    assert.equal(result.operations.length, 1);
+    assert.equal(result.sessions.length, 1);
+    assert.ok(result.timer.pendingFocusCommit);
+    assert.equal(result.timer.pendingStopwatchTransaction, null);
+    assert.equal(result.timer.running, false);
+    assert.equal(result.timer.taskId, 7011);
+    assert.equal(result.timer.baseElapsed, 180);
+    assert.equal(result.inMemoryTimer.taskId, 7011);
+    assert.equal(result.inMemoryTimer.running, false);
+    assert.equal(result.inMemoryTimer.baseElapsed, 180);
+    assert.equal(result.successToastShown, false);
+    assert.equal(result.recoveryRequired, true);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+
+async function commitMeasuredPomodoroSessionForE2E(page, taskId, durationSec) {
+  await primeLinkedWorkTimer(page, {
+    taskId,
+    mode: 'pomodoro',
+    durationSec,
+    pauseAfterPrime: true
+  });
+  await openFreshPomodoroFinishDialog(page, durationSec);
+  const diagnostic = await page.evaluate(async () => {
+      const originalSnapshotMatch = _focusTimerSnapshotMatchesState;
+      window.__v2OriginalSnapshotMatch = originalSnapshotMatch;
+      window.__v2SnapshotMismatch = null;
+      window._focusTimerSnapshotMatchesState = function(snapshot) {
+        const result = originalSnapshotMatch(snapshot);
+        if (!result) {
+          const t = _focusTimer;
+          window.__v2SnapshotMismatch = {
+            snapshot: snapshot && {
+              mode: snapshot.mode, phase: snapshot.phase, running: snapshot.running,
+              baseElapsed: snapshot.baseElapsed, elapsedRemainderMs: snapshot.elapsedRemainderMs,
+              startedAt: snapshot.startedAt, cyclePosition: snapshot.cyclePosition,
+              taskId: snapshot.taskId, sessionStartAt: snapshot.sessionStartAt,
+              awaitingConfirmation: snapshot.awaitingConfirmation,
+              pendingPhaseEndedAt: snapshot.pendingPhaseEndedAt,
+              clockAdjusted: snapshot.clockAdjusted,
+              nativeSessionToken: snapshot.nativeSessionToken || null,
+              pendingNotificationFinish: snapshot.pendingNotificationFinish || null
+            },
+            state: t && {
+              mode: t.mode, phase: t.phase, running: t.running,
+              baseElapsed: t.baseElapsed, elapsedRemainderMs: _focusElapsedRemainderMs,
+              startedAt: t.startedAt, cyclePosition: t.cyclePosition, taskId: t.taskId,
+              sessionStartAt: t.sessionStartAt, awaitingConfirmation: t.awaitingConfirmation,
+              pendingPhaseEndedAt: t.pendingPhaseEndedAt, clockAdjusted: t.clockAdjusted,
+              nativeSessionToken: t.nativeSessionToken || null,
+              pendingNotificationFinish: t.pendingNotificationFinish || null
+            }
+          };
+        }
+        return result;
+      };
+    const save = Array.from(document.getElementById('modalFooter').children)
+      .find(button => button.textContent.includes('حفظ الوقت المقاس'));
+    if (!save) throw new Error('measured Pomodoro save choice was not rendered');
+    save.click();
+    const pending = window._focusCommitPendingPromise;
+    const result = pending ? await pending : false;
+    const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+    const task = main.tasks.find(row => row && row.id === 7011);
+    const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+    return {
+      result,
+      recoveryRequired: storageRecoveryRequired,
+      memoryTimer: {
+        mode: _focusTimer.mode, phase: _focusTimer.phase, taskId: _focusTimer.taskId,
+        running: _focusTimer.running, baseElapsed: _focusTimer.baseElapsed,
+        remainderMs: _focusElapsedRemainderMs, sessionStartAt: _focusTimer.sessionStartAt,
+        pendingPhaseEndedAt: _focusTimer.pendingPhaseEndedAt,
+        awaitingConfirmation: _focusTimer.awaitingConfirmation,
+        clockAdjusted: _focusTimer.clockAdjusted,
+        pendingFocusCommit: !!_focusTimer.pendingFocusCommit
+      },
+      persistedTimer: {
+        mode: timer && timer.mode, phase: timer && timer.phase, taskId: timer && timer.taskId,
+        running: timer && timer.running, baseElapsed: timer && timer.baseElapsed,
+        sessionStartAt: timer && timer.sessionStartAt,
+        pendingPhaseEndedAt: timer && timer.pendingPhaseEndedAt,
+        awaitingConfirmation: timer && timer.awaitingConfirmation,
+        pendingFocusCommit: !!(timer && timer.pendingFocusCommit)
+      },
+      snapshotMismatch: window.__v2SnapshotMismatch,
+      guards: {
+        mainBaselineReady: _mainStorageBaselineReady,
+        mainExternalChangeObserved: _mainStorageExternalChangeObserved,
+        secondaryConflicts: _secondaryStorageConflicts,
+        timerExternalConflict: _focusTimerExternalConflict,
+        commitInFlight: _focusCommitInFlight
+      },
+      visibleModal: {
+        title: document.getElementById('modalTitle') && document.getElementById('modalTitle').textContent,
+        body: document.getElementById('modalBody') && document.getElementById('modalBody').textContent
+      },
+      task: task && {
+        actualSeconds: task.actualSeconds, creditRevision: task.creditRevision,
+        lastCreditOperationId: task.lastCreditOperationId
+      },
+      operationCount: (main.creditOperations || []).length,
+      sessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length
+    };
+  });
+  assert.equal(diagnostic.result, true,
+    'the measured Pomodoro UI action must commit; diagnostic=' + JSON.stringify(diagnostic));
+}
+
+test('V2 Pomodoro save-and-switch commits all 83 measured seconds before starting the next task', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await addSecondTask(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+
+    const migrated = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      return main.tasks.map(task => ({
+        id: task.id,
+        creditSchemaVersion: task.creditSchemaVersion,
+        actualSeconds: task.actualSeconds
+      }));
+    });
+    assert.equal(migrated.find(task => task.id === 7011).creditSchemaVersion, 1);
+    assert.equal(migrated.find(task => task.id === 7012).creditSchemaVersion, 1);
+
+    await primeLinkedWorkTimer(page, {
+      taskId: 7011,
+      mode: 'pomodoro',
+      durationSec: 83,
+      pauseAfterPrime: true
+    });
+    await page.evaluate(() => startTimerForTask(7012));
+    await page.waitForFunction(() =>
+      Array.from(document.getElementById('modalFooter').children).some(button =>
+        button.textContent.includes('حفظ والانتقال')),
+    null, { timeout: 5000 });
+
+    await page.evaluate(() => {
+      const nativeSetItem = Storage.prototype.setItem;
+      const nativeGetItem = Storage.prototype.getItem;
+      window.__restorePomodoroTransitionSetItem = nativeSetItem;
+      window.__pomodoroTransitionBeforeNextStart = null;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_focusTimer') {
+          try {
+            const nextTimer = JSON.parse(String(value));
+            if (nextTimer.taskId === 7012 && nextTimer.mode === 'pomodoro' && nextTimer.running === true) {
+              const main = JSON.parse(nativeGetItem.call(localStorage, 'timeTasksApp_v1'));
+              const sessions = JSON.parse(nativeGetItem.call(localStorage, 'timeTasksApp_focusSessions') || '[]');
+              const oldTask = main.tasks.find(row => row && row.id === 7011);
+              window.__pomodoroTransitionBeforeNextStart = {
+                actualSeconds: oldTask && oldTask.actualSeconds,
+                creditRevision: oldTask && oldTask.creditRevision,
+                operations: main.creditOperations || [],
+                sessions
+              };
+            }
+          } catch (_error) {}
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('حفظ والانتقال'));
+      if (!save) throw new Error('Pomodoro save-and-switch choice was not rendered');
+      save.click();
+      window.__pomodoroTransitionCommitPromise = window._focusCommitPendingPromise;
+      if (!window.__pomodoroTransitionCommitPromise) {
+        throw new Error('Pomodoro save-and-switch did not start the V2 commit promise');
+      }
+    });
+
+    const committed = await page.evaluate(async () => await window.__pomodoroTransitionCommitPromise);
+    const result = await page.evaluate(() => {
+      Storage.prototype.setItem = window.__restorePomodoroTransitionSetItem;
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        observation: window.__pomodoroTransitionBeforeNextStart,
+        task,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer,
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+
+    assert.equal(committed, true);
+    assert.ok(result.observation, 'the next timer must not be persisted before the old task commit');
+    assert.equal(result.observation.actualSeconds, 563);
+    assert.equal(result.observation.creditRevision, 2);
+    assert.equal(result.observation.operations.length, 2);
+    assert.equal(result.observation.sessions.length, 2);
+
+    const operation = result.observation.operations[1];
+    const session = result.observation.sessions.find(row => row.sessionId === operation.operationId);
+    assert.ok(session, 'the measured session must be persisted before the next timer starts');
+    assert.equal(operation.measuredSeconds, 83);
+    assert.equal(operation.creditedSeconds, 83);
+    assert.equal(operation.source, 'measured');
+    assert.equal(session.taskId, 7011);
+    assert.equal(session.durationSec, 83);
+    assert.equal(session.activeDurationMs, 83000);
+    assert.equal(session.creditedSeconds, 83);
+    assert.equal(session.creditSource, 'measured');
+
+    assert.equal(result.task.actualSeconds, 563);
+    assert.equal(result.task.creditRevision, 2);
+    assert.equal(result.operations.length, 2);
+    assert.equal(result.sessions.length, 2);
+    assert.equal(result.timer.mode, 'pomodoro');
+    assert.equal(result.timer.taskId, 7012);
+    assert.equal(result.timer.running, true);
+    assert.equal(result.timer.baseElapsed, 0);
+    assert.equal(result.timer.pendingFocusCommit, null);
+    assert.equal(result.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('V2 durable UI commits preserve a 139-second Pomodoro accumulation and separate 181 measured from 180 user-adjusted seconds', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+
+    const baseline = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      return {
+        actualSeconds: task.actualSeconds,
+        creditRevision: task.creditRevision,
+        operations: (main.creditOperations || []).length,
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length
+      };
+    });
+    assert.equal(baseline.actualSeconds, 480);
+    assert.equal(baseline.creditRevision, 1);
+
+    await commitMeasuredPomodoroSessionForE2E(page, 7011, 72);
+    await commitMeasuredPomodoroSessionForE2E(page, 7011, 67);
+
+    const afterPomodoro = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      return {
+        task,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+      };
+    });
+    assert.equal(afterPomodoro.task.actualSeconds - baseline.actualSeconds, 139);
+    assert.equal(afterPomodoro.task.creditRevision, baseline.creditRevision + 2);
+    assert.equal(afterPomodoro.operations.length, baseline.operations + 2);
+    assert.equal(afterPomodoro.sessions.length, baseline.sessions + 2);
+    for (const [index, expectedSeconds] of [72, 67].entries()) {
+      const operation = afterPomodoro.operations[baseline.operations + index];
+      const session = afterPomodoro.sessions.find(row => row.sessionId === operation.operationId);
+      assert.ok(session);
+      assert.equal(operation.measuredSeconds, expectedSeconds);
+      assert.equal(operation.creditedSeconds, expectedSeconds);
+      assert.equal(operation.source, 'measured');
+      assert.equal(session.durationSec, expectedSeconds);
+      assert.equal(session.creditedSeconds, expectedSeconds);
+      assert.equal(session.creditSource, 'measured');
+    }
+
+    await primeLinkedWorkTimer(page, {
+      taskId: 7011,
+      mode: 'stopwatch',
+      durationSec: 181,
+      pauseAfterPrime: true
+    });
+    await page.locator('#timerFinishBtn').click();
+    await page.waitForFunction(() =>
+      Array.from(document.getElementById('modalFooter').children).some(button =>
+        button.textContent.includes('+ 3 د')),
+    null, { timeout: 5000 });
+    const adjustedCommit = await page.evaluate(async () => {
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('+ 3 د'));
+      if (!save) throw new Error('181-second Stopwatch approval choice was not rendered');
+      save.click();
+      const pending = window._focusCommitPendingPromise;
+      return pending ? await pending : false;
+    });
+    assert.equal(adjustedCommit, true);
+
+    const finalState = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      return {
+        task,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    const operation = finalState.operations[baseline.operations + 2];
+    const session = finalState.sessions.find(row => row.sessionId === operation.operationId);
+    assert.ok(session);
+    assert.equal(finalState.task.actualSeconds, baseline.actualSeconds + 139 + 180);
+    assert.equal(finalState.task.creditRevision, baseline.creditRevision + 3);
+    assert.equal(finalState.operations.length, baseline.operations + 3);
+    assert.equal(finalState.sessions.length, baseline.sessions + 3);
+    assert.equal(operation.measuredSeconds, 181);
+    assert.equal(operation.creditedSeconds, 180);
+    assert.equal(operation.source, 'user_adjusted');
+    assert.equal(session.mode, 'stopwatch');
+    assert.equal(session.outcome, 'stopped');
+    assert.equal(session.activeDurationMs, 181000);
+    assert.equal(session.durationSec, 181);
+    assert.equal(session.creditedSeconds, 180);
+    assert.equal(session.creditSource, 'user_adjusted');
+    assert.equal(finalState.timer.running, false);
+    assert.equal(finalState.timer.pendingFocusCommit, null);
+    assert.equal(finalState.recoveryRequired, false);
+  } finally {
+    await closeBrowserContext(runtime);
+  }
+});
+
+test('V2 QuotaExceededError leaves a durable journal that recovers once after a cold reload', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const runtime = await startBrowserContext({ withoutPendingStopwatchTransaction: true });
+  let page;
+  try {
+    page = await runtime.context.newPage();
+    await page.goto(runtime.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+    await migrateTaskToV2ThroughFinishButton(page);
+
+    const baseline = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      return {
+        actualSeconds: task.actualSeconds,
+        creditRevision: task.creditRevision,
+        operations: (main.creditOperations || []).length,
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length
+      };
+    });
+
+    await primeLinkedWorkTimer(page, {
+      taskId: 7011,
+      mode: 'pomodoro',
+      durationSec: 83,
+      pauseAfterPrime: true
+    });
+    await openFreshPomodoroFinishDialog(page, 83);
+
+    await page.evaluate(() => {
+      const originalSnapshotMatch = _focusTimerSnapshotMatchesState;
+      window.__v2OriginalSnapshotMatch = originalSnapshotMatch;
+      window.__v2SnapshotMismatch = null;
+      window._focusTimerSnapshotMatchesState = function(snapshot) {
+        const result = originalSnapshotMatch(snapshot);
+        if (!result) {
+          const t = _focusTimer;
+          window.__v2SnapshotMismatch = {
+            snapshot: snapshot && {
+              mode: snapshot.mode, phase: snapshot.phase, running: snapshot.running,
+              baseElapsed: snapshot.baseElapsed, elapsedRemainderMs: snapshot.elapsedRemainderMs,
+              startedAt: snapshot.startedAt, cyclePosition: snapshot.cyclePosition,
+              taskId: snapshot.taskId, sessionStartAt: snapshot.sessionStartAt,
+              awaitingConfirmation: snapshot.awaitingConfirmation,
+              pendingPhaseEndedAt: snapshot.pendingPhaseEndedAt,
+              clockAdjusted: snapshot.clockAdjusted,
+              nativeSessionToken: snapshot.nativeSessionToken || null,
+              pendingNotificationFinish: snapshot.pendingNotificationFinish || null
+            },
+            state: t && {
+              mode: t.mode, phase: t.phase, running: t.running,
+              baseElapsed: t.baseElapsed, elapsedRemainderMs: _focusElapsedRemainderMs,
+              startedAt: t.startedAt, cyclePosition: t.cyclePosition, taskId: t.taskId,
+              sessionStartAt: t.sessionStartAt, awaitingConfirmation: t.awaitingConfirmation,
+              pendingPhaseEndedAt: t.pendingPhaseEndedAt, clockAdjusted: t.clockAdjusted,
+              nativeSessionToken: t.nativeSessionToken || null,
+              pendingNotificationFinish: t.pendingNotificationFinish || null
+            }
+          };
+        }
+        return result;
+      };
+      const nativeSetItem = Storage.prototype.setItem;
+      window.__v2QuotaNativeSetItem = nativeSetItem;
+      window.__v2QuotaInjected = false;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_v1' && !window.__v2QuotaInjected) {
+          window.__v2QuotaInjected = true;
+          const error = new DOMException('Injected storage quota exhaustion', 'QuotaExceededError');
+          window.__v2QuotaErrorName = error.name;
+          throw error;
+        }
+        return nativeSetItem.call(this, key, value);
+      };
+      const save = Array.from(document.getElementById('modalFooter').children)
+        .find(button => button.textContent.includes('حفظ الوقت المقاس'));
+      if (!save) throw new Error('QuotaExceededError Pomodoro save choice was not rendered');
+      save.click();
+      window.__v2QuotaCommitPromise = window._focusCommitPendingPromise;
+      if (!window.__v2QuotaCommitPromise) {
+        throw new Error('QuotaExceededError test did not start the V2 transaction');
+      }
+    });
+
+    const failedCommit = await page.evaluate(async () => await window.__v2QuotaCommitPromise);
+    const failedState = await page.evaluate(() => {
+      Storage.prototype.setItem = window.__v2QuotaNativeSetItem;
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        injected: window.__v2QuotaInjected,
+        errorName: window.__v2QuotaErrorName,
+        task,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer,
+        recoveryRequired: storageRecoveryRequired,
+        snapshotMismatch: window.__v2SnapshotMismatch
+      };
+    });
+    assert.equal(failedCommit, false,
+      'injected quota failure must not be reported as a successful commit; state=' + JSON.stringify(failedState));
+    assert.equal(failedState.injected, true,
+      'the intended main-record ledger write must reach the injected quota failure; state=' + JSON.stringify({
+        errorName: failedState.errorName,
+        taskActualSeconds: failedState.task.actualSeconds,
+        creditRevision: failedState.task.creditRevision,
+        operationCount: failedState.operations.length,
+        sessionCount: failedState.sessions.length,
+        timer: {
+          taskId: failedState.timer.taskId,
+          baseElapsed: failedState.timer.baseElapsed,
+          pendingFocusCommit: failedState.timer.pendingFocusCommit
+        },
+        recoveryRequired: failedState.recoveryRequired
+      }));
+    assert.equal(failedState.errorName, 'QuotaExceededError');
+    assert.equal(failedState.task.actualSeconds, baseline.actualSeconds);
+    assert.equal(failedState.task.creditRevision, baseline.creditRevision);
+    assert.equal(failedState.operations.length, baseline.operations);
+    assert.equal(failedState.sessions.length, baseline.sessions);
+    assert.ok(failedState.timer.pendingFocusCommit, 'the prepared journal must remain durable for recovery');
+    assert.equal(failedState.timer.running, false);
+    assert.equal(failedState.recoveryRequired, true);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForStartupSuccess(page);
+
+    const recovered = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const task = main.tasks.find(row => row && row.id === 7011);
+      return {
+        task,
+        operations: main.creditOperations || [],
+        sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+        timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+        recoveryRequired: storageRecoveryRequired
+      };
+    });
+    assert.equal(recovered.task.actualSeconds, baseline.actualSeconds + 83);
+    assert.equal(recovered.task.creditRevision, baseline.creditRevision + 1);
+    assert.equal(recovered.operations.length, baseline.operations + 1);
+    assert.equal(recovered.sessions.length, baseline.sessions + 1);
+    const operation = recovered.operations[baseline.operations];
+    const session = recovered.sessions.find(row => row.sessionId === operation.operationId);
+    assert.ok(session);
+    assert.equal(operation.measuredSeconds, 83);
+    assert.equal(operation.creditedSeconds, 83);
+    assert.equal(operation.source, 'measured');
+    assert.equal(session.durationSec, 83);
+    assert.equal(session.creditedSeconds, 83);
+    assert.equal(session.creditSource, 'measured');
+    assert.equal(recovered.timer.pendingFocusCommit, null);
+    assert.equal(recovered.timer.running, false);
+    assert.equal(recovered.timer.baseElapsed, 0);
+    assert.equal(recovered.recoveryRequired, false);
   } finally {
     await closeBrowserContext(runtime);
   }
