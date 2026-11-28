@@ -2951,13 +2951,17 @@ test('real finishTimer saves one V2 Pomodoro credit operation and survives reloa
         tasks[0].actual = 20;
         const toTwentyMinutes = saveData();
         tasks[0].actual = null;
-        const toNull = saveData();
+        const unconfirmedClear = saveData();
+        const toNull = _withExplicitTaskCreditClearIntent(
+          tasks[0].id, tasks[0].actualSeconds, () => saveData()
+        );
         tasks[0].actual = 0;
         const toZero = saveData();
-        return [toTwentyMinutes, toNull, toZero];
+        return [toTwentyMinutes, unconfirmedClear, toNull, toZero];
       })
     );
-    assert.deepEqual(manualAdjustmentsSaved, [true, true, true]);
+    assert.deepEqual(manualAdjustmentsSaved, [true, false, true, true],
+      'saveData must reject an unconfirmed balance clear and accept the explicit V2 adjustment');
     const adjusted = await pageA.evaluate(() => {
       const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
       return { task: main.tasks[0], operations: main.creditOperations };
