@@ -1484,3 +1484,201 @@ test('focus session summary totals display seconds instead of truncating the agg
   sandbox.renderFocusSessionsCard();
   assert.equal((container.innerHTML.match(/2 د 34 ث/g) || []).length, 2);
 });
+
+
+function coldReloadFocusCheckpointContext() {
+  const startedAt = Date.parse('2026-11-26T10:00:00.000Z');
+  const operationBefore = {
+    recordVersion: 1,
+    operationId: '223e4567-e89b-42d3-a456-426614174001',
+    kind: 'manual_adjustment',
+    taskId: 7,
+    revision: 2,
+    previousSeconds: 1200,
+    targetSeconds: 1200,
+    source: 'manual_adjustment',
+    sessionId: null,
+    createdAt: '2026-11-25T10:00:00.000Z'
+  };
+  const task = {
+    id: 7, name: 'Cold reload Focus task', status: 'pending',
+    actual: 20, actualSeconds: 1200, creditRevision: 2,
+    creditSchemaVersion: 1, lastCreditOperationId: operationBefore.operationId
+  };
+  // This is the durable timer checkpoint written by _freezeFocusTimerForDecision
+  // before the first pendingFocusCommit write failed. The old page's in-memory
+  // journal is deliberately not copied into the new page context.
+  const timerRecord = {
+    mode: 'stopwatch', phase: 'work', running: false,
+    baseElapsed: 65, elapsedRemainderMs: 500, startedAt: null,
+    cyclePosition: 0, taskId: task.id, sessionStartAt: startedAt,
+    awaitingConfirmation: false, pendingPhaseEndedAt: null,
+    clockAdjusted: false, pendingStopwatchTransaction: null,
+    pendingFocusCommit: null, nativeClockActive: false,
+    nativeSessionToken: null, handledNotificationActionIds: [],
+    pendingNotificationFinish: null
+  };
+  const mainData = {
+    schemaVersion: 2, tasks: [task], dailyLogs: [],
+    creditOperations: [operationBefore]
+  };
+  const storage = new Map([
+    ['main', JSON.stringify(mainData)],
+    ['timer', JSON.stringify(timerRecord)],
+    ['sessions', '[]']
+  ]);
+  const uiElements = Object.create(null);
+  function makeElement() {
+    const element = {
+      children: [], textContent: '', className: '', style: {},
+      classList: { remove() {}, add() {}, contains() { return false; } },
+      appendChild(child) { this.children.push(child); },
+      addEventListener() {}, removeEventListener() {}
+    };
+    let html = '';
+    Object.defineProperty(element, 'innerHTML', {
+      get() { return html; },
+      set(value) { html = String(value); this.children = []; }
+    });
+    return element;
+  }
+  const commitRequests = [];
+  let commitPromise = null;
+  let savedCheckpointCount = 0;
+  const sandbox = {
+    STOPWATCH_SAVE_THRESHOLD_SEC: 60,
+    POMODORO_WORK_SEC: 25 * 60,
+    _focusTimer: { ...timerRecord },
+    _focusElapsedRemainderMs: timerRecord.elapsedRemainderMs,
+    tasks: [task],
+    storageRecoveryRequired: false,
+    _focusTimerExternalConflict: false,
+    _focusCommitInFlight: false,
+    _focusCommitWriteDepth: 0,
+    _startupResetRecoveryInFlight: false,
+    _resetRecoveryInFlight: false,
+    _resetInFlight: false,
+    _isTaskStorageLockHeld: () => true,
+    _isTimerControlBlocked: () => false,
+    _isFocusCommitBlocked: () => false,
+    _nativeStopwatchPlugin: () => null,
+    _getElapsedSec: () => sandbox._focusTimer.baseElapsed,
+    _freezeFocusTimerForDecision() {
+      if (sandbox._focusTimer.running !== false) return null;
+      savedCheckpointCount++;
+      return sandbox._captureFocusTimerSnapshot();
+    },
+    _saveFocusTimer() {
+      const next = {
+        ...sandbox._focusTimer,
+        elapsedRemainderMs: sandbox._focusElapsedRemainderMs,
+        pendingFocusCommit: sandbox._focusTimer.pendingFocusCommit || null
+      };
+      storage.set('timer', JSON.stringify(next));
+      return true;
+    },
+    _commitPendingFocusSessionV2(request) {
+      commitRequests.push(request);
+      commitPromise = Promise.resolve(true);
+      return commitPromise;
+    },
+    _renderFocusTimer() {},
+    _setupModalFocusTrap: () => () => {},
+    _modalKeyHandler: null,
+    _formatDuration: seconds => String(seconds) + 's',
+    escapeHTML: value => String(value),
+    closeModal() {},
+    showToast() {},
+    showAlertModal() {},
+    showPromptModal() {},
+    document: {
+      getElementById(id) {
+        if (!uiElements[id]) uiElements[id] = makeElement();
+        return uiElements[id];
+      },
+      createElement() { return makeElement(); },
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    localStorage: {
+      getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+      setItem(key, value) { storage.set(key, String(value)); },
+      removeItem(key) { storage.delete(key); }
+    }
+  };
+
+  vm.runInNewContext([
+    extractFunction('_captureFocusTimerSnapshot'),
+    extractFunction('_isFocusTaskCreditSchemaV2'),
+    extractFunction('_isClockAdjustedV2WorkSession'),
+    extractFunction('_buildPendingFocusSessionFields'),
+    extractFunction('_commitFocusTaskSession'),
+    extractFunction('_applyStopwatchSave'),
+    extractFunction('_showStopwatchSaveDialog'),
+    extractFunction('resetTimer')
+  ].join('\n'), sandbox);
+
+  return {
+    sandbox, storage, timerRecord, task, uiElements, commitRequests,
+    get commitPromise() { return commitPromise; },
+    get savedCheckpointCount() { return savedCheckpointCount; }
+  };
+}
+
+test('cold reload keeps the pre-journal Stopwatch checkpoint explicitly saveable without an old page journal', async () => {
+  const runtime = coldReloadFocusCheckpointContext();
+  const storedTimerBefore = JSON.parse(runtime.storage.get('timer'));
+  assert.equal(storedTimerBefore.pendingFocusCommit, null,
+    'the first journal write failed, so no durable focus journal exists');
+  assert.equal(runtime.sandbox._focusTimer.pendingFocusCommit, undefined,
+    'the new page must not inherit the old page memory-only journal');
+
+  // Startup sees no durable transaction and must not manufacture a credit or session.
+  const probe = startupProbeContext(storedTimerBefore)._probeStartupStopwatchRecovery();
+  assert.equal(probe.error, null);
+  assert.equal(probe.pending, false);
+  assert.equal(runtime.storage.get('main'), JSON.stringify({
+    schemaVersion: 2,
+    tasks: [runtime.task],
+    dailyLogs: [],
+    creditOperations: [{
+      recordVersion: 1,
+      operationId: '223e4567-e89b-42d3-a456-426614174001',
+      kind: 'manual_adjustment',
+      taskId: 7,
+      revision: 2,
+      previousSeconds: 1200,
+      targetSeconds: 1200,
+      source: 'manual_adjustment',
+      sessionId: null,
+      createdAt: '2026-11-25T10:00:00.000Z'
+    }]
+  }));
+
+  // The user explicitly opens Reset/Save on the rehydrated, paused Stopwatch.
+  runtime.sandbox.resetTimer(true, true);
+  const footer = runtime.uiElements.modalFooter;
+  const saveButton = footer.children.find(button => /^حفظ وإضافة/.test(button.textContent));
+  assert.ok(saveButton, 'the paused checkpoint must offer an explicit Save action');
+  assert.match(runtime.uiElements.modalBody.innerHTML, /65s/);
+  saveButton.onclick();
+  assert.equal(runtime.commitRequests.length, 1,
+    'one explicit user confirmation must route exactly one V2 commit request');
+  await runtime.commitPromise;
+
+  const request = runtime.commitRequests[0];
+  assert.equal(request.snapshot.baseElapsed, 65);
+  assert.equal(request.snapshot.elapsedRemainderMs, 500);
+  assert.equal(request.snapshot.taskId, 7);
+  assert.equal(request.taskId, 7);
+  assert.equal(request.completed, true);
+  const fields = runtime.sandbox._buildPendingFocusSessionFields(
+    request.snapshot, runtime.task, request.minutesToAdd, false
+  );
+  assert.equal(fields.durationSec, 65);
+  assert.equal(fields.creditedSeconds, 60);
+  assert.equal(fields.creditSource, 'user_adjusted');
+  assert.equal(fields.taskId, 7);
+  assert.equal(runtime.commitRequests.length, 1);
+  assert.equal(runtime.savedCheckpointCount, 1);
+});
