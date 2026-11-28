@@ -1630,7 +1630,7 @@ test('cold reload keeps the pre-journal Stopwatch checkpoint explicitly saveable
   const storedTimerBefore = JSON.parse(runtime.storage.get('timer'));
   assert.equal(storedTimerBefore.pendingFocusCommit, null,
     'the first journal write failed, so no durable focus journal exists');
-  assert.equal(runtime.sandbox._focusTimer.pendingFocusCommit, undefined,
+  assert.equal(runtime.sandbox._focusTimer.pendingFocusCommit, null,
     'the new page must not inherit the old page memory-only journal');
 
   // Startup sees no durable transaction and must not manufacture a credit or session.
