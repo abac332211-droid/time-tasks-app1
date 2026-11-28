@@ -8979,16 +8979,27 @@ function _restoreStorageSnapshot(rb) {
   }
   if (rb.focusTimer !== null) {
     // Internal recovery snapshots may contain opaque legacy values from older
-    // versions. Reject a known live journal, but preserve unreadable raw bytes
+    // versions. Reject known live journals, but preserve unreadable raw bytes
     // verbatim so rollback can put the user's previous value back exactly.
     try {
       var snapshotTimer = JSON.parse(rb.focusTimer);
       if (snapshotTimer && typeof snapshotTimer === "object" && !Array.isArray(snapshotTimer)
-          && snapshotTimer.pendingFocusCommit) {
+          && (snapshotTimer.pendingFocusCommit || snapshotTimer.pendingStopwatchTransaction)) {
         markRecoveryRequired();
         return false;
       }
     } catch (snapshotTimerError) {}
+  }
+  if (rb.main !== null) {
+    try {
+      var snapshotMain = JSON.parse(rb.main);
+      if (snapshotMain && typeof snapshotMain === "object" && !Array.isArray(snapshotMain)
+          && Object.prototype.hasOwnProperty.call(snapshotMain, "pendingTaskFocusLinkMutation")) {
+        markRecoveryRequired();
+        console.error("Storage snapshot restore refuses a pending Task–Focus journal in the rollback snapshot.");
+        return false;
+      }
+    } catch (snapshotMainParseError) {}
   }
 
   var entries = [
@@ -9024,6 +9035,17 @@ function _restoreStorageSnapshot(rb) {
   } catch (readError) {
     markRecoveryRequired();
     return false;
+  }
+  if (previousMainRaw !== null) {
+    try {
+      var currentMain = JSON.parse(previousMainRaw);
+      if (currentMain && typeof currentMain === "object" && !Array.isArray(currentMain)
+          && Object.prototype.hasOwnProperty.call(currentMain, "pendingTaskFocusLinkMutation")) {
+        markRecoveryRequired();
+        console.error("Storage snapshot restore refuses to replace a live Task–Focus journal.");
+        return false;
+      }
+    } catch (currentMainParseError) {}
   }
 
   try {
