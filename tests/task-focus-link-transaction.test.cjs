@@ -343,6 +343,88 @@ test('an ambiguous task write that actually committed returns the verified task 
   assert.equal(h.readFocus().taskId, null);
 });
 
+test('startup recovery replays a PREPARED journal when the process stops before Focus detachment', () => {
+  const first = transactionHarness();
+  const main = first.readMain();
+  const beforeTask = first.sandbox._taskFocusLinkComparableTask(main.tasks[0]);
+  const targetTask = {
+    ...beforeTask,
+    status: 'done',
+    actual: 18,
+    completedAt: '2026-11-28T10:00:00'
+  };
+  const now = Date.now();
+  const journal = {
+    version: 1,
+    id: '123e4567-e89b-42d3-a456-426614174000',
+    taskId: 7,
+    operation: 'complete',
+    phase: 'PREPARED',
+    beforeTask,
+    targetTask,
+    otherTasksFingerprint: first.sandbox._taskFocusLinkOtherTasksFingerprint(main.tasks, 7),
+    createdAt: now,
+    updatedAt: now
+  };
+  assert.equal(first.sandbox._validatePendingTaskFocusLinkMutation(journal), true);
+  assert.equal(first.sandbox._writeTaskFocusLinkJournal(journal, false), true);
+  assert.equal(first.readFocus().taskId, 7, 'Focus is still linked at PREPARED');
+
+  const restarted = transactionHarness({
+    mainRaw: first.values.get(first.mainKey),
+    focusRaw: first.values.get(first.focusKey)
+  });
+  const probe = makeRecoveryProbe(restarted);
+  const result = restarted.sandbox._recoverPendingTaskFocusLinkMutationFromStartup(
+    probe.expectedTaskFocusLink, probe, probe
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recovered, 'replayed');
+  assert.equal(restarted.readMain().tasks.find((row) => row.id === 7).status, 'done');
+  assert.equal(restarted.readFocus().taskId, null);
+  assert.equal(Object.hasOwn(restarted.readMain(), 'pendingTaskFocusLinkMutation'), false);
+  assert.equal(restarted.sandbox.saveCount, 1);
+});
+
+test('startup recovery clears an already VERIFIED task commit without repeating the mutation', () => {
+  const first = transactionHarness();
+  const task = first.sandbox.tasks.find((row) => row.id === 7);
+  const targetTask = {
+    ...task,
+    status: 'done',
+    actual: 18,
+    completedAt: '2026-11-28T10:00:00'
+  };
+  const started = first.sandbox._beginTaskFocusLinkMutationDurable(7, 'complete', targetTask);
+  assert.equal(started.ok, true);
+
+  Object.assign(task, targetTask);
+  assert.equal(first.sandbox.saveData(), true);
+  let journal = first.readMain().pendingTaskFocusLinkMutation;
+  journal = first.sandbox._advanceTaskFocusLinkJournal(journal, 'TASK_COMMITTED');
+  assert.ok(journal);
+  journal = first.sandbox._advanceTaskFocusLinkJournal(journal, 'VERIFIED');
+  assert.ok(journal);
+
+  const restarted = transactionHarness({
+    mainRaw: first.values.get(first.mainKey),
+    focusRaw: first.values.get(first.focusKey)
+  });
+  restarted.sandbox._focusTimer.taskId = null;
+  const probe = makeRecoveryProbe(restarted);
+  const result = restarted.sandbox._recoverPendingTaskFocusLinkMutationFromStartup(
+    probe.expectedTaskFocusLink, probe, probe
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recovered, 'already_applied');
+  assert.equal(restarted.readMain().tasks.find((row) => row.id === 7).status, 'done');
+  assert.equal(restarted.readFocus().taskId, null);
+  assert.equal(Object.hasOwn(restarted.readMain(), 'pendingTaskFocusLinkMutation'), false);
+  assert.equal(restarted.sandbox.saveCount, 0);
+});
+
 test('startup recovery replays completion after a cold start immediately following Focus detachment', () => {
   const first = transactionHarness();
   const task = first.sandbox.tasks.find((row) => row.id === 7);
