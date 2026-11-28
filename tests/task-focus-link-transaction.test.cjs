@@ -16,7 +16,7 @@ function extract(name) {
   const match = declaration.exec(appScript);
   assert.ok(match, 'function ' + name + ' exists');
   const start = match.index;
-  const nextFunction = appScript.indexOf('\\nfunction ', start + match[0].length);
+  const nextFunction = appScript.indexOf('\nfunction ', start + match[0].length);
   const end = nextFunction < 0 ? appScript.length : nextFunction;
   const source = appScript.slice(start, end).trim();
   assert.match(source, new RegExp('^function\\s+' + name + '\\s*\\('));
