@@ -62,6 +62,7 @@ public final class {PLUGIN} extends Plugin {{
     static final String ANCHOR_BOOT_KEY = "anchorBootCount";
     static final String ACTION_QUEUE_KEY = "notificationActionQueue";
     static final String ACKED_ACTION_IDS_KEY = "handledNotificationActionIds";
+    static final String ACTION_QUEUE_OVERFLOW_KEY = "notificationActionQueueOverflow";
     static final int MAX_PENDING_ACTIONS = 20;
     static final int MAX_ACKED_ACTION_IDS = 10;
     static final Object ACTION_LOCK = new Object();
@@ -173,6 +174,7 @@ public final class {PLUGIN} extends Plugin {{
                     .putLong(START_WALL_KEY, startWall)
                     .putString(ACTIVE_SESSION_TOKEN_KEY, sessionToken)
                     .remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
+                    .remove(ACTION_QUEUE_OVERFLOW_KEY)
                     .putLong(ANCHOR_ELAPSED_KEY, anchorElapsed)
                     .putLong(ANCHOR_BASE_KEY, anchorBase)
                     .putInt(ANCHOR_BOOT_KEY, anchorBoot)
@@ -260,6 +262,7 @@ public final class {PLUGIN} extends Plugin {{
                     .remove(START_WALL_KEY).remove(ACTIVE_SESSION_TOKEN_KEY)
                     .remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
                     .remove(ANCHOR_ELAPSED_KEY).remove(ANCHOR_BASE_KEY).remove(ANCHOR_BOOT_KEY)
+                    .remove(ACTION_QUEUE_OVERFLOW_KEY)
                     .commit();
                 if (!committed) {{
                     call.reject("تعذر حفظ إيقاف خدمة المؤقت");
@@ -288,6 +291,7 @@ public final class {PLUGIN} extends Plugin {{
             try {{
                 JSONArray queue = readActionQueue(prefs);
                 JSObject result = new JSObject();
+                result.put("queueOverflow", prefs.getBoolean(ACTION_QUEUE_OVERFLOW_KEY, false));
                 if (queue.length() == 0) {{
                     result.put("hasAction", false);
                     call.resolve(result);
@@ -386,6 +390,7 @@ public final class {PLUGIN} extends Plugin {{
                 SharedPreferences.Editor editor = prefs.edit()
                     .putString(ACTION_QUEUE_KEY, nextQueue.toString())
                     .putString(ACKED_ACTION_IDS_KEY, nextAcked.toString());
+                if (nextQueue.length() == 0) editor.remove(ACTION_QUEUE_OVERFLOW_KEY);
                 if (stopService) {{
                     editor.remove(TITLE_KEY).remove(TASK_KEY).remove(START_WALL_KEY)
                         .remove(ACTIVE_SESSION_TOKEN_KEY).remove(SERVICE_STARTED_SESSION_TOKEN_KEY)
@@ -433,6 +438,7 @@ import android.os.IBinder;
 
 public final class {SERVICE} extends Service {{
     static final String ACTION_START_OR_UPDATE = "{package}.STOPWATCH_START_OR_UPDATE";
+    static final String ACTION_QUEUE_OVERFLOW = "{package}.STOPWATCH_ACTION_QUEUE_OVERFLOW";
     static final int NOTIFICATION_ID = 0x5357;
     static final String CHANNEL_ID = "focus_stopwatch_running";
 
@@ -519,10 +525,18 @@ public final class {SERVICE} extends Service {{
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
             ? new Notification.Builder(this, CHANNEL_ID)
             : new Notification.Builder(this);
+        boolean actionQueueOverflow = getSharedPreferences({PLUGIN}.PREFS, Context.MODE_PRIVATE)
+            .getBoolean({PLUGIN}.ACTION_QUEUE_OVERFLOW_KEY, false);
+        String contentText = actionQueueOverflow
+            ? "لم يُحفظ آخر أمر إشعار؛ افتح التطبيق لمعالجة الطابور"
+            : (task.trim().isEmpty() ? "الوقت مستمر في الاحتساب" : "المهمة: " + task);
+        String subText = actionQueueOverflow
+            ? "إجراء غير محفوظ — لا تعِد الضغط حتى يكتمل التحقق"
+            : "مؤقت التركيز يعمل في الخلفية";
         builder.setSmallIcon(icon)
             .setContentTitle(title)
-            .setContentText(task.trim().isEmpty() ? "الوقت مستمر في الاحتساب" : "المهمة: " + task)
-            .setSubText("مؤقت التركيز يعمل في الخلفية")
+            .setContentText(contentText)
+            .setSubText(subText)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -606,6 +620,25 @@ public final class StopwatchNotificationActionReceiver extends BroadcastReceiver
                     String raw = prefs.getString({PLUGIN}.ACTION_QUEUE_KEY, "[]");
                     JSONArray queue = raw == null || raw.trim().isEmpty() ? new JSONArray() : new JSONArray(raw);
                     if (queue.length() >= MAX_PENDING_ACTIONS) {{
+                        boolean marked = prefs.edit()
+                            .putBoolean({PLUGIN}.ACTION_QUEUE_OVERFLOW_KEY, true)
+                            .commit();
+                        if (marked && prefs.getBoolean({PLUGIN}.ACTION_QUEUE_OVERFLOW_KEY, false)) {{
+                            Intent warning = new Intent(appContext, {SERVICE}.class);
+                            warning.setAction({SERVICE}.ACTION_QUEUE_OVERFLOW);
+                            warning.putExtra({PLUGIN}.ACTIVE_SESSION_TOKEN_KEY, sessionToken);
+                            try {{
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
+                                    appContext.startForegroundService(warning);
+                                else
+                                    appContext.startService(warning);
+                            }} catch (RuntimeException warningError) {{
+                                Log.e(TAG, "Could not refresh the foreground notification with the overflow warning.", warningError);
+                            }}
+                        }} else {{
+                            Log.e(TAG, "Could not persist notification-action overflow warning.");
+                        }}
+                        // Do not append, replace or acknowledge the overflowing action.
                         Log.e(TAG, "Action queue is full; preserving all pending actions.");
                         return;
                     }}
