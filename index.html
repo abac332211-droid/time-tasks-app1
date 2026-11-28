@@ -14015,6 +14015,29 @@ function _probeStartupStopwatchRecovery() {
         };
       }
     }
+    // A journal held only in this page is still unresolved. Do not let Reset
+    // erase the sole remaining copy after its first persistence attempt failed.
+    var memoryTx = typeof _focusTimer !== "undefined" && _focusTimer
+      ? _focusTimer.pendingStopwatchTransaction : null;
+    var memoryFocusCommit = typeof _focusTimer !== "undefined" && _focusTimer
+      ? _focusTimer.pendingFocusCommit : null;
+    var memoryTxMismatch = memoryTx !== null && memoryTx !== undefined
+      && (!tx || JSON.stringify(memoryTx) !== JSON.stringify(tx));
+    var memoryFocusCommitMismatch = memoryFocusCommit !== null && memoryFocusCommit !== undefined
+      && (!focusCommit || JSON.stringify(memoryFocusCommit) !== JSON.stringify(focusCommit));
+    if (memoryTxMismatch || memoryFocusCommitMismatch) {
+      return {
+        pending: true,
+        error: memoryFocusCommitMismatch
+          ? "يوجد سجل اعتماد جلسة في ذاكرة الصفحة لا يطابق سجلًا دائمًا في التخزين؛ أوقفنا Reset والاسترداد الجماعي."
+          : "يوجد سجل معاملة Stopwatch في ذاكرة الصفحة لا يطابق سجلًا دائمًا في التخزين؛ أوقفنا Reset والاسترداد الجماعي.",
+        blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+        timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+        expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+        bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+      };
+    }
+
     if (bootGeneration === null) {
       return {
         pending: true, error: "تعذرت قراءة جيل النسخ الدوّارة.",

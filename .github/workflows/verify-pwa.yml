@@ -34,6 +34,9 @@ on:
       - codex/pomodoro-credit-operation-ledger-v1
       - codex/pending-focus-commit-integrated-fix-v1
 
+permissions:
+  contents: read
+
 concurrency:
   group: verify-pwa-${{ github.ref }}
   cancel-in-progress: true
@@ -48,6 +51,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Verify checked-out source SHA
         run: |
           EXPECTED_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
@@ -95,9 +99,10 @@ jobs:
         env:
           BASE_REF: codex/v2.9.1-stability
           HEAD_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          git fetch --no-tags "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
           HEAD_SHA="$(git rev-parse "${HEAD_SHA}")"
           BASE_SHA="$(git merge-base "${HEAD_SHA}" "refs/remotes/origin/${BASE_REF}")"
           test -n "${BASE_SHA}"

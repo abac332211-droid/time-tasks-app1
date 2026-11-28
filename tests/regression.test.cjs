@@ -2178,8 +2178,17 @@ function resetAllHarness(faults = {}) {
     focusSettings: 'focus-settings', notifications: 'notifications'
   };
   const values = new Map(Object.entries(keys)
-    .filter(([name]) => !['resetInProgress', 'rollingRestoreInProgress', 'rollingBackupGeneration'].includes(name))
+    .filter(([name]) => ![
+      'importInProgress', 'migrationInProgress', 'resetInProgress',
+      'rollingRestoreInProgress', 'rollingBackupGeneration'
+    ].includes(name))
     .map(([, key]) => [key, 'old-value']));
+  // Use a valid, clean timer record so this harness exercises the production
+  // startup-recovery probe rather than replacing it with a permissive stub.
+  values.set(keys.focusTimer, JSON.stringify({
+    pendingStopwatchTransaction: null,
+    pendingFocusCommit: null
+  }));
   const removeCalls = [];
   const alerts = [];
   const toasts = [];
@@ -2212,26 +2221,14 @@ function resetAllHarness(faults = {}) {
     createdByVersion: 'old',
     storageRecoveryRequired: false,
     _hasPersistedPendingStopwatchTransaction: () => false,
-    _probeStartupStopwatchRecovery: () => ({
-      error: null,
-      pending: false,
-      expectedTx: null,
-      markerValues: {
-        reset: null, rollingRestore: null, import: null, migration: null
-      },
-      blockingMarkers: {
-        reset: false, rollingRestore: false, import: false, migration: false
-      },
-      timerRaw: null,
-      mainRaw: null,
-      bootPersistedGeneration: 0
-    }),
+
     _sessionsCache: [],
     _focusTimer: {
       mode: 'stopwatch', phase: 'work', running: true, baseElapsed: 75,
       startedAt: 1, cyclePosition: 2, taskId: 99, sessionStartAt: 1,
       awaitingConfirmation: true, pendingPhaseEndedAt: 2,
-      clockAdjusted: true, pendingStopwatchTransaction: { id: 'pending' }
+      clockAdjusted: true, pendingStopwatchTransaction: null,
+      pendingFocusCommit: null
     },
     _focusElapsedRemainderMs: 500,
     _focusTimerColdStartWasRunning: true,
@@ -2309,6 +2306,7 @@ function resetAllHarness(faults = {}) {
       + extractFunction('_resetStorageRemovalKeys') + '\n'
       + extractFunction('_resetSecondaryStorageTrackingAfterReset') + '\n'
       + extractFunction('_recoverInterruptedReset') + '\n'
+      + extractFunction('_probeStartupStopwatchRecovery') + '\n'
       + extractFunction('_executeResetAllTransaction') + '\n'
       + extractFunction('resetAll'),
     sandbox
@@ -2326,6 +2324,30 @@ function resetAllHarness(faults = {}) {
     }
   };
 }
+test('Reset refuses a Stopwatch journal held only in page memory and preserves all stored data', async () => {
+  for (const field of ['pendingFocusCommit', 'pendingStopwatchTransaction']) {
+    const harness = resetAllHarness();
+    const journal = field === 'pendingFocusCommit'
+      ? { protocolVersion: 1, operationId: 'memory-only-focus-commit' }
+      : { version: 1, id: 'memory-only-stopwatch-transaction' };
+    harness.sandbox._focusTimer[field] = journal;
+    const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+    const probe = harness.sandbox._probeStartupStopwatchRecovery();
+    assert.equal(probe.pending, true, field + ' must block recovery');
+    assert.match(probe.error, /ذاكرة الصفحة/);
+
+    assert.equal(await harness.run(), false, field + ' must block Reset');
+    const after = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    assert.deepEqual(after, before, field + ' must not change any durable key');
+    assert.deepEqual(harness.removeCalls, [], field + ' must not begin Reset deletions');
+    assert.equal(harness.values.has(harness.keys.resetInProgress), false);
+    assert.equal(harness.sandbox._focusTimer[field], journal,
+      field + ' must remain available in memory for explicit recovery');
+    assert.equal(harness.sandbox.storageRecoveryRequired, true);
+  }
+});
+
 test('interrupted Reset recovery attempts every deletion and retains its marker when one key cannot be removed', () => {
   const harness = resetAllHarness({ throwOnRemoveKey: 'projects' });
   harness.seedResetMarker();
@@ -3776,3 +3798,25 @@ test('recurring task refresh is page-lifetime, visible-only, minute-based, and i
   tick();
   assert.equal(generated, 1, 'recovery-required mode blocks recurring writes');
 });
+
+test('untrusted GitHub workflows limit token access to the required build steps', () => {
+  const read = (name) => fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', name), 'utf8');
+  const verify = read('verify-pwa.yml');
+  const apk = read('build-apk.yml');
+  const release = read('build-release-apk.yml');
+
+  assert.ok(verify.includes('permissions:'));
+  assert.ok(verify.includes('contents: read'));
+  assert.ok(verify.includes('persist-credentials: false'));
+  assert.ok(apk.includes('persist-credentials: false'));
+  assert.ok(release.includes('persist-credentials: false'));
+  assert.ok(verify.includes('GH_TOKEN:'));
+  assert.ok(verify.includes('github.token'));
+  assert.ok(verify.includes('x-access-token:'));
+  assert.ok(verify.includes('GITHUB_REPOSITORY}.git'));
+  assert.doesNotMatch(verify, /secrets\./);
+  assert.doesNotMatch(apk, /secrets\./);
+  assert.ok(release.includes("if: github.ref == 'refs/heads/main'"));
+  assert.ok(release.includes('name: android-release'));
+});
+

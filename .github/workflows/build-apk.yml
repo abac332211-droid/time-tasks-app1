@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Verify checked-out source SHA
         run: |
           EXPECTED_SHA="${{ github.sha }}"
