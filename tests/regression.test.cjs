@@ -1669,7 +1669,9 @@ test('task deletion restores the task and linked focus timer when persistence fa
     renderAll: () => { throw new Error('must not render unpersisted deletion'); },
     showToast: () => {}
   };
-  const deleteFunctionMatch = appScript.match(/function\\s+deleteTask\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}/);
+  const deleteFunctionMatch = appScript.match(
+    new RegExp('function\\s+deleteTask\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}')
+  );
   assert.ok(deleteFunctionMatch, 'deleteTask function exists');
   vm.runInNewContext([
     'function _isTaskStorageLockHeld() { return true; }',
@@ -1688,23 +1690,7 @@ test('task deletion restores the task and linked focus timer when persistence fa
     '  return sandbox._saveFocusTimer() ? "rolled_back" : false;',
     '}',
     deleteFunctionMatch[0]
-  ].join('\\n'), sandbox);
-
-  sandbox._beginTaskFocusLinkMutation = (id) => {
-    if (sandbox._focusTimer.taskId !== id) return { ok: true, linked: false };
-    const previousTaskId = sandbox._focusTimer.taskId;
-    sandbox._focusTimer.taskId = null;
-    if (!sandbox._saveFocusTimer()) {
-      sandbox._focusTimer.taskId = previousTaskId;
-      return { ok: false, linked: true };
-    }
-    return { ok: true, linked: true, previousTaskId };
-  };
-  sandbox._finishTaskFocusLinkMutation = (detachment, taskSaveSucceeded) => {
-    if (!detachment || !detachment.linked || taskSaveSucceeded === true) return true;
-    sandbox._focusTimer.taskId = detachment.previousTaskId;
-    return sandbox._saveFocusTimer();
-  };
+  ].join('\n'), sandbox);
 
   sandbox.deleteTask(12);
 
