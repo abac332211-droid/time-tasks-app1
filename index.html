@@ -3638,8 +3638,8 @@ function loadData(options) {
     return loadMarkers[key] === true;
   }).length;
   if (loadMarkerCount > 1
-      || (loadMarkerCount > 0 && (loadProbe.expectedTx || loadProbe.expectedFocusCommit))
-      || loadProbe.expectedTx || loadProbe.expectedFocusCommit) {
+      || (loadMarkerCount > 0 && (loadProbe.expectedTx || loadProbe.expectedFocusCommit || loadProbe.expectedTaskFocusLink))
+      || loadProbe.expectedTx || loadProbe.expectedFocusCommit || loadProbe.expectedTaskFocusLink) {
     storageRecoveryRequired = true;
     console.error("loadData: refusing restore or migration while a Stopwatch journal or overlapping recovery marker exists.");
     return false;
@@ -4796,6 +4796,13 @@ function saveData() {
       showAlertModal("تعارض معاملة Stopwatch", "توجد معاملة مؤقت محفوظة في نافذة أخرى. أوقفنا الكتابة حتى يكتمل الاسترداد.");
       return false;
     }
+    var pendingTaskFocusLink = existing.pendingTaskFocusLinkMutation || null;
+    if (pendingTaskFocusLink && (!_validatePendingTaskFocusLinkMutation(pendingTaskFocusLink)
+        || (_taskFocusLinkMutationWriteDepth <= 0 && !startupRecoveryWrite))) {
+      storageRecoveryRequired = true;
+      showAlertModal("معاملة ربط مهمة معلّقة", "أوقف التطبيق الحفظ خارج معاملة Task–Focus المحمية حتى يكتمل الاسترداد والتحقق.");
+      return false;
+    }
     const createdVer = existing.createdByVersion || APP_VERSION;
 
     if (!appSettings.firstUseDate) appSettings.firstUseDate = todayStr();
@@ -4964,6 +4971,7 @@ function saveData() {
       dailyLogs: existing.dailyLogs || [],
       creditOperations: nextCreditOperations
     };
+    if (pendingTaskFocusLink) v2.pendingTaskFocusLinkMutation = pendingTaskFocusLink;
 
     if (!validateV2(v2)) {
       console.error("saveData: refusing to write invalid data");
@@ -5618,7 +5626,7 @@ function _executeResetAllTransaction() {
       return resetMarkers[key] === true;
     }).length;
     if (!resetProbe || resetProbe.error || resetProbe.expectedTx
-        || resetProbe.expectedFocusCommit || resetMarkerCount > 0) {
+        || resetProbe.expectedFocusCommit || resetProbe.expectedTaskFocusLink || resetMarkerCount > 0) {
       storageRecoveryRequired = true;
       throw new Error("Reset refused because another recovery marker or focus transaction journal is present.");
     }
@@ -7243,6 +7251,424 @@ function reviveTask(id) {
   }
 }
 
+
+var _taskFocusLinkMutationWriteDepth = 0;
+
+function _taskFocusLinkComparableTask(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return null;
+  var copy = JSON.parse(JSON.stringify(task));
+  ["actualSeconds", "creditRevision", "creditSchemaVersion", "lastCreditOperationId"]
+    .forEach(function(key) { delete copy[key]; });
+  return copy;
+}
+
+function _taskFocusLinkOtherTasksFingerprint(taskRows, taskId) {
+  if (!Array.isArray(taskRows)) return null;
+  var rows = taskRows.filter(function(row) { return row && row.id !== taskId; })
+    .map(_taskFocusLinkComparableTask);
+  return JSON.stringify(rows);
+}
+
+function _isValidTaskFocusLinkTaskSnapshot(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+  try {
+    return validateV2({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      tasks: [task],
+      dailyLogs: [],
+      creditOperations: []
+    });
+  } catch (error) {
+    return false;
+  }
+}
+
+function _validatePendingTaskFocusLinkMutation(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  var keys = ["version", "id", "taskId", "operation", "phase", "beforeTask",
+    "targetTask", "otherTasksFingerprint", "createdAt", "updatedAt"];
+  var ownKeys = Object.keys(record);
+  if (ownKeys.length !== keys.length
+      || !ownKeys.every(function(key) { return keys.indexOf(key) !== -1; })) return false;
+  var uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (record.version !== 1 || typeof record.id !== "string" || !uuid.test(record.id)
+      || !Number.isSafeInteger(record.taskId) || record.taskId <= 0
+      || (record.operation !== "complete" && record.operation !== "delete")
+      || ["PREPARED", "FOCUS_DETACHED", "TASK_COMMITTED", "VERIFIED"].indexOf(record.phase) < 0
+      || !Number.isFinite(record.createdAt) || record.createdAt <= 0
+      || !Number.isFinite(record.updatedAt) || record.updatedAt < record.createdAt
+      || !_isValidTaskFocusLinkTaskSnapshot(record.beforeTask)
+      || record.beforeTask.id !== record.taskId
+      || typeof record.otherTasksFingerprint !== "string"
+      || record.otherTasksFingerprint.length > 2000000) return false;
+  try {
+    var others = JSON.parse(record.otherTasksFingerprint);
+    var otherIds = new Set();
+    if (!Array.isArray(others) || others.some(function(row) {
+      if (!_isValidTaskFocusLinkTaskSnapshot(row)
+          || row.id === record.taskId || otherIds.has(row.id)) return true;
+      otherIds.add(row.id);
+      return false;
+    })) return false;
+  } catch (e) { return false; }
+  if (record.operation === "delete") return record.targetTask === null;
+  return _isValidTaskFocusLinkTaskSnapshot(record.targetTask)
+    && record.targetTask.id === record.taskId
+    && record.targetTask.status === "done";
+}
+
+function _taskFocusLinkMutationState(mainData, journal) {
+  if (!mainData || !Array.isArray(mainData.tasks)
+      || !_validatePendingTaskFocusLinkMutation(journal)) return "conflict";
+  if (_taskFocusLinkOtherTasksFingerprint(mainData.tasks, journal.taskId)
+      !== journal.otherTasksFingerprint) return "conflict";
+  var rows = mainData.tasks.filter(function(row) { return row && row.id === journal.taskId; });
+  if (rows.length > 1) return "conflict";
+  var current = rows.length === 1 ? _taskFocusLinkComparableTask(rows[0]) : null;
+  var before = _focusCommitDeepEqual(current, journal.beforeTask);
+  var target = journal.operation === "delete"
+    ? current === null
+    : _focusCommitDeepEqual(current, journal.targetTask);
+  if (target) return "target";
+  if (before) return "before";
+  return "conflict";
+}
+
+function _writeTaskFocusLinkJournal(journal, clearJournal) {
+  if (!_isTaskStorageLockHeld()) return false;
+  if (clearJournal !== true && !_validatePendingTaskFocusLinkMutation(journal)) return false;
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null || !_mainStorageBaselineReady
+        || _mainStorageExternalChangeObserved || raw !== _mainStorageBaselineRaw)
+      throw new Error("main storage baseline changed before journal write");
+    var mainData = JSON.parse(raw);
+    if (!mainData || mainData.schemaVersion !== CURRENT_SCHEMA_VERSION || !validateV2(mainData))
+      return false;
+    var current = mainData.pendingTaskFocusLinkMutation || null;
+    var operationId = clearJournal === true
+      ? (typeof journal === "string" ? journal : journal.id) : journal.id;
+    if (current && (!_validatePendingTaskFocusLinkMutation(current)
+        || current.id !== operationId))
+      throw new Error("pending Task–Focus journal identity changed");
+    if (!current && clearJournal === true)
+      throw new Error("pending Task–Focus journal disappeared before clear");
+    if (!current && journal.phase !== "PREPARED") return false;
+    if (clearJournal === true) delete mainData.pendingTaskFocusLinkMutation;
+    else mainData.pendingTaskFocusLinkMutation = journal;
+    var serialized = JSON.stringify(mainData);
+    localStorage.setItem(STORAGE_KEY, serialized);
+    var verified = localStorage.getItem(STORAGE_KEY);
+    if (verified !== serialized) throw new Error("task-focus journal read-back mismatch");
+    var verifiedData = JSON.parse(verified);
+    if (!validateV2(verifiedData)) throw new Error("task-focus journal main record is invalid");
+    if (clearJournal === true) {
+      if (Object.prototype.hasOwnProperty.call(verifiedData, "pendingTaskFocusLinkMutation"))
+        throw new Error("task-focus journal was not cleared");
+    } else if (!_focusCommitDeepEqual(verifiedData.pendingTaskFocusLinkMutation, journal)) {
+      throw new Error("task-focus journal identity changed during write");
+    }
+    _setMainStorageBaseline(verified);
+    return true;
+  } catch (error) {
+    storageRecoveryRequired = true;
+    _mainStorageBaselineReady = false;
+    console.error("Task–Focus transaction journal write failed:", error);
+    return false;
+  }
+}
+
+function _setTaskFocusLinkOnDurableTimer(expectedTaskId, nextTaskId) {
+  if (!_isTaskStorageLockHeld()
+      || (expectedTaskId !== null && (!Number.isSafeInteger(expectedTaskId) || expectedTaskId <= 0))
+      || (nextTaskId !== null && (!Number.isSafeInteger(nextTaskId) || nextTaskId <= 0))) return false;
+  var raw;
+  var record;
+  try {
+    raw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (raw === null) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    record = JSON.parse(raw);
+    if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  } catch (error) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  var currentTaskId = record.taskId === undefined ? null : record.taskId;
+  if (currentTaskId !== expectedTaskId && currentTaskId !== nextTaskId) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)) {
+    _secondaryStorageBaselines[FOCUS_TIMER_KEY] = raw;
+  }
+  if (_secondaryStorageConflicts[FOCUS_TIMER_KEY]
+      || _secondaryStorageBaselines[FOCUS_TIMER_KEY] !== raw) {
+    storageRecoveryRequired = true;
+    return false;
+  }
+  if (currentTaskId !== nextTaskId) {
+    record.taskId = nextTaskId;
+    if (!_writeSecondaryStorageVerified(FOCUS_TIMER_KEY, JSON.stringify(record))) return false;
+  }
+  if (typeof _focusTimer !== "undefined" && _focusTimer)
+    _focusTimer.taskId = nextTaskId;
+  return true;
+}
+
+function _advanceTaskFocusLinkJournal(journal, phase) {
+  var next = Object.assign({}, journal, {
+    phase: phase,
+    updatedAt: Math.max(Date.now(), journal.updatedAt)
+  });
+  if (!_writeTaskFocusLinkJournal(next, false)) return null;
+  return next;
+}
+
+function _beginTaskFocusLinkMutationDurable(taskId, operation, targetTask) {
+  if (!_isTaskStorageLockHeld() || !Number.isSafeInteger(taskId) || taskId <= 0)
+    return { ok: false, linked: false };
+  if (!_focusTimer || _focusTimer.taskId !== taskId)
+    return { ok: true, linked: false };
+  if ((operation !== "complete" && operation !== "delete")
+      || (operation === "complete" && (!targetTask || targetTask.id !== taskId))
+      || (operation === "delete" && targetTask !== null)) return { ok: false, linked: true };
+  if (storageRecoveryRequired || _isFocusCommitBlocked()
+      || _hasPersistedPendingStopwatchTransaction()
+      || _hasPersistedPendingFocusCommit()) return { ok: false, linked: true };
+  var mainRaw, mainData, focusRaw, focusRecord;
+  try {
+    mainRaw = localStorage.getItem(STORAGE_KEY);
+    if (mainRaw === null || !_mainStorageBaselineReady || _mainStorageExternalChangeObserved
+        || mainRaw !== _mainStorageBaselineRaw) {
+      storageRecoveryRequired = true;
+      return { ok: false, linked: true };
+    }
+    mainData = JSON.parse(mainRaw);
+    if (!validateV2(mainData) || JSON.stringify(mainData.tasks) !== JSON.stringify(tasks)
+        || Object.prototype.hasOwnProperty.call(mainData, "pendingTaskFocusLinkMutation"))
+      return { ok: false, linked: true };
+    focusRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+    if (focusRaw === null || _secondaryStorageConflicts[FOCUS_TIMER_KEY]) {
+      storageRecoveryRequired = true;
+      return { ok: false, linked: true };
+    }
+    if (Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)
+        && _secondaryStorageBaselines[FOCUS_TIMER_KEY] !== focusRaw) {
+      storageRecoveryRequired = true;
+      return { ok: false, linked: true };
+    }
+    focusRecord = JSON.parse(focusRaw);
+    if (!focusRecord || typeof focusRecord !== "object" || Array.isArray(focusRecord)
+        || focusRecord.taskId !== taskId) return { ok: false, linked: true };
+  } catch (error) {
+    storageRecoveryRequired = true;
+    return { ok: false, linked: true };
+  }
+  var persistedTask = mainData.tasks.find(function(row) { return row && row.id === taskId; });
+  if (!persistedTask) return { ok: false, linked: true };
+  var now = Date.now();
+  var journal = {
+    version: 1,
+    id: _newPendingFocusCommitUuid(),
+    taskId: taskId,
+    operation: operation,
+    phase: "PREPARED",
+    beforeTask: _taskFocusLinkComparableTask(persistedTask),
+    targetTask: operation === "delete" ? null : _taskFocusLinkComparableTask(targetTask),
+    otherTasksFingerprint: _taskFocusLinkOtherTasksFingerprint(mainData.tasks, taskId),
+    createdAt: now,
+    updatedAt: now
+  };
+  if (!journal.id || !_validatePendingTaskFocusLinkMutation(journal)) return { ok: false, linked: true };
+  var releaseCheckpoint = _acquireRollingRecoveryCheckpointHold(true);
+  if (!_writeTaskFocusLinkJournal(journal, false)) {
+    releaseCheckpoint();
+    return { ok: false, linked: true };
+  }
+  _taskFocusLinkMutationWriteDepth++;
+  _focusTimer.taskId = null;
+  if (!_saveFocusTimer()) {
+    var durableFocusStillLinked = false;
+    try {
+      var afterFocusRaw = localStorage.getItem(FOCUS_TIMER_KEY);
+      var afterFocus = afterFocusRaw === null ? null : JSON.parse(afterFocusRaw);
+      durableFocusStillLinked = !!afterFocus && afterFocus.taskId === taskId;
+    } catch (e) {}
+    if (durableFocusStillLinked && !storageRecoveryRequired) {
+      _focusTimer.taskId = taskId;
+      _writeTaskFocusLinkJournal(journal, true);
+    } else {
+      storageRecoveryRequired = true;
+    }
+    _taskFocusLinkMutationWriteDepth = Math.max(0, _taskFocusLinkMutationWriteDepth - 1);
+    releaseCheckpoint();
+    return { ok: false, linked: true };
+  }
+  var detachedJournal = _advanceTaskFocusLinkJournal(journal, "FOCUS_DETACHED");
+  if (!detachedJournal) {
+    storageRecoveryRequired = true;
+    _taskFocusLinkMutationWriteDepth = Math.max(0, _taskFocusLinkMutationWriteDepth - 1);
+    releaseCheckpoint();
+    return { ok: false, linked: true };
+  }
+  return {
+    ok: true, linked: true, journal: detachedJournal, previousTaskId: taskId,
+    releaseCheckpoint: releaseCheckpoint
+  };
+}
+
+function _finishTaskFocusLinkMutationDurable(detachment, taskSaveSucceeded) {
+  if (!detachment || detachment.linked !== true) return true;
+  var journal = detachment.journal;
+  var outcome = null;
+  try {
+    if (!_isTaskStorageLockHeld() || !_validatePendingTaskFocusLinkMutation(journal)) {
+      storageRecoveryRequired = true;
+      return false;
+    }
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) throw new Error("main task record is missing");
+    var mainData = JSON.parse(raw);
+    if (!validateV2(mainData)
+        || !_focusCommitDeepEqual(mainData.pendingTaskFocusLinkMutation, journal))
+      throw new Error("task-focus journal no longer matches");
+    var state = _taskFocusLinkMutationState(mainData, journal);
+    var taskSnapshotKnownUnchanged = state === "before";
+    if (state === "target") {
+      if (!_setTaskFocusLinkOnDurableTimer(journal.taskId, null))
+        throw new Error("focus timer could not be durably detached");
+      journal = _advanceTaskFocusLinkJournal(journal, "TASK_COMMITTED");
+      if (!journal) throw new Error("task commit phase could not be persisted");
+      journal = _advanceTaskFocusLinkJournal(journal, "VERIFIED");
+      if (!journal) throw new Error("verified phase could not be persisted");
+      if (!_writeTaskFocusLinkJournal(journal, true))
+        throw new Error("task-focus journal could not be cleared");
+      detachment.committedTasks = JSON.parse(JSON.stringify(mainData.tasks));
+      outcome = "committed";
+    } else if (state === "before" && taskSaveSucceeded !== true && !storageRecoveryRequired) {
+      if (!_setTaskFocusLinkOnDurableTimer(null, journal.taskId))
+        throw new Error("focus timer rollback could not be verified");
+      if (!_writeTaskFocusLinkJournal(journal, true))
+        throw new Error("rolled-back task-focus journal could not be cleared");
+      outcome = "rolled_back";
+    } else {
+      throw new Error("task state is neither the verified pre-commit nor target state");
+    }
+    if (outcome) _renderFocusTimer();
+    return outcome;
+  } catch (error) {
+    storageRecoveryRequired = true;
+    console.error("Task–Focus transaction finalization failed:", error);
+    showAlertModal("تعذر تثبيت ربط المهمة بالمؤقت",
+      "احتفظ التطبيق بسجل المعاملة وأوقف الكتابة حتى يسترد حالة المهمة والمؤقت ويتحقق منها عند إعادة الفتح.");
+    return taskSnapshotKnownUnchanged ? "rollback_failed" : false;
+  } finally {
+    _taskFocusLinkMutationWriteDepth = Math.max(0, _taskFocusLinkMutationWriteDepth - 1);
+    if (typeof detachment.releaseCheckpoint === "function") detachment.releaseCheckpoint();
+  }
+}
+
+function _recoverPendingTaskFocusLinkMutationFromStartup(expectedJournal, lockedProbe, initialProbe) {
+  if (!_isTaskStorageLockHeld() || !_validatePendingTaskFocusLinkMutation(expectedJournal)
+      || !lockedProbe || lockedProbe.error || !lockedProbe.mainData
+      || !_focusCommitDeepEqual(lockedProbe.expectedTaskFocusLink, expectedJournal)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_focus_journal_probe_invalid" };
+  }
+  var markers = lockedProbe.blockingMarkers || {};
+  if (Object.keys(markers).some(function(key) { return markers[key] === true; })
+      || lockedProbe.expectedTx || lockedProbe.expectedFocusCommit
+      || (initialProbe && (initialProbe.expectedTx || initialProbe.expectedFocusCommit
+        || (initialProbe.expectedTaskFocusLink
+          && !_focusCommitDeepEqual(initialProbe.expectedTaskFocusLink, expectedJournal))))) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_focus_journal_overlap_or_identity_conflict" };
+  }
+  var mainData = lockedProbe.mainData;
+  if (!validateV2(mainData)
+      || !_focusCommitDeepEqual(mainData.pendingTaskFocusLinkMutation, expectedJournal)) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_focus_main_record_invalid" };
+  }
+  var state = _taskFocusLinkMutationState(mainData, expectedJournal);
+  if (state === "conflict") {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_focus_task_snapshot_conflict" };
+  }
+  _setMainStorageBaseline(lockedProbe.mainRaw);
+  tasks = mainData.tasks;
+  _loadAppSettings(mainData.settings || {});
+  createdByVersion = mainData.createdByVersion || APP_VERSION;
+  var focusRaw = lockedProbe.timerRaw;
+  try {
+    var focus = focusRaw === null ? null : JSON.parse(focusRaw);
+    if (focusRaw === null || !focus || typeof focus !== "object" || Array.isArray(focus)
+        || (focus.taskId !== null && focus.taskId !== undefined
+          && focus.taskId !== expectedJournal.taskId)) {
+      storageRecoveryRequired = true;
+      return { ok: false, reason: "task_focus_timer_snapshot_conflict" };
+    }
+    _secondaryStorageBaselines[FOCUS_TIMER_KEY] = focusRaw;
+    delete _secondaryStorageConflicts[FOCUS_TIMER_KEY];
+  } catch (focusError) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_focus_timer_record_invalid" };
+  }
+  var releaseCheckpoint = _acquireRollingRecoveryCheckpointHold(true);
+  var previousStartupWriteDepth = _startupStopwatchRecoveryWriteDepth || 0;
+  _startupStopwatchRecoveryWriteDepth = previousStartupWriteDepth + 1;
+  _taskFocusLinkMutationWriteDepth++;
+  try {
+    if (focusRaw !== null && !_setTaskFocusLinkOnDurableTimer(expectedJournal.taskId, null))
+      throw new Error("focus_detachment_not_verified");
+    var journal = expectedJournal;
+    if (journal.phase === "PREPARED") {
+      journal = _advanceTaskFocusLinkJournal(journal, "FOCUS_DETACHED");
+      if (!journal) throw new Error("focus_detached_phase_not_persisted");
+    }
+    if (state === "before") {
+      var taskIndex = tasks.findIndex(function(row) { return row && row.id === journal.taskId; });
+      if (taskIndex < 0) throw new Error("task_missing_before_replay");
+      if (journal.operation === "delete") tasks.splice(taskIndex, 1);
+      else Object.assign(tasks[taskIndex], journal.targetTask);
+      if (saveData() !== true) throw new Error("task_target_write_not_verified");
+    }
+    var committedRaw = localStorage.getItem(STORAGE_KEY);
+    var committedData = committedRaw === null ? null : JSON.parse(committedRaw);
+    if (!committedData || !validateV2(committedData)
+        || _taskFocusLinkMutationState(committedData, journal) !== "target"
+        || !committedData.pendingTaskFocusLinkMutation
+        || committedData.pendingTaskFocusLinkMutation.id !== journal.id) {
+      throw new Error("task_target_readback_mismatch");
+    }
+    journal = _advanceTaskFocusLinkJournal(journal, "TASK_COMMITTED");
+    if (!journal) throw new Error("task_committed_phase_not_persisted");
+    journal = _advanceTaskFocusLinkJournal(journal, "VERIFIED");
+    if (!journal) throw new Error("task_verified_phase_not_persisted");
+    if (!_writeTaskFocusLinkJournal(journal, true))
+      throw new Error("task_focus_journal_clear_not_verified");
+    return { ok: true, recovered: state === "target" ? "already_applied" : "replayed" };
+  } catch (error) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    console.error("Task–Focus startup recovery failed:", error);
+    return { ok: false, reason: "task_focus_recovery_failed", detail: String(error && error.message || error) };
+  } finally {
+    _taskFocusLinkMutationWriteDepth = Math.max(0, _taskFocusLinkMutationWriteDepth - 1);
+    _startupStopwatchRecoveryWriteDepth = previousStartupWriteDepth;
+    releaseCheckpoint();
+  }
+}
+
+function _beginTaskFocusLinkMutation(taskId, operation, targetTask) {
+  return _beginTaskFocusLinkMutationDurable(taskId, operation, targetTask);
+}
+function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {
+  return _finishTaskFocusLinkMutationDurable(detachment, taskSaveSucceeded);
+}
 function toggleTask(id) {
   if (!_isTaskStorageLockHeld()) {
     return _withTaskStorageLock(function() { return toggleTask(id); });
@@ -7283,22 +7709,42 @@ function toggleTask(id) {
           showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
         }
         const _old = { actual: t.actual, status: t.status, completedAt: t.completedAt };
-        t.actual = _newActual;
-        t.status = "done";
-        t.completedAt = localDateTimeString();
+        const _targetTask = Object.assign({}, t, {
+          actual: _newActual, status: "done", completedAt: localDateTimeString()
+        });
+        const _taskFocusDetachment = _beginTaskFocusLinkMutation(id, "complete", _targetTask);
+        if (!_taskFocusDetachment.ok) return false;
+        t.actual = _targetTask.actual;
+        t.status = _targetTask.status;
+        t.completedAt = _targetTask.completedAt;
         if (saveData()) {
-          // FIX TI8 (E5): فصل المؤقت إذا كانت المهمة المرتبطة قد أُكملت
-          if (_focusTimer.taskId === id) {
-            _focusTimer.taskId = null;
-            _saveFocusTimer();
-            _renderFocusTimer();
+          if (!_finishTaskFocusLinkMutation(_taskFocusDetachment, true)) {
+            renderAll();
+            showToast("⚠️ حُفظ التعديل، لكن بقي سجل استرداد ربط المهمة بالمؤقت.");
+            return false;
           }
           renderAll();
           showToast("🎉 ممتاز! تم إنجاز المهمة");
-        } else {
-          Object.assign(t, _old);
+          return true;
         }
-        return true;
+        const _taskFocusOutcome = _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+        if (_taskFocusOutcome === "committed") {
+          if (!Array.isArray(_taskFocusDetachment.committedTasks)) {
+            storageRecoveryRequired = true;
+            return false;
+          }
+          tasks = _taskFocusDetachment.committedTasks;
+          renderAll();
+          showToast("🎉 تم تثبيت الإنجاز والتحقق من الحفظ بعد نتيجة كتابة غير مؤكدة");
+          return true;
+        }
+        if (_taskFocusOutcome === "rolled_back" || _taskFocusOutcome === "rollback_failed" || !_taskFocusDetachment.linked) {
+          Object.assign(t, _old);
+        } else {
+          storageRecoveryRequired = true;
+          showToast("⚠️ نتيجة الحفظ غير محسومة؛ أوقفنا التعديل حتى يسترد التطبيق سجل المعاملة");
+        }
+        return false;
         });
       }
     );
@@ -7329,26 +7775,40 @@ function deleteTask(id) {
     if((typeof _isTaskWriteBlocked==="function"&&_isTaskWriteBlocked())||(typeof _isFocusCommitBlocked==="function"&&_isFocusCommitBlocked())){
       showToast("⏳ جارٍ تثبيت جلسة التركيز؛ لم يُنفذ التعديل");return;
     }
+    const _taskFocusDetachment = _beginTaskFocusLinkMutation(id, "delete", null);
+    if (!_taskFocusDetachment.ok) return false;
     const _snap = tasks.slice();
-    var _oldFocusTaskId = _focusTimer.taskId;
     tasks = tasks.filter(function(x) { return x.id !== id; });
-    if (editingId === id) cancelEdit();
-    var _wasLinked = false;
-    if (_focusTimer.taskId === id) {
-      _focusTimer.taskId = null;
-      _saveFocusTimer();
-      _renderFocusTimer();
-      _wasLinked = true;
-    }
     if (saveData()) {
+      if (!_finishTaskFocusLinkMutation(_taskFocusDetachment, true)) {
+        renderAll();
+        showToast("⚠️ حُفظ الحذف، لكن بقي سجل استرداد ربط المهمة بالمؤقت.");
+        return false;
+      }
+      if (editingId === id) cancelEdit();
       renderAll();
-      showToast("🗑️ تم حذف المهمة" + (_wasLinked ? " — فُصل المؤقت" : ""));
-    } else {
-      tasks = _snap;
-      _focusTimer.taskId = _oldFocusTaskId;
-      _saveFocusTimer();
-      _renderFocusTimer();
+      showToast("🗑️ تم حذف المهمة" + (_taskFocusDetachment.linked ? " — فُصل المؤقت" : ""));
+      return true;
     }
+    const _taskFocusOutcome = _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+    if (_taskFocusOutcome === "committed") {
+      if (!Array.isArray(_taskFocusDetachment.committedTasks)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      tasks = _taskFocusDetachment.committedTasks;
+      if (editingId === id) cancelEdit();
+      renderAll();
+      showToast("🗑️ تم تثبيت الحذف والتحقق من الحفظ بعد نتيجة كتابة غير مؤكدة");
+      return true;
+    }
+    if (_taskFocusOutcome === "rolled_back" || _taskFocusOutcome === "rollback_failed" || !_taskFocusDetachment.linked) {
+      tasks = _snap;
+    } else {
+      storageRecoveryRequired = true;
+      showToast("⚠️ نتيجة الحذف غير محسومة؛ أوقفنا التعديل حتى يسترد التطبيق سجل المعاملة");
+    }
+    return false;
 
     });
   });
@@ -7997,6 +8457,8 @@ function buildBackupObject() {
   if (!data || typeof data !== "object" || Array.isArray(data)
       || !Array.isArray(data.tasks) || !Array.isArray(data.dailyLogs))
     throw new Error("تعذر تصدير النسخة: بنية بيانات المهام والسجلات غير مكتملة.");
+  if (Object.prototype.hasOwnProperty.call(data, "pendingTaskFocusLinkMutation"))
+    throw new Error("تعذر تصدير النسخة: توجد معاملة ربط مهمة ومؤقت غير مكتملة. أعد فتح التطبيق لإكمال الاسترداد أولًا.");
   // A missing ledger is valid only for pre-ledger data. A present malformed
   // value must fail closed; silently replacing it with [] would erase identities.
   if (Object.prototype.hasOwnProperty.call(data, "creditOperations")
@@ -8194,6 +8656,8 @@ function validateBackup(obj) {
   const d = obj.data;
   if (!d || typeof d !== "object" || Array.isArray(d))
     return { valid: false, reason: "لا يوجد كائن بيانات." };
+  if (Object.prototype.hasOwnProperty.call(d, "pendingTaskFocusLinkMutation"))
+    return { valid: false, reason: "النسخة تحتوي على معاملة ربط مهمة ومؤقت غير مكتملة." };
   if (!Array.isArray(d.tasks))
     return { valid: false, reason: "حقل المهام ليس مصفوفة." };
   if (!Array.isArray(d.dailyLogs))
@@ -8515,16 +8979,27 @@ function _restoreStorageSnapshot(rb) {
   }
   if (rb.focusTimer !== null) {
     // Internal recovery snapshots may contain opaque legacy values from older
-    // versions. Reject a known live journal, but preserve unreadable raw bytes
+    // versions. Reject known live journals, but preserve unreadable raw bytes
     // verbatim so rollback can put the user's previous value back exactly.
     try {
       var snapshotTimer = JSON.parse(rb.focusTimer);
       if (snapshotTimer && typeof snapshotTimer === "object" && !Array.isArray(snapshotTimer)
-          && snapshotTimer.pendingFocusCommit) {
+          && (snapshotTimer.pendingFocusCommit || snapshotTimer.pendingStopwatchTransaction)) {
         markRecoveryRequired();
         return false;
       }
     } catch (snapshotTimerError) {}
+  }
+  if (rb.main !== null) {
+    try {
+      var snapshotMain = JSON.parse(rb.main);
+      if (snapshotMain && typeof snapshotMain === "object" && !Array.isArray(snapshotMain)
+          && Object.prototype.hasOwnProperty.call(snapshotMain, "pendingTaskFocusLinkMutation")) {
+        markRecoveryRequired();
+        console.error("Storage snapshot restore refuses a pending Task–Focus journal in the rollback snapshot.");
+        return false;
+      }
+    } catch (snapshotMainParseError) {}
   }
 
   var entries = [
@@ -8560,6 +9035,17 @@ function _restoreStorageSnapshot(rb) {
   } catch (readError) {
     markRecoveryRequired();
     return false;
+  }
+  if (previousMainRaw !== null) {
+    try {
+      var currentMain = JSON.parse(previousMainRaw);
+      if (currentMain && typeof currentMain === "object" && !Array.isArray(currentMain)
+          && Object.prototype.hasOwnProperty.call(currentMain, "pendingTaskFocusLinkMutation")) {
+        markRecoveryRequired();
+        console.error("Storage snapshot restore refuses to replace a live Task–Focus journal.");
+        return false;
+      }
+    } catch (currentMainParseError) {}
   }
 
   try {
@@ -14282,7 +14768,39 @@ function _probeStartupStopwatchRecovery() {
       };
     }
     var mainData = null;
-    if ((tx || focusCommit) && !hasMarkers) {
+    var taskFocusLink = null;
+    if (mainRaw !== null) {
+      try {
+        var mainCandidate = JSON.parse(mainRaw);
+        if (mainCandidate && typeof mainCandidate === "object" && !Array.isArray(mainCandidate)
+            && Object.prototype.hasOwnProperty.call(mainCandidate, "pendingTaskFocusLinkMutation")) {
+          taskFocusLink = mainCandidate.pendingTaskFocusLinkMutation;
+          if (!_validatePendingTaskFocusLinkMutation(taskFocusLink)) {
+            return {
+              pending: true, error: "سجل معاملة ربط المهمة بالمؤقت غير صالح.",
+              blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+              timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+              expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+              expectedTaskFocusLink: null, bootPersistedGeneration: bootGeneration,
+              mainRaw: mainRaw, mainData: null
+            };
+          }
+        }
+      } catch (mainJournalParseError) {
+        if (tx || focusCommit) throw mainJournalParseError;
+      }
+    }
+    if (taskFocusLink && (hasMarkers || tx || focusCommit)) {
+      return {
+        pending: true, error: "تداخلت معاملة ربط المهمة مع سجل استرداد أو معاملة Focus أخرى.",
+        blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
+        timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
+        expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+        expectedTaskFocusLink: JSON.parse(JSON.stringify(taskFocusLink)),
+        bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: null
+      };
+    }
+    if ((tx || focusCommit || taskFocusLink) && !hasMarkers) {
       if (mainRaw === null) {
         return {
           pending: true, error: "السجل الرئيسي للمهام مفقود أثناء وجود معاملة تركيز معلّقة.",
@@ -14304,10 +14822,11 @@ function _probeStartupStopwatchRecovery() {
       }
     }
     return {
-      pending: hasMarkers || !!tx || !!focusCommit, error: null,
+      pending: hasMarkers || !!tx || !!focusCommit || !!taskFocusLink, error: null,
       blockingMarkers: markers, markerValues: markerValues, timerRaw: timerRaw,
       timerObj: timerObj, expectedTx: tx ? JSON.parse(JSON.stringify(tx)) : null,
       expectedFocusCommit: focusCommit ? JSON.parse(JSON.stringify(focusCommit)) : null,
+      expectedTaskFocusLink: taskFocusLink ? JSON.parse(JSON.stringify(taskFocusLink)) : null,
       bootPersistedGeneration: bootGeneration, mainRaw: mainRaw, mainData: mainData
     };
   } catch (e) {
@@ -14327,7 +14846,7 @@ function _readAndValidateResyncBundle() {
     var mainData = JSON.parse(mainRaw);
     if (!mainData || mainData.schemaVersion !== CURRENT_SCHEMA_VERSION
         || !validateV2(mainData) || !Array.isArray(mainData.tasks)
-        || !Array.isArray(mainData.dailyLogs)) return null;
+        || !Array.isArray(mainData.dailyLogs) || mainData.pendingTaskFocusLinkMutation) return null;
 
     var timerRaw = localStorage.getItem(FOCUS_TIMER_KEY);
     var timerObj = null;
@@ -15589,6 +16108,35 @@ function _runStorageRecoveryCoordinatorInsideLock(probeSnapshot) {
   }
   var markers = lockedProbe.blockingMarkers || {};
   var markerCount = Object.keys(markers).filter(function(key) { return markers[key]; }).length;
+  var initialTaskFocus = initialProbe.expectedTaskFocusLink || null;
+  var currentTaskFocus = lockedProbe.expectedTaskFocusLink || null;
+  if (initialTaskFocus && !currentTaskFocus) {
+    storageRecoveryRequired = true;
+    return { ok: false, reason: "task_focus_journal_disappeared_before_recovery" };
+  }
+  if (currentTaskFocus) {
+    if (markerCount > 0 || lockedProbe.expectedTx || lockedProbe.expectedFocusCommit
+        || initialProbe.expectedTx || initialProbe.expectedFocusCommit
+        || (initialTaskFocus && !_focusCommitDeepEqual(initialTaskFocus, currentTaskFocus))) {
+      storageRecoveryRequired = true;
+      return { ok: false, reason: "task_focus_journal_overlaps_another_transaction" };
+    }
+    var taskFocusRecovery = _recoverPendingTaskFocusLinkMutationFromStartup(
+      currentTaskFocus, lockedProbe, initialProbe
+    );
+    if (!taskFocusRecovery || taskFocusRecovery.ok !== true) {
+      storageRecoveryRequired = true;
+      return taskFocusRecovery || { ok: false, reason: "task_focus_recovery_failed" };
+    }
+    lockedProbe = _probeStartupStopwatchRecovery();
+    if (lockedProbe.error || lockedProbe.pending || lockedProbe.expectedTaskFocusLink) {
+      storageRecoveryRequired = true;
+      return { ok: false, reason: "task_focus_recovery_readback_failed" };
+    }
+    initialProbe = lockedProbe;
+    markers = lockedProbe.blockingMarkers || {};
+    markerCount = Object.keys(markers).filter(function(key) { return markers[key]; }).length;
+  }
   var initialFocusCommit = initialProbe.expectedFocusCommit || null;
   var currentFocusCommit = lockedProbe.expectedFocusCommit || null;
   if ((initialFocusCommit || currentFocusCommit) && markerCount > 0) {

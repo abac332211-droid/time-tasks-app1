@@ -324,3 +324,250 @@ test('ordinary task save rejects a balance that no longer matches its durable op
     'the previously stored balance remains untouched');
   assert.ok(h.alerts.length > 0, 'the rejected save is reported');
 });
+
+
+function createTaskFocusMutationHarness(options = {}) {
+  const mainKey = 'timeTasksApp_v1';
+  const focusKey = 'timeTasksApp_focusTimer';
+  const task = {
+    id: 31,
+    name: 'مهمة مرتبطة بالمؤقت',
+    status: 'pending',
+    actual: 25,
+    expected: 30,
+    completedAt: null,
+    plannedDate: '2026-11-28'
+  };
+  const focusRecord = { taskId: 31, running: false, baseElapsed: 900 };
+  const mainRaw = JSON.stringify({ tasks: [task] });
+  const values = new Map([
+    [mainKey, mainRaw],
+    [focusKey, JSON.stringify(focusRecord)]
+  ]);
+  const writes = [];
+  const alerts = [];
+  const toasts = [];
+  const prompts = [];
+  const confirmations = [];
+  let focusWriteCount = 0;
+
+  const sandbox = {
+    STORAGE_KEY: mainKey,
+    FOCUS_TIMER_KEY: focusKey,
+    tasks: [task],
+    _focusTimer: { ...focusRecord },
+    storageRecoveryRequired: false,
+    _mainStorageBaselineReady: true,
+    _mainStorageExternalChangeObserved: false,
+    editingId: null,
+    _isTaskStorageLockHeld: () => true,
+    _withTaskStorageLock: callback => callback(),
+    _isTaskWriteBlocked: () => false,
+    _isFocusCommitBlocked: () => false,
+    isTaskCancelled: () => false,
+    localDateTimeString: () => '2026-11-28T12:00:00',
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(key, String(value)); }
+    },
+    _saveFocusTimer() {
+      focusWriteCount++;
+      writes.push('focus');
+      if (Array.isArray(options.failFocusWrites)
+          && options.failFocusWrites.includes(focusWriteCount)) return false;
+      values.set(focusKey, JSON.stringify(sandbox._focusTimer));
+      if (Array.isArray(options.failFocusWritesAfterPersist)
+          && options.failFocusWritesAfterPersist.includes(focusWriteCount)) return false;
+      return true;
+    },
+    saveData() {
+      writes.push('main');
+      if (options.mainFailure === 'before') return false;
+      values.set(mainKey, JSON.stringify({
+        tasks: sandbox.tasks.map(item => ({ ...item }))
+      }));
+      if (options.mainFailure === 'after') {
+        sandbox.storageRecoveryRequired = true;
+        return false;
+      }
+      return true;
+    },
+    showPromptModal(...args) { prompts.push(args); },
+    showConfirmModal(...args) { confirmations.push(args); },
+    showAlertModal(...args) { alerts.push(args); },
+    showToast(...args) { toasts.push(args); },
+    renderAll() {},
+    _renderFocusTimer() {},
+    cancelEdit() {}
+  };
+
+  vm.createContext(sandbox);
+  const helpers = [
+    'function _beginTaskFocusLinkMutation(taskId) {',
+    '  if (!_focusTimer || _focusTimer.taskId !== taskId) return { ok: true, linked: false };',
+    '  var previousTaskId = _focusTimer.taskId;',
+    '  var previousMainRaw = localStorage.getItem(STORAGE_KEY);',
+    '  _focusTimer.taskId = null;',
+    '  if (!_saveFocusTimer()) {',
+    '    try {',
+    '      var raw = localStorage.getItem(FOCUS_TIMER_KEY);',
+    '      var persisted = raw === null ? null : JSON.parse(raw);',
+    '      if (persisted && persisted.taskId === taskId) _focusTimer.taskId = taskId;',
+    '      else storageRecoveryRequired = true;',
+    '    } catch (error) { storageRecoveryRequired = true; }',
+    '    return { ok: false, linked: true };',
+    '  }',
+    '  return { ok: true, linked: true, previousTaskId, previousMainRaw };',
+    '}',
+    'function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {',
+    '  if (!detachment || !detachment.linked) return true;',
+    '  if (taskSaveSucceeded === true) return "committed";',
+    '  var rawMain = localStorage.getItem(STORAGE_KEY);',
+    '  if (rawMain !== detachment.previousMainRaw) {',
+    '    if (storageRecoveryRequired) return false;',
+    '    try {',
+    '      var committed = JSON.parse(rawMain);',
+    '      if (committed && Array.isArray(committed.tasks)',
+    '          && committed.tasks.some(function(task) { return task.id === detachment.previousTaskId && task.status === "done"; })) {',
+    '        detachment.committedTasks = committed.tasks;',
+    '        return "committed";',
+    '      }',
+    '    } catch (error) {}',
+    '    storageRecoveryRequired = true; return false;',
+    '  }',
+    '  _focusTimer.taskId = detachment.previousTaskId;',
+    '  if (!_saveFocusTimer()) {',
+    '    try {',
+    '      var raw = localStorage.getItem(FOCUS_TIMER_KEY);',
+    '      var persisted = raw === null ? null : JSON.parse(raw);',
+    '      _focusTimer.taskId = persisted && Number.isSafeInteger(persisted.taskId) ? persisted.taskId : null;',
+    '    } catch (error) { _focusTimer.taskId = null; }',
+    '    storageRecoveryRequired = true; return "rollback_failed";',
+    '  }',
+    '  return "rolled_back";',
+    '}'
+  ].join('\n');
+  vm.runInContext([
+    helpers,
+    extractFunction('toggleTask'),
+    extractFunction('deleteTask')
+  ].join('\n'), sandbox);
+
+  return { sandbox, values, writes, alerts, toasts, prompts, confirmations, mainRaw };
+}
+
+test('linked task completion detaches and verifies Focus before committing task status', () => {
+  const h = createTaskFocusMutationHarness();
+  h.sandbox.toggleTask(31);
+  assert.equal(h.prompts.length, 1);
+  const result = h.prompts[0][4]('40');
+
+  assert.equal(result, true);
+  assert.deepEqual(h.writes, ['focus', 'main'],
+    'the durable Focus detachment must precede the task status write');
+  const persistedMain = JSON.parse(h.values.get('timeTasksApp_v1'));
+  const persistedFocus = JSON.parse(h.values.get('timeTasksApp_focusTimer'));
+  assert.equal(persistedMain.tasks[0].status, 'done');
+  assert.equal(persistedMain.tasks[0].actual, 40);
+  assert.equal(persistedFocus.taskId, null);
+  assert.equal(h.sandbox._focusTimer.taskId, null);
+});
+
+test('failed Focus detachment prevents linked task completion and deletion', () => {
+  const completion = createTaskFocusMutationHarness({ failFocusWrites: [1] });
+  completion.sandbox.toggleTask(31);
+  const completionResult = completion.prompts[0][4]('40');
+
+  assert.equal(completionResult, false);
+  assert.deepEqual(completion.writes, ['focus']);
+  assert.equal(completion.values.get('timeTasksApp_v1'), completion.mainRaw);
+  assert.equal(JSON.parse(completion.values.get('timeTasksApp_focusTimer')).taskId, 31);
+  assert.equal(completion.sandbox.tasks[0].status, 'pending');
+
+  const deletion = createTaskFocusMutationHarness({ failFocusWrites: [1] });
+  deletion.sandbox.deleteTask(31);
+  const deletionResult = deletion.confirmations[0][2]();
+
+  assert.equal(deletionResult, false);
+  assert.deepEqual(deletion.writes, ['focus']);
+  assert.equal(deletion.values.get('timeTasksApp_v1'), deletion.mainRaw);
+  assert.equal(JSON.parse(deletion.values.get('timeTasksApp_focusTimer')).taskId, 31);
+  assert.equal(deletion.sandbox.tasks.length, 1);
+});
+
+test('task save failure restores the Focus link only when the main record is unchanged', () => {
+  const h = createTaskFocusMutationHarness({ mainFailure: 'before' });
+  h.sandbox.toggleTask(31);
+  const result = h.prompts[0][4]('40');
+
+  assert.equal(result, false);
+  assert.deepEqual(h.writes, ['focus', 'main', 'focus']);
+  assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, 31);
+  assert.equal(h.sandbox._focusTimer.taskId, 31);
+  assert.equal(h.sandbox.tasks[0].status, 'pending');
+});
+
+test('ambiguous main write failure keeps Focus detached and blocks further writes', () => {
+  const h = createTaskFocusMutationHarness({ mainFailure: 'after' });
+  h.sandbox.toggleTask(31);
+  const result = h.prompts[0][4]('40');
+
+  assert.equal(result, false,
+    'an unverified primary-storage baseline must remain fail-closed even if the target bytes appear present');
+  assert.deepEqual(h.writes, ['focus', 'main']);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_v1')).tasks[0].status, 'done');
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
+  assert.equal(h.sandbox._focusTimer.taskId, null);
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
+
+test('failed Focus-link rollback leaves the verified detached state and blocks writes', () => {
+  const h = createTaskFocusMutationHarness({
+    mainFailure: 'before',
+    failFocusWrites: [2]
+  });
+  h.sandbox.toggleTask(31);
+  const result = h.prompts[0][4]('40');
+
+  assert.equal(result, false);
+  assert.deepEqual(h.writes, ['focus', 'main', 'focus']);
+  assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
+  assert.equal(h.sandbox._focusTimer.taskId, null);
+  assert.equal(h.sandbox.tasks[0].status, 'pending',
+    'the known unchanged durable task snapshot must also be restored in memory');
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
+
+
+test('Focus write that persists but fails verification blocks the task mutation', () => {
+  const h = createTaskFocusMutationHarness({ failFocusWritesAfterPersist: [1] });
+  h.sandbox.toggleTask(31);
+  const result = h.prompts[0][4]('40');
+
+  assert.equal(result, false);
+  assert.deepEqual(h.writes, ['focus']);
+  assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
+  assert.equal(h.sandbox._focusTimer.taskId, null);
+  assert.equal(h.sandbox.tasks[0].status, 'pending');
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
+
+test('delete restores the in-memory task snapshot when Focus rollback fails', () => {
+  const h = createTaskFocusMutationHarness({
+    mainFailure: 'before',
+    failFocusWrites: [2]
+  });
+  h.sandbox.deleteTask(31);
+  const result = h.confirmations[0][2]();
+
+  assert.equal(result, false);
+  assert.deepEqual(h.writes, ['focus', 'main', 'focus']);
+  assert.equal(h.values.get('timeTasksApp_v1'), h.mainRaw);
+  assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
+  assert.equal(h.sandbox.tasks.length, 1);
+  assert.equal(h.sandbox.tasks[0].status, 'pending');
+  assert.equal(h.sandbox.storageRecoveryRequired, true);
+});
