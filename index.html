@@ -5248,7 +5248,8 @@ function retryStorageRecovery() {
   }
 
   var retryProbe = _probeStartupStopwatchRecovery();
-  if (_focusTimer && _focusTimer.pendingFocusCommit && !retryProbe.expectedFocusCommit) {
+  if (typeof _focusTimer !== "undefined" && _focusTimer
+      && _focusTimer.pendingFocusCommit && !retryProbe.expectedFocusCommit) {
     return _retryMemoryOnlyPendingFocusCommit(_focusTimer.pendingFocusCommit);
   }
   if (retryProbe.error) {
