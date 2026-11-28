@@ -2329,11 +2329,16 @@ test('Reset refuses a V2 focus-commit journal held only in page memory and prese
   const field = 'pendingFocusCommit';
   const journal = { protocolVersion: 1, operationId: 'memory-only-focus-commit' };
   harness.sandbox._focusTimer[field] = journal;
-    const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  const before = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
   const probe = harness.sandbox._probeStartupStopwatchRecovery();
   assert.equal(probe.pending, true, field + ' must block recovery');
   assert.match(probe.error, /ذاكرة الصفحة/);
+
+  assert.equal(harness.sandbox._resetSecondaryStorageTrackingAfterReset(), false,
+    'cleanup must not silently discard a memory-only V2 focus journal');
+  assert.equal(harness.sandbox._focusTimer[field], journal,
+    'failed cleanup must preserve the in-memory journal');
 
   assert.equal(await harness.run(), false, field + ' must block Reset');
   const after = Array.from(harness.values.entries()).sort((a, b) => a[0].localeCompare(b[0]));
