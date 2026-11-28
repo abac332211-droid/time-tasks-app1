@@ -118,6 +118,39 @@ test('main source recognizes the transaction journal in both startup and save pa
     'the backup builder must explicitly reject an unfinished Task–Focus journal');
 });
 
+test('backup builder refuses to export while a Task–Focus journal is pending', () => {
+  const backupSandbox = {
+    STORAGE_KEY: 'main',
+    FOCUS_SESSIONS_KEY: 'sessions',
+    FOCUS_TIMER_KEY: 'focus',
+    MENTAL_INBOX_KEY: 'mental',
+    THOUGHTS_KEY: 'thoughts',
+    PROJECTS_KEY: 'projects',
+    FOCUS_SETTINGS_KEY: 'focusSettings',
+    NOTIFICATIONS_KEY: 'notifications',
+    storageRecoveryRequired: false,
+    _focusTimer: { running: false, pendingStopwatchTransaction: null, pendingFocusCommit: null },
+    _secondaryStorageConflicts: {},
+    localStorage: {
+      getItem(key) {
+        if (key === 'main') return JSON.stringify({
+          schemaVersion: 2,
+          tasks: [],
+          dailyLogs: [],
+          pendingTaskFocusLinkMutation: journal
+        });
+        return null;
+      }
+    }
+  };
+  vm.createContext(backupSandbox);
+  vm.runInContext(extract('buildBackupObject'), backupSandbox);
+  assert.throws(
+    () => backupSandbox.buildBackupObject(),
+    /pendingTaskFocusLinkMutation|معاملة ربط مهمة ومؤقت غير مكتملة/
+  );
+});
+
 
 function transactionHarness(options = {}) {
   const mainKey = 'timeTasksApp_v1';
