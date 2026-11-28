@@ -3375,3 +3375,12 @@ test('gap analytics use measured seconds consistently across weekly, type, and s
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test('a second real page refuses backup export while another page leaves a Stopwatch transaction pending', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
