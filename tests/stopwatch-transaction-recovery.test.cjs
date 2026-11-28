@@ -18,8 +18,15 @@ function extractFunction(name) {
   const match = appScript.match(pattern);
   assert.ok(match, 'function ' + name + ' exists in index.html');
   if (name === '_isTaskStorageLockHeld') return match[0];
+  const helpers = [];
+  if (name !== '_isClockAdjustedV2WorkSession'
+      && /\b_isClockAdjustedV2WorkSession\s*\(/.test(match[0])) {
+    helpers.push(extractFunction('_isFocusTaskCreditSchemaV2'));
+    helpers.push(extractFunction('_isClockAdjustedV2WorkSession'));
+  }
   return [
     'function _isTaskStorageLockHeld() { return true; }',
+    ...helpers,
     match[0]
   ].join('\n');
 }
