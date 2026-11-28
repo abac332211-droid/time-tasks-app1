@@ -529,7 +529,8 @@ function makeNotificationActionHarness(action, options = {}) {
     '_isNativeStopwatchUuid',
     '_captureFocusTimerClockState',
     '_restoreFocusTimerClockState',
-    '_consumeNativeStopwatchNotificationAction'
+    '_consumeNativeStopwatchNotificationAction',
+    '_cancelPendingNotificationFinish'
   ]) vm.runInNewContext(extractFunction(name), sandbox);
   return { sandbox, focusTimer, ackCalls, actionOrder,
     get finishCalls() { return finishCalls; },
@@ -963,4 +964,54 @@ test('saved Android Finish can be reopened after closing its confirmation and re
   assert.equal(second.sandbox._pendingFinishDialogShown, true);
   assert.equal(second.sandbox._focusTimer.pendingNotificationFinish.actionId, UUID_ACTION);
   assert.equal(second.sandbox._focusTimer.nativeSessionToken, UUID_SESSION);
+});
+
+
+test('cancelling Android Finish keeps its action identity and remainder, then resumes with a new service token', async () => {
+  const action = makeNotificationAction({
+    action: 'finish',
+    elapsedRealtimeMs: 1500,
+    anchorElapsedRealtimeMs: 1000,
+    anchorBaseMs: 0,
+    elapsedMs: 500
+  });
+  const h = makeNotificationActionHarness(action);
+  h.focusTimer.baseElapsed = 0;
+  h.focusTimer.nativeAnchorBaseMs = 0;
+  h.sandbox._focusElapsedRemainderMs = 0;
+
+  assert.equal(await h.sandbox._consumeNativeStopwatchNotificationAction(), 'finish');
+  assert.equal(h.focusTimer.pendingNotificationFinish.elapsedMs, 500);
+  assert.equal(h.focusTimer.nativeSessionToken, UUID_SESSION);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.focusTimer.handledNotificationActionIds)), [UUID_ACTION]);
+
+  assert.equal(h.sandbox._cancelPendingNotificationFinish(), true);
+  assert.equal(h.focusTimer.pendingNotificationFinish, null);
+  assert.equal(h.sandbox._focusElapsedRemainderMs, 500,
+    'cancelling the intent must not erase the measured elapsed remainder');
+  assert.equal(h.focusTimer.nativeSessionToken, UUID_SESSION,
+    'cancellation must not repurpose the old service identity');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.focusTimer.handledNotificationActionIds)), [UUID_ACTION]);
+
+  const attachedTokens = [];
+  h.sandbox._nativeStopwatchPlugin = () => ({});
+  h.sandbox._createNativeStopwatchSessionToken = () => UUID_NEW_SESSION;
+  h.sandbox._isTimerControlBlocked = () => false;
+  h.sandbox._isFocusCommitBlocked = () => false;
+  h.sandbox._focusTimerExternalConflict = false;
+  h.sandbox._unlockAudioContext = () => {};
+  h.sandbox._anchorFocusTimerClock = () => {};
+  h.sandbox._startDisplayTick = () => {};
+  h.sandbox._renderFocusTimer = () => {};
+  h.sandbox._scheduleNativeStopwatchClockAttach = () => {
+    attachedTokens.push(h.focusTimer.nativeSessionToken);
+  };
+  vm.runInNewContext(extractFunction('toggleTimer'), h.sandbox);
+
+  assert.equal(h.sandbox.toggleTimer(true, true), true);
+  assert.equal(h.focusTimer.running, true);
+  assert.equal(h.focusTimer.nativeSessionToken, UUID_NEW_SESSION);
+  assert.notEqual(h.focusTimer.nativeSessionToken, UUID_SESSION);
+  assert.deepEqual(attachedTokens, [UUID_NEW_SESSION],
+    'a new run attaches only the new token, never the cancelled action token');
 });
