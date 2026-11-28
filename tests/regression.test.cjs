@@ -845,6 +845,10 @@ test('backup validator rejects malformed version and storage settings', () => {
   assert.equal(sandbox.validateBackup({ backupFormatVersion: 1.5, schemaVersion: 2, data: { tasks: [], dailyLogs: [] } }).valid, false);
   assert.equal(sandbox.validateBackup({ backupFormatVersion: 1, schemaVersion: 2, data: { settings: { operationalDayStart: 24 }, tasks: [], dailyLogs: [] } }).valid, false);
   assert.equal(sandbox.validateBackup({ backupFormatVersion: 1, schemaVersion: 2, data: { tasks: [], dailyLogs: [] } }).valid, true);
+  assert.equal(sandbox.validateBackup({
+    backupFormatVersion: 1, schemaVersion: 2,
+    data: { tasks: [], dailyLogs: [], pendingTaskFocusLinkMutation: {} }
+  }).valid, false, 'an unfinished Task–Focus journal must never be accepted as an exportable backup');
 });
 
 test('backup validator rejects malformed focus-session timestamps', () => {
