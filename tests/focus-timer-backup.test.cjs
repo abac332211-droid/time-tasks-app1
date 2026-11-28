@@ -204,6 +204,24 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.notEqual(sourceStart, -1);
   assert.notEqual(sourceEnd, -1);
 
+  const creditOperation = {
+    recordVersion: 1,
+    operationId: '123e4567-e89b-42d3-a456-426614174000',
+    kind: 'session',
+    taskId: 7,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 120,
+    measuredSeconds: 120,
+    creditedSeconds: 120,
+    source: 'measured',
+    sessionId: '123e4567-e89b-42d3-a456-426614174000',
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  const mainRecord = {
+    settings: {}, tasks: [{ id: 10 }], dailyLogs: [],
+    creditOperations: [creditOperation]
+  };
   const context = {
     STORAGE_KEY: 'main',
     FOCUS_SESSIONS_KEY: 'sessions',
@@ -216,7 +234,7 @@ test('backup builder includes the paused focus timer and uses backup format v2',
     localStorage: {
       getItem(key) {
         return key === 'main'
-          ? JSON.stringify({ settings: {}, tasks: [{ id: 10 }], dailyLogs: [] })
+          ? JSON.stringify(mainRecord)
           : null;
       }
     },
@@ -257,6 +275,9 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   const backup = buildBackup();
 
   assert.equal(backup.backupFormatVersion, 2);
+  assert.equal(JSON.stringify(backup.data.creditOperations), JSON.stringify([creditOperation]),
+    'backup export must retain the durable operation identity ledger across the VM boundary');
+
   assert.equal(backup.data.focusTimer.running, false);
   assert.equal(backup.data.focusTimer.baseElapsed, 300);
   assert.equal(backup.data.focusTimer.elapsedRemainderMs, 420);
@@ -264,6 +285,15 @@ test('backup builder includes the paused focus timer and uses backup format v2',
   assert.doesNotMatch(exportedJson, /nativeSessionToken/);
   assert.doesNotMatch(exportedJson, /handledNotificationActionIds/);
   assert.doesNotMatch(exportedJson, /pendingNotificationFinish/);
+
+  context.localStorage.getItem = (key) => key === 'main'
+    ? JSON.stringify({ ...mainRecord, creditOperations: { corrupted: true } })
+    : null;
+  assert.throws(
+    () => buildBackup(),
+    /سجل عمليات اعتماد الرصيد تالف أو ليس مصفوفة/,
+    'backup export must refuse a malformed ledger instead of silently dropping it'
+  );
 });
 
 test('backup builder validates raw session records instead of silently filtering corrupted sessions', () => {
@@ -320,7 +350,8 @@ test('backup validator is wired to focus-timer validation', () => {
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true,
-    _validateFocusTimerBackupSnapshot: validateSnapshot
+    _validateFocusTimerBackupSnapshot: validateSnapshot,
+    _validateTaskCreditFields: loadTopLevelFunction("_validateTaskCreditFields")
   };
   const validateBackup = vm.runInNewContext(`(${html.slice(sourceStart, sourceEnd + 2)})`, context);
   const paused = buildSnapshot(timer(), 9_000, 300, 1_500, new Set([10]));
@@ -518,6 +549,13 @@ function restoreContext(storage) {
     _reloadAfterVerifiedOperation: () => context.location.reload(),
     _invalidateProjectsCache: () => { invalidations++; }
   };
+  vm.runInNewContext([
+    extractTopLevelSource('_validateTaskCreditFields'),
+    extractTopLevelSource('_validateCreditOperationRecord'),
+    extractTopLevelSource('_validateCreditOperationLedger'),
+    extractTopLevelSource('_creditOperationLedgerPreservesHistory'),
+    extractTopLevelSource('_creditOperationSnapshotPreservesHistory')
+  ].join('\n'), context);
   return {
     context,
     invalidationCount: () => invalidations
@@ -1172,6 +1210,11 @@ function runImportPreviewIntegration(backup, existingTimerRaw, faults = {}, exis
     escapeHTML: (value) => String(value)
   };
   const source = [
+    extractTopLevelSource('_validateTaskCreditFields'),
+    extractTopLevelSource('_validateCreditOperationRecord'),
+    extractTopLevelSource('_validateCreditOperationLedger'),
+    extractTopLevelSource('_creditOperationLedgerPreservesHistory'),
+    extractTopLevelSource('_getHighestCreditOperationTaskId'),
     extractTopLevelSource('_restoreFocusTimerSnapshot'),
     extractTopLevelSource('_restoreStorageSnapshot'),
     extractTopLevelSource('_rollbackRestore'),
@@ -1200,7 +1243,8 @@ function backupValidationContext() {
     isValidLocalTime: () => true,
     isValidLocalDateTime: () => true,
     validateDailyLog: () => true,
-    _validateFocusTimerBackupSnapshot: () => ({ valid: true })
+    _validateFocusTimerBackupSnapshot: () => ({ valid: true }),
+    _validateTaskCreditFields: loadTopLevelFunction("_validateTaskCreditFields")
   };
 }
 
@@ -1763,7 +1807,7 @@ test('manual undo marks restoration in progress and startup recovery completes a
   previous.main = JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} });
   const faults = { throwOnSetKey: STORAGE_KEYS.PROJECTS };
   const storage = memoryStorage({
-    [STORAGE_KEYS.MAIN]: 'current-main',
+    [STORAGE_KEYS.MAIN]: JSON.stringify({ schemaVersion: 2, tasks: [], dailyLogs: [], settings: {} }),
     [STORAGE_KEYS.FOCUS_SESSIONS]: 'current-sessions',
     [STORAGE_KEYS.FOCUS_TIMER]: 'current-timer',
     [STORAGE_KEYS.MENTAL_INBOX]: 'current-inbox',
@@ -1998,4 +2042,285 @@ test('import refuses to proceed when rollback snapshot or marker readback cannot
     assert.equal(harness.values.get(STORAGE_KEYS.PRE_IMPORT), undefined);
     assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_TIMER), 'previous-timer');
   }
+});
+
+
+function creditLedgerImportFixture() {
+  const operationId = '123e4567-e89b-42d3-a456-426614174000';
+  const operation = {
+    recordVersion: 1,
+    operationId,
+    kind: 'session',
+    taskId: 1,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 120,
+    measuredSeconds: 120,
+    creditedSeconds: 120,
+    source: 'measured',
+    sessionId: operationId,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  const task = {
+    id: 1,
+    name: 'مهمة ذات رصيد',
+    status: 'pending',
+    type: 'معرفية',
+    expected: 30,
+    actual: 2,
+    plannedDate: '2026-11-26',
+    plannedTime: '',
+    completedAt: null,
+    createdAt: 1,
+    actualSeconds: 120,
+    creditRevision: 1,
+    creditSchemaVersion: 1,
+    lastCreditOperationId: operationId
+  };
+  return { operation, task };
+}
+
+test('import rejects a backup that removes an accepted credit identity before writing any collection', () => {
+  const fixture = creditLedgerImportFixture();
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [fixture.operation]
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 1 },
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: []
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify(existingMain));
+  assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_SESSIONS), 'previous-sessions');
+  assert.equal(harness.values.get(STORAGE_KEYS.FOCUS_TIMER), 'previous-timer');
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+  assert.equal(harness.rollingCheckpoints.length, 0);
+  assert.equal(harness.reloads(), 0);
+  assert.equal(harness.alerts.length, 1);
+  assert.match(harness.alerts[0][0], /الاستيراد يتراجع عن سجل الاعتمادات/);
+});
+
+test('import rejects a valid-looking rewrite of an existing operation identity', () => {
+  const fixture = creditLedgerImportFixture();
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [fixture.operation]
+  };
+  const rewrittenOperation = {
+    ...fixture.operation,
+    createdAt: '2026-11-26T10:01:00.000Z'
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [rewrittenOperation]
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  assert.equal(harness.values.get(STORAGE_KEYS.MAIN), JSON.stringify(existingMain));
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+  assert.equal(harness.rollingCheckpoints.length, 0);
+  assert.equal(harness.reloads(), 0);
+  assert.equal(harness.alerts.length, 1);
+  assert.match(harness.alerts[0][0], /الاستيراد يتراجع عن سجل الاعتمادات/);
+});
+
+test('import permits a valid append-only extension while retaining every accepted credit identity', () => {
+  const fixture = creditLedgerImportFixture();
+  const secondId = '223e4567-e89b-42d3-a456-426614174001';
+  const secondOperation = {
+    recordVersion: 1,
+    operationId: secondId,
+    kind: 'session',
+    taskId: 1,
+    revision: 2,
+    previousSeconds: 120,
+    targetSeconds: 180,
+    measuredSeconds: 60,
+    creditedSeconds: 60,
+    source: 'measured',
+    sessionId: secondId,
+    createdAt: '2026-11-26T10:05:00.000Z'
+  };
+  const importedTask = {
+    ...fixture.task,
+    actual: 3,
+    actualSeconds: 180,
+    creditRevision: 2,
+    lastCreditOperationId: secondId
+  };
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 1 },
+    tasks: [fixture.task],
+    dailyLogs: [],
+    creditOperations: [fixture.operation]
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 1 },
+    tasks: [importedTask],
+    dailyLogs: [],
+    creditOperations: [fixture.operation, secondOperation]
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
+  assert.equal(restored.tasks[0].actualSeconds, 180);
+  assert.equal(restored.tasks[0].creditRevision, 2);
+  assert.equal(restored.tasks[0].lastCreditOperationId, secondId);
+  assert.deepEqual(restored.creditOperations, [fixture.operation, secondOperation]);
+  assert.equal(harness.values.has(STORAGE_KEYS.IMPORT_IN_PROGRESS), false);
+  assert.equal(harness.reloads(), 1);
+  assert.deepEqual(harness.alerts, []);
+});
+
+
+test('import keeps deleted-task IDs reserved when its durable credit history is retained', () => {
+  const fixture = creditLedgerImportFixture();
+  const historicalOperation = {
+    ...fixture.operation,
+    taskId: 900
+  };
+  const existingMain = {
+    schemaVersion: 2,
+    createdByVersion: '2.9.0',
+    settings: { lastTaskId: 4 },
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: [historicalOperation]
+  };
+  const backup = integrationBackup({
+    settings: { lastTaskId: 4 },
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: [historicalOperation]
+  });
+  const harness = runImportPreviewIntegration(backup, 'previous-timer', {}, existingMain);
+
+  const restored = JSON.parse(harness.values.get(STORAGE_KEYS.MAIN));
+  assert.equal(restored.tasks.length, 0,
+    'the task may be deleted while its operation identity remains durable');
+  assert.equal(restored.creditOperations[0].taskId, 900);
+  assert.equal(restored.settings.lastTaskId, 900,
+    'the imported high-water mark must include IDs present only in the ledger');
+
+  const idSandbox = { appSettings: restored.settings, tasks: [] };
+  vm.runInNewContext(extractTopLevelSource('getNextTaskId'), idSandbox);
+  assert.equal(idSandbox.getNextTaskId(), 901,
+    'the next task ID must not reuse a deleted task ID owned by credit history');
+  assert.deepEqual(harness.alerts, []);
+});
+
+
+function buildBackupForCreditLedgerTest(mainRecord) {
+  const sourceStart = html.indexOf('function buildBackupObject(');
+  const sourceEnd = html.indexOf('\n}', sourceStart);
+  assert.notEqual(sourceStart, -1);
+  assert.notEqual(sourceEnd, -1);
+  const context = {
+    STORAGE_KEY: STORAGE_KEYS.MAIN,
+    FOCUS_SESSIONS_KEY: STORAGE_KEYS.FOCUS_SESSIONS,
+    FOCUS_TIMER_KEY: STORAGE_KEYS.FOCUS_TIMER,
+    MENTAL_INBOX_KEY: STORAGE_KEYS.MENTAL_INBOX,
+    THOUGHTS_KEY: STORAGE_KEYS.THOUGHTS,
+    PROJECTS_KEY: STORAGE_KEYS.PROJECTS,
+    FOCUS_SETTINGS_KEY: STORAGE_KEYS.FOCUS_SETTINGS,
+    NOTIFICATIONS_KEY: STORAGE_KEYS.NOTIFICATIONS,
+    APP_VERSION: '2.9.0',
+    CURRENT_SCHEMA_VERSION: 2,
+    BACKUP_FORMAT_VERSION: 2,
+    localStorage: {
+      getItem(key) {
+        return key === STORAGE_KEYS.MAIN ? JSON.stringify(mainRecord) : null;
+      }
+    },
+    buildEmptyV2: () => ({ settings: {}, tasks: [], dailyLogs: [], creditOperations: [] }),
+    validateBackup: () => ({ valid: true }),
+    localDateTimeString: () => '2026-11-26T10:00:00',
+    _buildFocusTimerBackupSnapshot: buildSnapshot,
+    _focusTimer: timer({
+      mode: 'pomodoro',
+      phase: 'work',
+      running: false,
+      baseElapsed: 300,
+      startedAt: null,
+      taskId: null,
+      sessionStartAt: 1_000
+    }),
+    _focusElapsedRemainderMs: 0,
+    _getFocusTimerElapsedParts: () => ({ seconds: 300, remainderMs: 0 }),
+    _phaseTargetSec: () => 1_500,
+    _getFocusSettingsSnapshot: () => ({ workMin: 25, shortMin: 5, longMin: 15 }),
+    _getNotificationsPref: () => ({ enabled: false })
+  };
+  const buildBackup = vm.runInNewContext(
+    `(${html.slice(sourceStart, sourceEnd + 2)})`,
+    context
+  );
+  return buildBackup();
+}
+
+test('backup export rejects a present malformed credit ledger instead of silently dropping its identities', () => {
+  for (const malformedLedger of [null, {}, 'corrupt', 7]) {
+    const mainRecord = {
+      schemaVersion: 2,
+      settings: {},
+      tasks: [],
+      dailyLogs: [],
+      creditOperations: malformedLedger
+    };
+    assert.throws(
+      () => buildBackupForCreditLedgerTest(mainRecord),
+      /سجل عمليات اعتماد الرصيد تالف أو ليس مصفوفة/
+    );
+  }
+});
+
+test('backup export retains a valid durable credit ledger and only defaults when the field is absent', () => {
+  const operation = {
+    recordVersion: 1,
+    operationId: '123e4567-e89b-42d3-a456-426614174000',
+    kind: 'manual_adjustment',
+    taskId: 7,
+    revision: 1,
+    previousSeconds: null,
+    targetSeconds: 12,
+    source: 'manual_adjustment',
+    sessionId: null,
+    createdAt: '2026-11-26T10:00:00.000Z'
+  };
+  const withLedger = buildBackupForCreditLedgerTest({
+    schemaVersion: 2,
+    settings: {},
+    tasks: [],
+    dailyLogs: [],
+    creditOperations: [operation]
+  });
+  const legacyWithoutLedger = buildBackupForCreditLedgerTest({
+    schemaVersion: 2,
+    settings: {},
+    tasks: [],
+    dailyLogs: []
+  });
+
+  assert.equal(
+    JSON.stringify(withLedger.data.creditOperations),
+    JSON.stringify([operation]),
+    'the exported ledger matches its original JSON data across the VM boundary'
+  );
+  assert.equal(JSON.stringify(legacyWithoutLedger.data.creditOperations), '[]');
 });

@@ -2217,3 +2217,1157 @@ test('Reset refuses to mutate storage when Web Locks is unavailable', {
     assert.equal(state.recoveryRequired, true);
   });
 });
+
+
+test('PWA visibility, pagehide, pageshow and failed pagehide persistence never resume or credit an untrusted interval', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 60000
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 9901,
+      name: 'PWA lifecycle credit guard',
+      type: 'معرفية',
+      status: 'pending',
+      expected: 30,
+      actual: 7,
+      plannedDate: '2026-11-26',
+      plannedTime: '',
+      completedAt: null,
+      createdAt: Date.now(),
+      projectId: null,
+      priority: null,
+      recurrence: null,
+      checklist: null
+    }];
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+
+    const page = await context.newPage();
+    await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'PWA lifecycle page');
+
+    async function startPwaWorkSegment() {
+      const started = await page.evaluate(async () => {
+        const result = await _withStopwatchTransactionLock(() => {
+          _focusTimer.mode = 'pomodoro';
+          _focusTimer.phase = 'work';
+          _focusTimer.running = false;
+          _focusTimer.baseElapsed = 83;
+          _focusElapsedRemainderMs = 415;
+          _focusTimer.startedAt = null;
+          _focusTimer.cyclePosition = 0;
+          _focusTimer.taskId = 9901;
+          _focusTimer.sessionStartAt = Date.now() - 83_415;
+          _focusTimer.awaitingConfirmation = false;
+          _focusTimer.pendingPhaseEndedAt = null;
+          _focusTimer.clockAdjusted = false;
+          _focusTimer.nativeClockActive = false;
+          _focusTimer.nativeRestorePending = false;
+          _focusTimer.pendingStopwatchTransaction = null;
+          _clearFocusTimerClock();
+          return toggleTimer(true, true);
+        });
+        const toggleResult = await result;
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return {
+          toggleResult,
+          timer,
+          sessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]').length,
+          taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+            .find(item => item.id === 9901).actual
+        };
+      });
+      assert.equal(started.toggleResult, true, 'the PWA Pomodoro segment must start under the shared lock');
+      assert.equal(started.timer.running, true);
+      assert.equal(started.timer.nativeClockActive, false);
+      assert.ok(Number.isInteger(started.timer.elapsedRemainderMs)
+        && started.timer.elapsedRemainderMs >= 0 && started.timer.elapsedRemainderMs < 1000,
+      'a running timer checkpoint must persist an integer millisecond remainder accepted by cold-start validation');
+      return started;
+    }
+
+    const firstStart = await startPwaWorkSegment();
+    await page.evaluate(() => {
+      window.__testVisibilityState = 'hidden';
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get() { return window.__testVisibilityState; }
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForFunction(() => {
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return timer.running === false && timer.clockAdjusted === true && timer.startedAt === null;
+    }, null, { timeout: 10000 });
+
+    const hiddenCheckpoint = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(hiddenCheckpoint.timer.baseElapsed, firstStart.timer.baseElapsed,
+      'hiding must close at the last saved whole-second checkpoint');
+    assert.equal(hiddenCheckpoint.timer.elapsedRemainderMs, Math.floor(firstStart.timer.elapsedRemainderMs),
+      'hiding must retain the last saved remainder at the storage precision of whole milliseconds');
+    assert.ok(firstStart.timer.elapsedRemainderMs - hiddenCheckpoint.timer.elapsedRemainderMs >= 0
+      && firstStart.timer.elapsedRemainderMs - hiddenCheckpoint.timer.elapsedRemainderMs < 1,
+    'hiding may discard only a fractional millisecond, never an additional millisecond');
+    assert.equal(hiddenCheckpoint.timer.phase, firstStart.timer.phase);
+    assert.equal(hiddenCheckpoint.sessions.length, firstStart.sessionCount,
+      'hiding must not create or credit a session');
+    assert.equal(hiddenCheckpoint.taskActual, 7, 'hiding must not change the linked task balance');
+
+    await page.evaluate(() => {
+      window.__testVisibilityState = 'visible';
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    await page.waitForTimeout(300);
+    const afterFirstRestore = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(afterFirstRestore.timer.running, false,
+      'pageshow and visible must not silently resume a paused PWA segment');
+    assert.equal(afterFirstRestore.timer.baseElapsed, firstStart.timer.baseElapsed);
+    assert.equal(afterFirstRestore.sessions.length, firstStart.sessionCount);
+    assert.equal(afterFirstRestore.taskActual, 7);
+
+    const secondStart = await startPwaWorkSegment();
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    await page.waitForFunction(() => {
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return timer.running === false && timer.clockAdjusted === true;
+    }, null, { timeout: 10000 });
+    const afterPageHide = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(afterPageHide.timer.baseElapsed, secondStart.timer.baseElapsed,
+      'pagehide must persist the same last trusted checkpoint');
+    assert.equal(afterPageHide.timer.elapsedRemainderMs, Math.floor(secondStart.timer.elapsedRemainderMs));
+    assert.ok(secondStart.timer.elapsedRemainderMs - afterPageHide.timer.elapsedRemainderMs >= 0
+      && secondStart.timer.elapsedRemainderMs - afterPageHide.timer.elapsedRemainderMs < 1);
+    assert.equal(afterPageHide.taskActual, 7);
+
+    await page.evaluate(() => {
+      window.__testVisibilityState = 'visible';
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await page.waitForTimeout(250);
+    const afterBfcacheReturn = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(afterBfcacheReturn.timer.running, false,
+      'a bfcache pageshow must not resume the prior segment');
+    assert.equal(afterBfcacheReturn.timer.baseElapsed, secondStart.timer.baseElapsed);
+    assert.equal(afterBfcacheReturn.taskActual, 7);
+
+    const thirdStart = await startPwaWorkSegment();
+    const injectedFailure = await page.evaluate(() => {
+      const before = localStorage.getItem('timeTasksApp_focusTimer');
+      const originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (String(key) === 'timeTasksApp_focusTimer')
+          throw new Error('injected focus timer checkpoint failure');
+        return originalSetItem.call(this, key, value);
+      };
+      window.dispatchEvent(new Event('pagehide'));
+      return before;
+    });
+    await page.waitForFunction(() => storageRecoveryRequired === true, null, { timeout: 10000 });
+    const failedPageHide = await page.evaluate(() => ({
+      raw: localStorage.getItem('timeTasksApp_focusTimer'),
+      inMemoryRunning: _focusTimer.running,
+      recoveryRequired: storageRecoveryRequired,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(failedPageHide.raw, injectedFailure,
+      'failed pagehide persistence must not replace the durable running record');
+    assert.equal(JSON.parse(failedPageHide.raw).running, true);
+    assert.equal(failedPageHide.inMemoryRunning, false,
+      'the current page must stop counting even when its checkpoint write fails');
+    assert.equal(failedPageHide.recoveryRequired, true);
+    assert.equal(failedPageHide.sessions.length, thirdStart.sessionCount);
+    assert.equal(failedPageHide.taskActual, 7);
+
+    // A real reload creates a fresh page runtime while retaining LocalStorage.
+    // Cold-start normalization must conservatively stop the unclosed old record.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'PWA cold-start after failed pagehide');
+    const afterColdStart = await page.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]'),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9901).actual
+    }));
+    assert.equal(afterColdStart.timer.running, false,
+      'cold-start normalization must not continue a segment whose pagehide write failed');
+    assert.equal(afterColdStart.timer.baseElapsed, thirdStart.timer.baseElapsed,
+      'cold start must retain the durable checkpoint and discard the unverified hidden interval');
+    assert.equal(afterColdStart.timer.elapsedRemainderMs, Math.floor(thirdStart.timer.elapsedRemainderMs));
+    assert.ok(thirdStart.timer.elapsedRemainderMs - afterColdStart.timer.elapsedRemainderMs >= 0
+      && thirdStart.timer.elapsedRemainderMs - afterColdStart.timer.elapsedRemainderMs < 1,
+    'cold start may discard only the sub-millisecond fraction of the last checkpoint');
+    assert.equal(afterColdStart.sessions.length, thirdStart.sessionCount,
+      'neither failed pagehide nor cold-start recovery may create an uncommitted session');
+    assert.equal(afterColdStart.taskActual, 7,
+      'neither failed pagehide nor cold start may increase the linked task balance');
+
+    await context.close();
+  } finally {
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+test('closing a real Chromium page never resumes or credits a PWA timer on the next cold start', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 60000
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 9902,
+      name: 'Real page close credit guard',
+      type: 'معرفية',
+      status: 'pending',
+      expected: 25,
+      actual: 11,
+      plannedDate: '2026-11-26',
+      plannedTime: '',
+      completedAt: null,
+      createdAt: Date.now(),
+      projectId: null,
+      priority: null,
+      recurrence: null,
+      checklist: null
+    }];
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+
+    const sourcePage = await context.newPage();
+    await sourcePage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(sourcePage, 'real page-close source');
+    const started = await sourcePage.evaluate(async () => {
+      const result = await _withStopwatchTransactionLock(() => {
+        _focusTimer.mode = 'pomodoro';
+        _focusTimer.phase = 'work';
+        _focusTimer.running = false;
+        _focusTimer.baseElapsed = 41;
+        _focusElapsedRemainderMs = 237;
+        _focusTimer.startedAt = null;
+        _focusTimer.cyclePosition = 0;
+        _focusTimer.taskId = 9902;
+        _focusTimer.sessionStartAt = Date.now() - 41_237;
+        _focusTimer.awaitingConfirmation = false;
+        _focusTimer.pendingPhaseEndedAt = null;
+        _focusTimer.clockAdjusted = false;
+        _focusTimer.nativeClockActive = false;
+        _focusTimer.nativeRestorePending = false;
+        _focusTimer.pendingStopwatchTransaction = null;
+        _clearFocusTimerClock();
+        return toggleTimer(true, true);
+      });
+      const toggleResult = await result;
+      return {
+        toggleResult,
+        timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+        taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+          .find(item => item.id === 9902).actual
+      };
+    });
+    assert.equal(started.toggleResult, true);
+    assert.equal(started.timer.running, true);
+    assert.ok(Number.isInteger(started.timer.elapsedRemainderMs));
+    assert.equal(started.taskActual, 11);
+
+    // Exercise an actual browser page close. The observer snapshots LocalStorage
+    // before application startup can normalize a possibly still-running checkpoint.
+    await sourcePage.close();
+    assert.equal(sourcePage.isClosed(), true);
+
+    const observer = await context.newPage();
+    await observer.addInitScript(() => {
+      window.__timerRawBeforeAppInit = localStorage.getItem('timeTasksApp_focusTimer');
+      window.__mainRawBeforeAppInit = localStorage.getItem('timeTasksApp_v1');
+      window.__sessionsRawBeforeAppInit = localStorage.getItem('timeTasksApp_focusSessions');
+    });
+    await observer.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    const beforeNormalization = await observer.evaluate(() => ({
+      timer: window.__timerRawBeforeAppInit,
+      main: window.__mainRawBeforeAppInit,
+      sessions: window.__sessionsRawBeforeAppInit
+    }));
+    assert.ok(beforeNormalization.timer, 'the closed page must leave a readable timer record');
+    const timerBeforeStartup = JSON.parse(beforeNormalization.timer);
+    const mainBeforeStartup = JSON.parse(beforeNormalization.main);
+    const sessionsBeforeStartup = JSON.parse(beforeNormalization.sessions || '[]');
+    assert.ok(Number.isInteger(timerBeforeStartup.elapsedRemainderMs)
+      && timerBeforeStartup.elapsedRemainderMs >= 0 && timerBeforeStartup.elapsedRemainderMs < 1000,
+    'the closed page must leave a checkpoint accepted by the cold-start validator');
+    assert.equal(timerBeforeStartup.baseElapsed, started.timer.baseElapsed,
+      'closing must not credit time beyond the last durable checkpoint');
+    assert.equal(mainBeforeStartup.tasks.find(item => item.id === 9902).actual, 11,
+      'closing must not change the linked task balance');
+    assert.equal(sessionsBeforeStartup.length, 0,
+      'closing must not synthesize a completed focus session');
+
+    await waitForSafeStartup(observer, 'real page-close observer');
+    const afterStartup = await observer.evaluate(() => ({
+      timer: JSON.parse(localStorage.getItem('timeTasksApp_focusTimer')),
+      taskActual: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks
+        .find(item => item.id === 9902).actual,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+    }));
+    assert.equal(afterStartup.timer.running, false,
+      'cold start after a real page close must never resume the old untrusted interval');
+    assert.equal(afterStartup.timer.startedAt, null);
+    assert.equal(afterStartup.timer.clockAdjusted, true);
+    assert.equal(afterStartup.timer.baseElapsed, started.timer.baseElapsed);
+    assert.equal(afterStartup.timer.elapsedRemainderMs, started.timer.elapsedRemainderMs);
+    assert.equal(afterStartup.taskActual, 11,
+      'cold start after page close must preserve the linked task balance');
+    assert.equal(afterStartup.sessions.length, 0,
+      'cold start after page close must not create an uncommitted session');
+    await context.close();
+  } finally {
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+test('credit migration readiness gate is checked under the real shared Web Lock and after cross-page contention', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step',
+  timeout: 60000
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const appUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  let browser;
+  let context;
+  let ownerPage;
+  try {
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext({ serviceWorkers: 'block' });
+    const initial = JSON.parse(JSON.stringify(seed));
+    initial.main.tasks = [{
+      id: 9910,
+      name: 'Credit migration lock baseline',
+      type: 'معرفية',
+      status: 'pending',
+      expected: 30,
+      actual: 7,
+      plannedDate: '2026-11-26',
+      plannedTime: '',
+      completedAt: null,
+      createdAt: Date.now(),
+      projectId: null,
+      priority: null,
+      recurrence: null,
+      checklist: null
+    }];
+    await context.addInitScript((value) => {
+      if (localStorage.getItem('timeTasksApp_v1') === null)
+        localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+      if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+        localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+      if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+        localStorage.setItem('timeTasksApp_focusSessions', '[]');
+    }, initial);
+
+    ownerPage = await context.newPage();
+    const waitingPage = await context.newPage();
+    // Initialize one page fully before opening the second. Parallel cold starts
+    // can both normalize the same legacy timer record and race their verified
+    // timer writes; the loser correctly marks a baseline conflict, which would
+    // make this lock-contention test start from an already-conflicted fixture.
+    await ownerPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(ownerPage, 'migration lock owner page');
+    await waitingPage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(waitingPage, 'migration lock waiting page');
+
+    const sharedTimerBaseline = await ownerPage.evaluate(() => ({
+      raw: localStorage.getItem('timeTasksApp_focusTimer'),
+      baseline: _secondaryStorageBaselines['timeTasksApp_focusTimer'],
+      conflict: !!_secondaryStorageConflicts['timeTasksApp_focusTimer']
+    }));
+    const waitingTimerBaseline = await waitingPage.evaluate(() => ({
+      raw: localStorage.getItem('timeTasksApp_focusTimer'),
+      baseline: _secondaryStorageBaselines['timeTasksApp_focusTimer'],
+      conflict: !!_secondaryStorageConflicts['timeTasksApp_focusTimer']
+    }));
+    assert.equal(sharedTimerBaseline.conflict, false);
+    assert.equal(waitingTimerBaseline.conflict, false);
+    assert.equal(sharedTimerBaseline.raw, sharedTimerBaseline.baseline);
+    assert.equal(waitingTimerBaseline.raw, waitingTimerBaseline.baseline);
+    assert.equal(sharedTimerBaseline.raw, waitingTimerBaseline.raw,
+      'both real pages must begin from the same verified timer baseline');
+
+    const outsideLock = await ownerPage.evaluate(() => _assertCreditMigrationReady());
+    assert.deepEqual(JSON.parse(JSON.stringify(outsideLock)),
+      { ok: false, reason: 'lock_required' },
+      'the readiness gate must reject a call that does not own the real shared lock');
+
+    const insideLock = await ownerPage.evaluate(async () => {
+      const result = await _withStopwatchTransactionLock(() => ({
+        readiness: _assertCreditMigrationReady(),
+        lockDepth: _stopwatchTransactionLockDepth
+      }));
+      return {
+        result,
+        lockDepthAfterRelease: _stopwatchTransactionLockDepth
+      };
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(insideLock.result.readiness)),
+      { ok: true, reason: null },
+      'the same readiness gate must accept a clean baseline while holding the real Web Lock');
+    assert.equal(insideLock.result.lockDepth, 1,
+      'the gate must execute while the shared-lock ownership depth is active');
+    assert.equal(insideLock.lockDepthAfterRelease, 0,
+      'the page-local ownership depth must return to zero after the lock is released');
+
+    // Hold the lock in one real page while the second page queues its own
+    // readiness check. The second page must not evaluate the gate before grant.
+    await ownerPage.evaluate(() => {
+      window.__migrationLockAcquired = false;
+      window.__migrationLockReleased = false;
+      window.__migrationLockError = null;
+      window.__migrationLockPromise = _withStopwatchTransactionLock(async () => {
+        window.__migrationLockAcquired = true;
+        await new Promise(resolve => { window.__releaseMigrationLock = resolve; });
+      }).then(() => {
+        window.__migrationLockReleased = true;
+      }, error => {
+        window.__migrationLockError = String(error);
+      });
+      return true;
+    });
+    await ownerPage.waitForFunction(() =>
+      window.__migrationLockAcquired === true
+      && _stopwatchTransactionLockDepth === 1,
+    null, { timeout: 10000 });
+
+    await waitingPage.evaluate(() => {
+      window.__migrationGateSettled = false;
+      window.__migrationGateOutcome = null;
+      window.__migrationGatePromise = _withStopwatchTransactionLock(() => ({
+        readiness: _assertCreditMigrationReady(),
+        lockDepth: _stopwatchTransactionLockDepth
+      })).then(value => {
+        window.__migrationGateOutcome = { status: 'resolved', value };
+        window.__migrationGateSettled = true;
+      }, error => {
+        window.__migrationGateOutcome = { status: 'rejected', error: String(error) };
+        window.__migrationGateSettled = true;
+      });
+      return true;
+    });
+
+    await waitingPage.waitForFunction(async () => {
+      const state = await navigator.locks.query();
+      return state.pending.some(request =>
+        request.name === 'timeTasksApp-stopwatch-transaction');
+    }, null, { timeout: 10000 });
+
+    // Simulate a stale/legacy writer changing the task record while the second
+    // page is waiting. Its storage event must invalidate the queued page baseline.
+    const changedRaw = await ownerPage.evaluate(() => {
+      const key = 'timeTasksApp_v1';
+      const record = JSON.parse(localStorage.getItem(key));
+      record.tasks[0].actual = 8;
+      const raw = JSON.stringify(record);
+      localStorage.setItem(key, raw);
+      return raw;
+    });
+    await waitingPage.waitForFunction(() =>
+      _mainStorageExternalChangeObserved === true,
+    null, { timeout: 10000 });
+
+    await ownerPage.evaluate(() => window.__releaseMigrationLock());
+    await ownerPage.waitForFunction(() => window.__migrationLockReleased === true,
+      null, { timeout: 10000 });
+    await waitingPage.waitForFunction(() => window.__migrationGateSettled === true,
+      null, { timeout: 10000 });
+
+    const finalState = await waitingPage.evaluate(() => ({
+      outcome: window.__migrationGateOutcome,
+      lockDepth: _stopwatchTransactionLockDepth,
+      mainRaw: localStorage.getItem('timeTasksApp_v1'),
+      sessionsRaw: localStorage.getItem('timeTasksApp_focusSessions')
+    }));
+    assert.equal(finalState.outcome.status, 'resolved');
+    assert.deepEqual(JSON.parse(JSON.stringify(finalState.outcome.value.readiness)),
+      { ok: false, reason: 'main_baseline_conflict' },
+      'a queued gate must reject the changed task baseline after it finally acquires the lock');
+    assert.equal(finalState.outcome.value.lockDepth, 1,
+      'the queued readiness gate must run only after the lock is granted');
+    assert.equal(finalState.lockDepth, 0,
+      'the queued page must release its lock after the readiness check');
+    assert.equal(finalState.mainRaw, changedRaw,
+      'the rejected readiness check must not overwrite or repair the changed task record');
+    assert.equal(JSON.parse(finalState.mainRaw).tasks[0].actual, 8);
+    assert.equal(JSON.parse(finalState.sessionsRaw || '[]').length, 0,
+      'the readiness gate must not create or credit a focus session');
+
+    await context.close();
+    context = null;
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+function pendingFocusBrowserInitialState() {
+  const now = Date.now();
+  return {
+    main: {
+      schemaVersion: 2,
+      createdByVersion: '2.9.0',
+      settings: {
+        operationalDayStart: 4,
+        firstUseDate: new Date(now).toISOString().slice(0, 10),
+        darkMode: false,
+        themeMode: 'system',
+        lastRecurringDates: {}
+      },
+      tasks: [{
+        id: 1,
+        name: 'V2 integration task',
+        status: 'pending',
+        type: 'معرفية',
+        expected: 30,
+        actual: 12,
+        plannedDate: new Date(now).toISOString().slice(0, 10),
+        plannedTime: '',
+        completedAt: null,
+        createdAt: now
+      }],
+      dailyLogs: []
+    },
+    timer: {
+      mode: 'pomodoro',
+      phase: 'work',
+      running: false,
+      baseElapsed: 300,
+      elapsedRemainderMs: 0,
+      startedAt: null,
+      cyclePosition: 0,
+      taskId: 1,
+      sessionStartAt: now - 300000,
+      awaitingConfirmation: false,
+      pendingPhaseEndedAt: null,
+      clockAdjusted: false,
+      pendingStopwatchTransaction: null,
+      pendingFocusCommit: null,
+      nativeClockActive: false,
+      nativeSessionToken: null,
+      handledNotificationActionIds: [],
+      pendingNotificationFinish: null,
+      savedAt: now
+    }
+  };
+}
+
+async function openPendingFocusBrowserContext(server, initial) {
+  const address = server.address();
+  const appUrl = 'http://127.0.0.1:' + address.port + '/';
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  await context.addInitScript((value) => {
+    if (localStorage.getItem('timeTasksApp_v1') === null)
+      localStorage.setItem('timeTasksApp_v1', JSON.stringify(value.main));
+    if (localStorage.getItem('timeTasksApp_focusTimer') === null)
+      localStorage.setItem('timeTasksApp_focusTimer', JSON.stringify(value.timer));
+    if (localStorage.getItem('timeTasksApp_focusSessions') === null)
+      localStorage.setItem('timeTasksApp_focusSessions', '[]');
+  }, initial);
+  return { browser, context, appUrl };
+}
+
+test('real finishTimer saves one V2 Pomodoro credit operation and survives reload without duplication', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await openPendingFocusBrowserContext(server, pendingFocusBrowserInitialState());
+    browser = opened.browser;
+    context = opened.context;
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await Promise.all([
+      pageA.goto(opened.appUrl, { waitUntil: 'domcontentloaded' }),
+      pageB.goto(opened.appUrl, { waitUntil: 'domcontentloaded' })
+    ]);
+    await Promise.all([
+      waitForSafeStartup(pageA, 'V2 real finish page'),
+      waitForSafeStartup(pageB, 'V2 second window before finish')
+    ]);
+
+    await pageA.evaluate(async () => {
+      await finishTimer();
+    });
+    await pageA.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      const footer = document.getElementById('modalFooter');
+      return !!overlay && !overlay.classList.contains('hidden') && !!footer
+        && Array.from(footer.querySelectorAll('button')).some(button =>
+          button.textContent.indexOf('حفظ الوقت المقاس') >= 0);
+    }, null, { timeout: 10000 });
+
+    await pageA.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('#modalFooter button'))
+        .find(item => item.textContent.indexOf('حفظ الوقت المقاس') >= 0);
+      if (!button) throw new Error('The real Pomodoro finish confirmation button was not found.');
+      button.click();
+    });
+
+    await pageA.waitForFunction(() => {
+      try {
+        const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+        return Array.isArray(main.creditOperations) && main.creditOperations.length === 1
+          && main.tasks[0].actualSeconds === 1020
+          && main.tasks[0].actual === 17
+          && main.tasks[0].creditRevision === 1
+          && timer.pendingFocusCommit == null && timer.baseElapsed === 0
+          && sessions.filter(row => row && row.recordVersion === 2).length === 1;
+      } catch (_error) { return false; }
+    }, null, { timeout: 20000 });
+
+    const committed = await pageA.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const operation = main.creditOperations[0];
+      const session = sessions.find(row => row && row.recordVersion === 2);
+      return {
+        task: main.tasks[0],
+        operations: main.creditOperations,
+        operation,
+        session,
+        timer
+      };
+    });
+    assert.equal(committed.task.actualSeconds, 1020,
+      'legacy 12 minutes must migrate to 720 seconds, then the confirmed 5-minute session adds 300 seconds');
+    assert.equal(committed.task.actual, 17);
+    assert.equal(committed.task.creditRevision, 1);
+    assert.equal(committed.task.lastCreditOperationId, committed.operation.operationId);
+    assert.equal(committed.operations.length, 1);
+    assert.equal(committed.operation.kind, 'session');
+    assert.equal(committed.operation.previousSeconds, 720);
+    assert.equal(committed.operation.targetSeconds, 1020);
+    assert.equal(committed.operation.sessionId, committed.operation.operationId);
+    assert.equal(committed.session.sessionId, committed.operation.operationId);
+    assert.equal(committed.session.recordVersion, 2);
+    assert.equal(committed.session.taskId, 1);
+    assert.equal(committed.session.phase, 'work');
+    assert.equal(committed.session.creditedSeconds, 300);
+    assert.equal(committed.session.creditSource, 'measured');
+    assert.equal(committed.timer.pendingFocusCommit, null);
+    assert.equal(committed.timer.baseElapsed, 0);
+
+    // The durable keys are written before the outer transaction finishes its
+    // checkpoint and releases the in-flight guard. Do not race ordinary task
+    // writers against that finalization window.
+    await pageA.waitForFunction(() =>
+      !_focusCommitInFlight && !_focusCommitPendingPromise,
+    null, { timeout: 10000 });
+
+    const postCommitReadiness = await pageA.evaluate(() => ({
+      storageRecoveryRequired,
+      focusCommitInFlight: _focusCommitInFlight,
+      focusCommitPending: !!_focusCommitPendingPromise,
+      lockDepth: _stopwatchTransactionLockDepth,
+      mainBaselineReady: _mainStorageBaselineReady,
+      mainBaselineMatches: localStorage.getItem(STORAGE_KEY) === _mainStorageBaselineRaw,
+      externalChangeObserved: _mainStorageExternalChangeObserved,
+      storageWriteAllowed: _storageWriteAllowed(),
+      pendingStopwatchWriteAllowed: _pendingStopwatchWriteAllowed(),
+      rollingCheckpointHold: _rollingRecoveryCheckpointHold
+    }));
+    assert.equal(postCommitReadiness.storageWriteAllowed, true,
+      'a completed V2 commit must release all normal-write guards: ' + JSON.stringify(postCommitReadiness));
+
+    // Editing an already-migrated task must append manual_adjustment operations
+    // through the ordinary saveData path, preserving null as distinct from zero.
+    const manualAdjustmentsSaved = await pageA.evaluate(async () =>
+      _withStopwatchTransactionLock(async () => {
+        tasks[0].actual = 20;
+        const toTwentyMinutes = saveData();
+        tasks[0].actual = null;
+        const toNull = saveData();
+        tasks[0].actual = 0;
+        const toZero = saveData();
+        return [toTwentyMinutes, toNull, toZero];
+      })
+    );
+    assert.deepEqual(manualAdjustmentsSaved, [true, true, true]);
+    const adjusted = await pageA.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      return { task: main.tasks[0], operations: main.creditOperations };
+    });
+    assert.equal(adjusted.task.actualSeconds, 0);
+    assert.equal(adjusted.task.actual, 0);
+    assert.equal(adjusted.task.creditRevision, 4);
+    assert.equal(adjusted.operations.length, 4);
+    assert.deepEqual(adjusted.operations.slice(1).map(operation => ({
+      kind: operation.kind,
+      source: operation.source,
+      previousSeconds: operation.previousSeconds,
+      targetSeconds: operation.targetSeconds,
+      revision: operation.revision,
+      sessionId: operation.sessionId
+    })), [
+      { kind: 'manual_adjustment', source: 'manual_adjustment',
+        previousSeconds: 1020, targetSeconds: 1200, revision: 2, sessionId: null },
+      { kind: 'manual_adjustment', source: 'manual_adjustment',
+        previousSeconds: 1200, targetSeconds: null, revision: 3, sessionId: null },
+      { kind: 'manual_adjustment', source: 'manual_adjustment',
+        previousSeconds: null, targetSeconds: 0, revision: 4, sessionId: null }
+    ]);
+    assert.equal(adjusted.task.lastCreditOperationId, adjusted.operations[3].operationId);
+
+    // Reload a different same-origin window that held the pre-commit snapshot.
+    await pageB.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(pageB, 'V2 committed task after second-window reload');
+    const afterReload = await pageB.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        actualSeconds: main.tasks[0].actualSeconds,
+        actual: main.tasks[0].actual,
+        revision: main.tasks[0].creditRevision,
+        operationCount: main.creditOperations.length,
+        sessionCount: sessions.filter(row => row && row.recordVersion === 2).length,
+        pending: timer.pendingFocusCommit
+      };
+    });
+    assert.deepEqual(afterReload, {
+      actualSeconds: 0,
+      actual: 0,
+      revision: 4,
+      operationCount: 4,
+      sessionCount: 1,
+      pending: null
+    }, 'cold reload must preserve session and manual-adjustment identities without duplicate effects');
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('a real second Chromium window waits for a pending V2 journal and recovers it once after owner release', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await openPendingFocusBrowserContext(server, pendingFocusBrowserInitialState());
+    browser = opened.browser;
+    context = opened.context;
+    const ownerPage = await context.newPage();
+    const waitingPage = await context.newPage();
+    await Promise.all([
+      ownerPage.goto(opened.appUrl, { waitUntil: 'domcontentloaded' }),
+      waitingPage.goto(opened.appUrl, { waitUntil: 'domcontentloaded' })
+    ]);
+    await Promise.all([
+      waitForSafeStartup(ownerPage, 'V2 recovery lock owner'),
+      waitForSafeStartup(waitingPage, 'V2 recovery waiting page')
+    ]);
+
+    await ownerPage.evaluate(() => {
+      window.__pendingFocusOwnerPromise = _withStopwatchTransactionLock(async () => {
+        const migration = _migrateLegacyTaskCreditMetadataLocked();
+        if (!migration || migration.ok !== true)
+          throw new Error('Legacy credit migration failed: ' + JSON.stringify(migration));
+        const snapshot = _captureFocusTimerSnapshot();
+        const task = tasks.find(row => row && row.id === snapshot.taskId);
+        const fields = _buildPendingFocusSessionFields(snapshot, task, 5);
+        if (!fields) throw new Error('Could not build a valid V2 session payload.');
+        const originalRecovery = _recoverPendingFocusCommitLocked;
+        _recoverPendingFocusCommitLocked = function() { return false; };
+        try {
+          window.__pendingFocusCommitStarted = _commitFocusSessionV2Locked(fields);
+        } finally {
+          _recoverPendingFocusCommitLocked = originalRecovery;
+        }
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        window.__pendingFocusJournal = timer.pendingFocusCommit;
+        if (window.__pendingFocusCommitStarted !== false || !window.__pendingFocusJournal)
+          throw new Error('The pending V2 journal was not durably written.');
+        return await new Promise(resolve => { window.__releasePendingFocusOwner = resolve; });
+      }).catch(error => {
+        window.__pendingFocusOwnerError = String(error && error.stack || error);
+      });
+      return true;
+    });
+
+    await ownerPage.waitForFunction(() =>
+      !!window.__pendingFocusJournal
+      && _stopwatchTransactionLockDepth === 1
+      && window.__pendingFocusOwnerError == null,
+    null, { timeout: 10000 });
+
+    const exportAttempt = await waitingPage.evaluate(() => {
+      const before = localStorage.getItem('timeTasksApp_focusTimer');
+      let exported = false, error = null;
+      try {
+        buildBackupObject();
+        exported = true;
+      } catch (caught) {
+        error = String(caught && caught.message || caught);
+      }
+      const after = localStorage.getItem('timeTasksApp_focusTimer');
+      return { exported, error, before, after };
+    });
+    assert.equal(exportAttempt.exported, false,
+      'a window with a stale in-memory timer must not export while a V2 journal exists durably');
+    assert.ok(exportAttempt.error);
+    assert.equal(exportAttempt.after, exportAttempt.before,
+      'the refused export must not modify the pending journal');
+
+    const preRecoveryGuards = await ownerPage.evaluate(async () => {
+      const rb = {
+        main: localStorage.getItem('timeTasksApp_v1'),
+        focusSessions: localStorage.getItem('timeTasksApp_focusSessions'),
+        focusTimer: localStorage.getItem('timeTasksApp_focusTimer'),
+        mentalInbox: null, thoughts: null, projects: null,
+        focusSettings: null, notifications: null
+      };
+      const restore = _restoreStorageSnapshot(rb);
+      const rollback = _rollbackRestore(rb);
+
+      localStorage.setItem('timeTasksApp_importInProgress', '1');
+      const importRecovery = _recoverInterruptedImport();
+      const importMarkerAfter = localStorage.getItem('timeTasksApp_importInProgress');
+      localStorage.removeItem('timeTasksApp_importInProgress');
+
+      localStorage.setItem('timeTasksApp_resetInProgress', '{"version":1}');
+      const resetRecovery = _recoverInterruptedReset();
+      const resetMarkerAfter = localStorage.getItem('timeTasksApp_resetInProgress');
+      localStorage.removeItem('timeTasksApp_resetInProgress');
+
+      const manualRollingRestore = _restoreLatestRollingRecoveryBackup();
+      const resetBeforeMarker = await _executeResetAllTransaction();
+      const resetMarkerAfterTransaction = localStorage.getItem('timeTasksApp_resetInProgress');
+      const timerAfter = localStorage.getItem('timeTasksApp_focusTimer');
+      return {
+        restore, rollback, importRecovery, importMarkerAfter,
+        resetRecovery, resetMarkerAfter, manualRollingRestore,
+        resetBeforeMarker, resetMarkerAfterTransaction, timerAfter
+      };
+    });
+    assert.equal(preRecoveryGuards.restore, false);
+    assert.equal(preRecoveryGuards.rollback, false);
+    assert.equal(preRecoveryGuards.importRecovery, false);
+    assert.equal(preRecoveryGuards.importMarkerAfter, '1',
+      'interrupted import marker must be retained while the V2 transaction is pending');
+    assert.equal(preRecoveryGuards.resetRecovery, false);
+    assert.equal(preRecoveryGuards.resetMarkerAfter, '{"version":1}',
+      'interrupted Reset marker must be retained while the V2 transaction is pending');
+    assert.equal(preRecoveryGuards.manualRollingRestore, false);
+    assert.equal(preRecoveryGuards.resetBeforeMarker, false,
+      'normal Reset must reject the V2 journal before writing its reset marker');
+    assert.equal(preRecoveryGuards.resetMarkerAfterTransaction, null,
+      'blocked Reset must not create an overlapping recovery marker');
+    assert.ok(JSON.parse(preRecoveryGuards.timerAfter).pendingFocusCommit,
+      'all rejected backup/restore/import/reset paths must leave the durable journal intact');
+
+    await waitingPage.reload({ waitUntil: 'domcontentloaded' });
+    await waitingPage.waitForFunction(() =>
+      _startupStopwatchRecoveryInFlight === true
+      || _appInitCompleted === true
+      || _startupStopwatchRecoveryFailed === true,
+    null, { timeout: 10000 });
+    const waitingState = await waitingPage.evaluate(async () => {
+      const locks = await navigator.locks.query();
+      return {
+        initialized: _appInitCompleted === true,
+        startupInFlight: _startupStopwatchRecoveryInFlight === true,
+        startupFailed: _startupStopwatchRecoveryFailed === true,
+        waitingForSharedLock: locks.pending.some(request =>
+          request.name === 'timeTasksApp-stopwatch-transaction')
+      };
+    });
+    assert.equal(waitingState.startupFailed, false);
+    assert.equal(waitingState.initialized, false,
+      'the reloading window must not initialize past a journal while another window owns the shared lock');
+    assert.equal(waitingState.waitingForSharedLock, true,
+      'the second window must be queued on the same Web Lock');
+
+    await ownerPage.evaluate(() => window.__releasePendingFocusOwner());
+    await waitForSafeStartup(waitingPage, 'V2 real cross-window journal recovery', 20000);
+
+    const recovered = await waitingPage.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks[0],
+        operations: main.creditOperations,
+        v2Sessions: sessions.filter(row => row && row.recordVersion === 2),
+        timer
+      };
+    });
+    assert.equal(recovered.task.actualSeconds, 1020);
+    assert.equal(recovered.task.actual, 17);
+    assert.equal(recovered.task.creditRevision, 1);
+    assert.equal(recovered.operations.length, 1);
+    assert.equal(recovered.v2Sessions.length, 1);
+    assert.equal(recovered.v2Sessions[0].sessionId, recovered.operations[0].operationId);
+    assert.equal(recovered.timer.pendingFocusCommit, null);
+    assert.equal(recovered.timer.baseElapsed, 0);
+
+    await waitingPage.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(waitingPage, 'V2 transaction after a second reload');
+    const finalCounts = await waitingPage.evaluate(() => ({
+      operations: JSON.parse(localStorage.getItem('timeTasksApp_v1')).creditOperations.length,
+      sessions: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+        .filter(row => row && row.recordVersion === 2).length
+    }));
+    assert.deepEqual(finalCounts, { operations: 1, sessions: 1 });
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+test('real finishTimer commits an exact measured linked Stopwatch session through V2 and survives reload once', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const initial = pendingFocusBrowserInitialState();
+    initial.timer.mode = 'stopwatch';
+    initial.timer.baseElapsed = 120;
+    initial.timer.sessionStartAt = Date.now() - 120000;
+    const opened = await openPendingFocusBrowserContext(server, initial);
+    browser = opened.browser;
+    context = opened.context;
+    const page = await context.newPage();
+    await page.goto(opened.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'V2 real Stopwatch finish page');
+
+    await page.evaluate(() => finishTimer());
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('customModalOverlay');
+      const footer = document.getElementById('modalFooter');
+      return !!overlay && !overlay.classList.contains('hidden') && !!footer
+        && Array.from(footer.querySelectorAll('button')).some(button =>
+          button.textContent.indexOf('+ 2') >= 0);
+    }, null, { timeout: 10000 });
+    await page.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('#modalFooter button'))
+        .find(item => item.textContent.indexOf('+ 2') >= 0);
+      if (!button) throw new Error('The measured Stopwatch confirmation button was not found.');
+      button.click();
+    });
+
+    await page.waitForFunction(() => {
+      try {
+        const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+        const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+        const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+        return Array.isArray(main.creditOperations) && main.creditOperations.length === 1
+          && main.tasks[0].actualSeconds === 840
+          && main.tasks[0].actual === 14
+          && main.tasks[0].creditRevision === 1
+          && sessions.filter(row => row && row.recordVersion === 2).length === 1
+          && timer.pendingFocusCommit == null;
+      } catch (_error) { return false; }
+    }, null, { timeout: 20000 });
+
+    const saved = await page.evaluate(() => {
+      const main = JSON.parse(localStorage.getItem('timeTasksApp_v1'));
+      const sessions = JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]');
+      const timer = JSON.parse(localStorage.getItem('timeTasksApp_focusTimer'));
+      return {
+        task: main.tasks[0],
+        operation: main.creditOperations[0],
+        session: sessions.find(row => row && row.recordVersion === 2),
+        timer
+      };
+    });
+    assert.equal(saved.task.actualSeconds, 840,
+      'legacy 12 minutes migrate to 720 seconds and the measured two-minute Stopwatch adds 120 seconds');
+    assert.equal(saved.task.actual, 14);
+    assert.equal(saved.task.creditRevision, 1);
+    assert.equal(saved.task.lastCreditOperationId, saved.operation.operationId);
+    assert.equal(saved.operation.previousSeconds, 720);
+    assert.equal(saved.operation.targetSeconds, 840);
+    assert.equal(saved.operation.kind, 'session');
+    assert.equal(saved.session.mode, 'stopwatch');
+    assert.equal(saved.session.phase, 'work');
+    assert.equal(saved.session.outcome, 'stopped');
+    assert.equal(saved.session.completed, false);
+    assert.equal(saved.session.plannedDurationMs, null);
+    assert.equal(saved.session.creditSource, 'measured');
+    assert.equal(saved.session.creditedSeconds, 120);
+    assert.equal(saved.session.sessionId, saved.operation.operationId);
+    assert.equal(saved.timer.pendingFocusCommit, null);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'V2 Stopwatch after reload');
+    const afterReload = await page.evaluate(() => ({
+      actualSeconds: JSON.parse(localStorage.getItem('timeTasksApp_v1')).tasks[0].actualSeconds,
+      operationCount: JSON.parse(localStorage.getItem('timeTasksApp_v1')).creditOperations.length,
+      v2SessionCount: JSON.parse(localStorage.getItem('timeTasksApp_focusSessions') || '[]')
+        .filter(row => row && row.recordVersion === 2).length
+    }));
+    assert.deepEqual(afterReload, { actualSeconds: 840, operationCount: 1, v2SessionCount: 1 });
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+
+test('gap analytics use measured seconds consistently across weekly, type, and summary views', {
+  skip: chromium ? false : 'Playwright is installed only in the dedicated CI browser step'
+}, async () => {
+  const server = createStaticServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  let browser, context;
+  try {
+    const opened = await openPendingFocusBrowserContext(server, pendingFocusBrowserInitialState());
+    browser = opened.browser;
+    context = opened.context;
+    const page = await context.newPage();
+    await page.goto(opened.appUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSafeStartup(page, 'gap analytics precision page');
+
+    const rendered = await page.evaluate(() => {
+      // Reproduce the field values produced by a 139-second measured credit:
+      // actual is the legacy whole-minute projection (2), while actualSeconds
+      // retains the exact duration (139). The expected estimate is 3 minutes.
+      const task = {
+        id: 9901,
+        name: '139-second measured task',
+        status: 'pending',
+        type: 'معرفية',
+        expected: 3,
+        actual: 2,
+        actualSeconds: 139,
+        creditRevision: 1,
+        creditSchemaVersion: 1,
+        lastCreditOperationId: '550e8400-e29b-41d4-a716-446655440000',
+        plannedDate: getLast7OperationalDays()[0],
+        plannedTime: '',
+        completedAt: null,
+        createdAt: Date.now()
+      };
+      tasks.splice(0, tasks.length, task);
+      renderStats();
+      renderWeeklyReport();
+      renderTypeGapAnalysis();
+      return {
+        exactActualMinutes: getTaskActualMinutes(task),
+        taskLegacyActualMinutes: task.actual,
+        weekly: computeWeeklyReport(),
+        byType: computeTypeAnalysis('معرفية'),
+        statsText: document.getElementById('typeStats').innerText,
+        weeklyText: document.getElementById('weeklyReport').innerText,
+        typeText: document.getElementById('typeGapAnalysis').innerText
+      };
+    });
+
+    const expectedGap = (139 / 60 - 3) / 3;
+    assert.equal(rendered.exactActualMinutes, 139 / 60);
+    assert.equal(rendered.taskLegacyActualMinutes, 2);
+    assert.ok(Math.abs(rendered.weekly.avgGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.weekly.aggGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.weekly.medianGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.byType.avgGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.byType.aggGap - expectedGap) < 1e-12);
+    assert.ok(Math.abs(rendered.byType.medianGap - expectedGap) < 1e-12);
+    assert.match(rendered.statsText, /فجوة -23%/);
+    assert.match(rendered.weeklyText, /متوسط فجوة المهام[\s\S]*-23%/);
+    assert.match(rendered.weeklyText, /الفجوة المجمّعة[\s\S]*-23%/);
+    assert.match(rendered.weeklyText, /وسيط الفجوة[\s\S]*-23%/);
+    assert.match(rendered.typeText, /متوسط فجوة المهام[\s\S]*-23%/);
+    assert.match(rendered.typeText, /الفجوة المجمّعة[\s\S]*-23%/);
+    assert.match(rendered.typeText, /وسيط الفجوة[\s\S]*-23%/);
+    assert.match(rendered.typeText, /3 د تقدير ← 2 د 19 ث فعلي/);
+    assert.match(rendered.typeText, /مثال قياسي/);
+    assert.match(rendered.typeText, /تقدير 60 دقيقة ← المتوقع 46 دقيقة/);
+    assert.doesNotMatch(rendered.typeText, /46 دقيقة فعلية/);
+  } finally {
+    if (context) await context.close();
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
