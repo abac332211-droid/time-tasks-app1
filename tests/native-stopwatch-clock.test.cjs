@@ -474,6 +474,7 @@ function makeNotificationActionHarness(action, options = {}) {
     pendingNotificationFinish: null
   };
   const ackCalls = [];
+  const actionOrder = [];
   let ackIndex = 0;
   let finishCalls = 0;
   let saveCalls = 0;
@@ -481,6 +482,7 @@ function makeNotificationActionHarness(action, options = {}) {
     peekNotificationAction: async () => action,
     acknowledgeNotificationAction: async (args) => {
       ackCalls.push(args);
+      actionOrder.push('ack');
       const acknowledged = Array.isArray(options.acknowledgedSequence)
         ? options.acknowledgedSequence[ackIndex++] === true
         : options.acknowledged !== false;
@@ -517,11 +519,11 @@ function makeNotificationActionHarness(action, options = {}) {
       sandbox._focusFallbackLastWall = null;
       sandbox._focusFallbackElapsedMs = 0;
     },
-    _saveFocusTimer() { saveCalls++; return options.saveOk !== false; },
+    _saveFocusTimer() { saveCalls++; actionOrder.push('save'); return options.saveOk !== false; },
     _renderFocusTimer() {},
     showToast() {},
     showAlertModal() {},
-    finishTimer() { finishCalls++; return true; }
+    finishTimer() { finishCalls++; actionOrder.push('finish'); return true; }
   };
   for (const name of [
     '_isNativeStopwatchUuid',
@@ -529,7 +531,8 @@ function makeNotificationActionHarness(action, options = {}) {
     '_restoreFocusTimerClockState',
     '_consumeNativeStopwatchNotificationAction'
   ]) vm.runInNewContext(extractFunction(name), sandbox);
-  return { sandbox, focusTimer, ackCalls, get finishCalls() { return finishCalls; },
+  return { sandbox, focusTimer, ackCalls, actionOrder,
+    get finishCalls() { return finishCalls; },
     get saveCalls() { return saveCalls; } };
 }
 
