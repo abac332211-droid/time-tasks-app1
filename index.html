@@ -7497,6 +7497,7 @@ function _finishTaskFocusLinkMutationDurable(detachment, taskSaveSucceeded) {
         || !_focusCommitDeepEqual(mainData.pendingTaskFocusLinkMutation, journal))
       throw new Error("task-focus journal no longer matches");
     var state = _taskFocusLinkMutationState(mainData, journal);
+    var taskSnapshotKnownUnchanged = state === "before";
     if (state === "target") {
       if (!_setTaskFocusLinkOnDurableTimer(journal.taskId, null))
         throw new Error("focus timer could not be durably detached");
@@ -7524,7 +7525,7 @@ function _finishTaskFocusLinkMutationDurable(detachment, taskSaveSucceeded) {
     console.error("Task–Focus transaction finalization failed:", error);
     showAlertModal("تعذر تثبيت ربط المهمة بالمؤقت",
       "احتفظ التطبيق بسجل المعاملة وأوقف الكتابة حتى يسترد حالة المهمة والمؤقت ويتحقق منها عند إعادة الفتح.");
-    return false;
+    return taskSnapshotKnownUnchanged ? "rollback_failed" : false;
   } finally {
     _taskFocusLinkMutationWriteDepth = Math.max(0, _taskFocusLinkMutationWriteDepth - 1);
     if (typeof detachment.releaseCheckpoint === "function") detachment.releaseCheckpoint();
@@ -7698,7 +7699,7 @@ function toggleTask(id) {
           showToast("🎉 تم تثبيت الإنجاز والتحقق من الحفظ بعد نتيجة كتابة غير مؤكدة");
           return true;
         }
-        if (_taskFocusOutcome === "rolled_back" || !_taskFocusDetachment.linked) {
+        if (_taskFocusOutcome === "rolled_back" || _taskFocusOutcome === "rollback_failed" || !_taskFocusDetachment.linked) {
           Object.assign(t, _old);
         } else {
           storageRecoveryRequired = true;
