@@ -1157,3 +1157,45 @@ PR #10 يظل مفتوحًا كمسودة وغير مدمج. `main` لم يتغ�
 - تقرير npm audit ما زال يُظهر 5 حزم متأثرة وexit code 1.
 - الاختبار الميداني على Redmi Note 10 5G، والمراجعة المستقلة `APPROVED` على SHA النهائي، والمراجعة التقنية الكاملة، والتحقق الإداري من حماية Release وشهادة التوقيع الأصلي غير مكتملة.
 - رقم الإصدار بقي `2.9.0`؛ لا دمج لـPR #6 أو #4 أو #25، ولا تغيير لـ`main`، ولا Release أو نشر.
+
+
+---
+
+## تحقق نهائي من HEAD الحالي بعد اختبار Cold Reload — 28 نوفمبر 2026
+
+### تثبيت الحالة بعد أحدث commit
+- HEAD الحالي لفرع `codex/v2.9.1-stability` وPR #6: `21b81444745de5381b9d7f2ba84f9284164ebad3`.
+- أحدث commit `21b8144` توثيقي فقط؛ يسبقه اختبار Cold Reload المصحح على `94c38a4`. لا يوجد تعديل لاحق في كود الاختبار أو الإنتاج في الانتقال إلى `21b8144`.
+- PR #6: مفتوح، Draft، غير مدمج، `mergeable=true`، 59 ملفًا متغيرًا، 958 commit. قاعدة PR هي `main`.
+- رأس `main` ما زال `0a4dcd13af4fd3bb1779550907234cfc64b05523`.
+- PR #4 مفتوح وغير مدمج، رأسه `61daddbe9aeddc6e1568a504e1f0aa90b88259b2`.
+
+### CI على HEAD الحالي 21b8144
+- [PWA Pull Request — run 46115480097](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46115480097): **545/545 ناجحًا، 0 فشل، 0 تخطٍ**.
+- [PWA Push — run 46115475684](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46115475684): **545/545 ناجحًا، 0 فشل، 0 تخطٍ**.
+- [Android Debug — run 46115475723](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46115475723): **494 ناجحًا، 51 متخطى، 0 فشل**؛ Gradle أظهر `BUILD SUCCESSFUL` ونجح فحص Manifest ورفع APK.
+- [Dependency audit Push — run 46115475671](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46115475671) و[Pull Request — run 46115480035](https://github.com/abac332211-droid/time-tasks-app1/actions/runs/46115480035): فشلا في بوابة `Enforce audit result` بعد إنشاء التقرير ورفعه؛ هذا فشل أمني مقصود لا فشل توليد JSON.
+- نتيجة Android لا تُعرض على أنها 545/545؛ 51 اختبار Chromium متخطٍ ولا يحتسب نجاحًا.
+
+### فحص تقرير npm audit على SHA الحالي
+- تم تنزيل Artifact من تشغيل الدفع المرتبط بـ`21b81444745de5381b9d7f2ba84f9284164ebad3` وفك JSON وفحصه.
+- Artifact ID: `15251446573`، الاسم `npm-audit-21b81444745de5381b9d7f2ba84f9284164ebad3`، الحجم 1,996 بايت.
+- إجمالي npm audit: 100 dependency؛ خمس عقد حزم متأثرة بحسب تجميع npm: 1 Critical و1 High و3 Moderate.
+- الحزم المتأثرة: `@capacitor/cli@6.2.3` (High عبر تبعياته)، `tar@6.2.1` (Critical)، `rimraf@4.4.1` (Moderate)، `glob@9.3.5` (Moderate)، `minimatch@8.0.7` (Moderate).
+- يوجد داخل سجل `tar` عدة advisories فردية، منها `GHSA-23hp-3jrh-7fpw` المصنف Critical ونطاقه المتأثر `<=7.5.18`، و`GHSA-r292-9mhp-454m` المصنف High ونطاقه `<=7.5.20`. لذلك لا يعني إجمالي خمس حزم أن لدينا خمس advisories فقط.
+- يقترح npm `@capacitor/cli@8.6.3` مع `isSemVerMajor=true`. لم تُطبق الترقية، ولم تُستخدم `npm audit fix --force`، ولم تتغير تبعيات أو lockfile.
+
+### حالة المراجعة
+- PR #6: خمس مراجعات مسجلة وجميعها `COMMENTED` من `abac332211-droid`؛ لا توجد `APPROVED` مستقلة. لا توجد خيوط مراجعة inline في نتيجة الفحص.
+- PR #4: لا توجد مراجعات أو خيوط inline في نتيجة الفحص.
+- لم تظهر مراجعة خبير مستقلة جديدة على HEAD الحالي؛ لا نعتبر المراجعات الذاتية بديلًا.
+
+### الخطوة التالية
+استكمال اختبار Chromium فعلي يستخدم تهيئة التطبيق وV2 writer الإنتاجيين بعد cold reload، بدل الاكتفاء بالـharness الذي يثبت عرض checkpoint وإرسال طلب الحفظ فقط. يجب أن يثبت الاختبار الدفتر الدائم وسجل الجلسة وإعادة ضبط المؤقت مرة واحدة، مع حقن فشل الكتابة والتحقق من عدم التكرار. بعد ذلك يبدأ تحليل خيارات إصلاح سلسلة التبعيات المتوافقة مع Capacitor 6 دون ترقية رئيسية غير مبررة.
+
+### البوابات التي ما زالت مفتوحة
+- M-01 جزئية: حفظ checkpoint وإتاحة إعادة الحفظ اليدوية مختبران في harness، لكن end-to-end production writer بعد cold reload غير مثبت.
+- npm audit ما زال غير نظيف؛ لا توجد معالجة للتبعيات.
+- 51 اختبار Android متخطٍ؛ توحيد تثبيت Playwright لم ينفذ.
+- لا يوجد اختبار هاتف Redmi Note 10 5G على رأس نهائي، ولا مراجعة مستقلة `APPROVED`، ولا اعتماد توقيع Release، ولا موافقة إصدار.
+- لا دمج، ولا تغيير لـ`main`، ولا رفع إصدار 2.9.1، ولا Release أو نشر.
