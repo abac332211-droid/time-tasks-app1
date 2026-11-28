@@ -5026,6 +5026,188 @@ function toggleDarkMode() {
   showToast(appSettings.darkMode ? "🌙 الوضع الليلي" : "☀️ الوضع النهاري");
 }
 
+function _retryMemoryOnlyPendingFocusCommit(expectedJournal) {
+  if (!expectedJournal || typeof _validatePendingFocusCommit !== "function"
+      || !_validatePendingFocusCommit(expectedJournal)
+      || expectedJournal.stage !== "prepared") {
+    storageRecoveryRequired = true;
+    return Promise.resolve(false);
+  }
+  if (_startupStopwatchRecoveryInFlight || _stopwatchRetryRecoveryPromise) {
+    return _stopwatchRetryRecoveryPromise || _startupStopwatchRecoveryPromise || Promise.resolve(false);
+  }
+  if (typeof navigator === "undefined" || !navigator.locks
+      || typeof navigator.locks.request !== "function") {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    showAlertModal("استرداد اعتماد جلسة متوقف",
+      "إعادة محاولة حفظ نية الاعتماد تتطلب قفل النوافذ الحصري. بقيت النية في الذاكرة ولم نكتب فوق أي سجل.");
+    return Promise.resolve(false);
+  }
+
+  storageRecoveryRequired = true;
+  _startupStopwatchRecoveryInFlight = true;
+  _startupStopwatchRecoveryFailed = false;
+  _appInitCompleted = false;
+
+  var lockAttempt = _withStopwatchTransactionLock(function() {
+    if (!_isTaskStorageLockHeld()) throw new Error("focus_retry_lock_not_held");
+    if (_focusCommitInFlight || _resetInFlight || _resetRecoveryInFlight
+        || _startupResetRecoveryInFlight) throw new Error("focus_retry_operation_overlap");
+    if (!_focusTimer || !_focusCommitDeepEqual(_focusTimer.pendingFocusCommit, expectedJournal)
+        || _focusTimer.pendingStopwatchTransaction) throw new Error("focus_retry_memory_identity_changed");
+
+    var markerKeys = [
+      RESET_IN_PROGRESS_KEY,
+      ROLLING_RESTORE_IN_PROGRESS_KEY,
+      IMPORT_IN_PROGRESS_KEY,
+      MIGRATION_IN_PROGRESS_KEY
+    ];
+    for (var markerIndex = 0; markerIndex < markerKeys.length; markerIndex++) {
+      if (localStorage.getItem(markerKeys[markerIndex]) !== null)
+        throw new Error("focus_retry_recovery_marker_present");
+    }
+
+    // The only safe retry is the first journal write: no durable focus journal,
+    // Stopwatch transaction, or reset/import marker may already exist.
+    var bundle = _readAndValidateResyncBundle();
+    if (!bundle || !bundle.timerObj || !bundle.mainData)
+      throw new Error("focus_retry_durable_bundle_invalid");
+    var timerRecord = bundle.timerObj;
+    if ((timerRecord.pendingFocusCommit !== null && timerRecord.pendingFocusCommit !== undefined)
+        || (timerRecord.pendingStopwatchTransaction !== null
+          && timerRecord.pendingStopwatchTransaction !== undefined)) {
+      throw new Error("focus_retry_durable_journal_exists");
+    }
+    if (!_focusTimerSnapshotMatchesRecord(expectedJournal.timerBefore, timerRecord)
+        || !_focusCommitDeepEqual(_capturePendingFocusTimerProjection(), expectedJournal.timerBefore)) {
+      throw new Error("focus_retry_timer_baseline_changed");
+    }
+
+    if (!_mainStorageBaselineReady || _mainStorageExternalChangeObserved
+        || bundle.mainRaw === null || bundle.mainRaw !== _mainStorageBaselineRaw) {
+      throw new Error("focus_retry_main_baseline_changed");
+    }
+    if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_TIMER_KEY)
+        || _secondaryStorageConflicts[FOCUS_TIMER_KEY]
+        || bundle.timerRaw !== _secondaryStorageBaselines[FOCUS_TIMER_KEY]) {
+      throw new Error("focus_retry_timer_storage_conflict");
+    }
+    if (!Object.prototype.hasOwnProperty.call(_secondaryStorageBaselines, FOCUS_SESSIONS_KEY)
+        || _secondaryStorageConflicts[FOCUS_SESSIONS_KEY]
+        || bundle.sessionsRaw !== _secondaryStorageBaselines[FOCUS_SESSIONS_KEY]) {
+      throw new Error("focus_retry_sessions_storage_conflict");
+    }
+    if (!Array.isArray(bundle.mainData.creditOperations)
+        || !_focusCommitLedgerCanAcceptOperation(
+          bundle.mainData, expectedJournal.taskId, expectedJournal.creditBefore
+        )) {
+      throw new Error("focus_retry_credit_baseline_changed");
+    }
+    var attempt = _classifyCreditOperationAttempt(
+      bundle.mainData.creditOperations, expectedJournal.operation
+    );
+    if (!attempt || attempt.status !== "new")
+      throw new Error("focus_retry_credit_operation_not_new");
+
+    var persistedTask = bundle.mainData.tasks.find(function(row) {
+      return row && row.id === expectedJournal.taskId;
+    });
+    var memoryTask = tasks.find(function(row) {
+      return row && row.id === expectedJournal.taskId;
+    });
+    if (!_pendingFocusTaskMatchesCreditSnapshot(persistedTask, expectedJournal.creditBefore)
+        || !_pendingFocusTaskMatchesCreditSnapshot(memoryTask, expectedJournal.creditBefore)) {
+      throw new Error("focus_retry_task_credit_changed");
+    }
+
+    var sessionsRead = _readPendingFocusSessions();
+    if (!sessionsRead.ok || sessionsRead.raw !== bundle.sessionsRaw
+        || !_focusCommitDeepEqual(sessionsRead.rows, bundle.sessionsArr)) {
+      throw new Error("focus_retry_sessions_baseline_changed");
+    }
+    var duplicateSession = sessionsRead.rows.some(function(row) {
+      return row && (row.sessionId === expectedJournal.operationId
+        || row.id === expectedJournal.session.id
+        || (row.startedAt === expectedJournal.session.startedAt
+          && row.taskId === expectedJournal.session.taskId
+          && row.mode === expectedJournal.session.mode
+          && row.phase === expectedJournal.session.phase));
+    });
+    if (duplicateSession) throw new Error("focus_retry_session_identity_exists");
+    if (!_secondaryStorageWriteAllowed(FOCUS_TIMER_KEY))
+      throw new Error("focus_retry_timer_write_gate_closed");
+
+    // _storageWriteAllowed normally rejects while recovery is required. Open
+    // only the lock-owned startup-recovery write scope for this one validated
+    // journal write; all transaction replay remains on the existing V2 path.
+    storageRecoveryRequired = false;
+    var previousWriteDepth = typeof _startupStopwatchRecoveryWriteDepth === "number"
+      ? _startupStopwatchRecoveryWriteDepth : 0;
+    _startupStopwatchRecoveryWriteDepth = previousWriteDepth + 1;
+    var journalSaved = false;
+    try {
+      journalSaved = _withPendingFocusCommitWrite(
+        expectedJournal.operationId,
+        function() { return _saveFocusTimer(); },
+        true
+      ) === true;
+    } finally {
+      _startupStopwatchRecoveryWriteDepth = previousWriteDepth;
+    }
+    if (!journalSaved) {
+      storageRecoveryRequired = true;
+      throw new Error("focus_retry_first_journal_write_failed");
+    }
+
+    var durableProbe = _probeStartupStopwatchRecovery();
+    if (!durableProbe || durableProbe.error
+        || !_focusCommitDeepEqual(durableProbe.expectedFocusCommit, expectedJournal)
+        || durableProbe.expectedTx) {
+      storageRecoveryRequired = true;
+      throw new Error("focus_retry_journal_readback_failed");
+    }
+    var recovery = _recoverPendingFocusCommitFromStartup(
+      expectedJournal, durableProbe, durableProbe
+    );
+    if (!recovery || recovery.ok !== true) {
+      storageRecoveryRequired = true;
+      throw new Error(recovery && recovery.reason
+        ? recovery.reason : "focus_retry_transaction_replay_failed");
+    }
+    var finalProbe = _probeStartupStopwatchRecovery();
+    if (!finalProbe || finalProbe.error || finalProbe.pending
+        || finalProbe.expectedFocusCommit || finalProbe.expectedTx
+        || (Array.isArray(_pendingCorruptStorageSnapshots)
+          && _pendingCorruptStorageSnapshots.length > 0)
+        || !_appInitCompleted || storageRecoveryRequired) {
+      storageRecoveryRequired = true;
+      throw new Error("focus_retry_final_verification_failed");
+    }
+    return { ok: true };
+  });
+
+  var retry = Promise.resolve(lockAttempt).then(function(result) {
+    if (!result || result.ok !== true) throw new Error("focus_retry_no_verified_result");
+    showToast("✅ أُعيد حفظ نية جلسة التركيز واستُكملت المعاملة");
+    return true;
+  }).catch(function(error) {
+    storageRecoveryRequired = true;
+    _startupStopwatchRecoveryFailed = true;
+    _appInitCompleted = false;
+    console.error("Memory-only pending focus commit retry failed:", error);
+    showAlertModal("تعذر استرداد اعتماد جلسة التركيز",
+      "لم تتطابق جميع خطوط الأساس أو تعذر حفظ سجل الاسترداد وإكماله. بقيت نية الجلسة محفوظة في الذاكرة، ولم ننفذ Reset أو نكتب فوق سجل متعارض.");
+    return false;
+  }).finally(function() {
+    _startupStopwatchRecoveryInFlight = false;
+    if (_stopwatchRetryRecoveryPromise === retry) _stopwatchRetryRecoveryPromise = null;
+  });
+  _stopwatchRetryRecoveryPromise = retry;
+  return retry;
+}
+
 function retryStorageRecovery() {
   var resetPending = false;
   var rollingRestorePending = false;
@@ -5067,6 +5249,9 @@ function retryStorageRecovery() {
   }
 
   var retryProbe = _probeStartupStopwatchRecovery();
+  if (_focusTimer && _focusTimer.pendingFocusCommit && !retryProbe.expectedFocusCommit) {
+    return _retryMemoryOnlyPendingFocusCommit(_focusTimer.pendingFocusCommit);
+  }
   if (retryProbe.error) {
     storageRecoveryRequired = true;
     _startupStopwatchRecoveryFailed = true;
@@ -5088,7 +5273,7 @@ function retryStorageRecovery() {
     showToast('✅ لا يوجد حظر حاليًّا');
     return Promise.resolve(true);
   }
-  if (hasRetryMarker || retryProbe.expectedTx || hasQueuedForensics) {
+  if (hasRetryMarker || retryProbe.expectedTx || retryProbe.expectedFocusCommit || hasQueuedForensics) {
     if (_startupStopwatchRecoveryInFlight || _stopwatchRetryRecoveryPromise) {
       showToast("⏳ استرداد التخزين قيد التنفيذ بالفعل...");
       return _stopwatchRetryRecoveryPromise || _startupStopwatchRecoveryPromise || Promise.resolve(false);
