@@ -12,10 +12,15 @@ const appScript = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/
 assert.ok(appScript, 'application script exists');
 
 function extract(name) {
-  const re = new RegExp('function\\s+' + name + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}');
-  const match = appScript.match(re);
+  const declaration = new RegExp('^function\\s+' + name + '\\s*\\(', 'm');
+  const match = declaration.exec(appScript);
   assert.ok(match, 'function ' + name + ' exists');
-  return match[0];
+  const start = match.index;
+  const nextFunction = appScript.indexOf('\\nfunction ', start + match[0].length);
+  const end = nextFunction < 0 ? appScript.length : nextFunction;
+  const source = appScript.slice(start, end).trim();
+  assert.match(source, new RegExp('^function\\s+' + name + '\\s*\\('));
+  return source;
 }
 
 const sandbox = {
