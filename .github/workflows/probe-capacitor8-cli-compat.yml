@@ -82,6 +82,13 @@ jobs:
       - name: Add Android platform using CLI 8 with existing plugins
         run: npx cap add android
 
+      - name: Inspect generated Android package metadata
+        run: |
+          echo "--- android/app/build.gradle ---"
+          cat android/app/build.gradle
+          echo "--- AndroidManifest package/namespace declarations ---"
+          grep -nE 'manifest|package=|namespace|applicationId' android/app/src/main/AndroidManifest.xml android/app/build.gradle || true
+
       - name: Configure native stopwatch clock and foreground service
         run: python3 scripts/configure-android-stopwatch.py
 
