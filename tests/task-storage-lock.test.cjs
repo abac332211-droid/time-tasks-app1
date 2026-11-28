@@ -420,8 +420,18 @@ function createTaskFocusMutationHarness(options = {}) {
     '  return { ok: true, linked: true, previousTaskId, previousMainRaw };',
     '}',
     'function _finishTaskFocusLinkMutation(detachment, taskSaveSucceeded) {',
-    '  if (!detachment || !detachment.linked || taskSaveSucceeded === true) return true;',
-    '  if (storageRecoveryRequired || localStorage.getItem(STORAGE_KEY) !== detachment.previousMainRaw) {',
+    '  if (!detachment || !detachment.linked) return true;',
+    '  if (taskSaveSucceeded === true) return "committed";',
+    '  var rawMain = localStorage.getItem(STORAGE_KEY);',
+    '  if (rawMain !== detachment.previousMainRaw) {',
+    '    try {',
+    '      var committed = JSON.parse(rawMain);',
+    '      if (committed && Array.isArray(committed.tasks)',
+    '          && committed.tasks.some(function(task) { return task.id === detachment.previousTaskId && task.status === "done"; })) {',
+    '        detachment.committedTasks = committed.tasks;',
+    '        return "committed";',
+    '      }',
+    '    } catch (error) {}',
     '    storageRecoveryRequired = true; return false;',
     '  }',
     '  _focusTimer.taskId = detachment.previousTaskId;',
@@ -433,7 +443,7 @@ function createTaskFocusMutationHarness(options = {}) {
     '    } catch (error) { _focusTimer.taskId = null; }',
     '    storageRecoveryRequired = true; return false;',
     '  }',
-    '  return true;',
+    '  return "rolled_back";',
     '}'
   ].join('\n');
   vm.runInContext([
@@ -502,12 +512,13 @@ test('ambiguous main write failure keeps Focus detached and blocks further write
   h.sandbox.toggleTask(31);
   const result = h.prompts[0][4]('40');
 
-  assert.equal(result, false);
+  assert.equal(result, true,
+    'the transaction finalizer must report the durable committed state, not the initial ambiguous save result');
   assert.deepEqual(h.writes, ['focus', 'main']);
   assert.equal(JSON.parse(h.values.get('timeTasksApp_v1')).tasks[0].status, 'done');
   assert.equal(JSON.parse(h.values.get('timeTasksApp_focusTimer')).taskId, null);
   assert.equal(h.sandbox._focusTimer.taskId, null);
-  assert.equal(h.sandbox.storageRecoveryRequired, true);
+  assert.equal(h.sandbox.storageRecoveryRequired, false);
 });
 
 test('failed Focus-link rollback leaves the verified detached state and blocks writes', () => {
