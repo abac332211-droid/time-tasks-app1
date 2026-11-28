@@ -407,7 +407,7 @@ function createTaskFocusMutationHarness(options = {}) {
     ...helpers,
     extractFunction('toggleTask'),
     extractFunction('deleteTask')
-  ].join('\\n'), sandbox);
+  ].join('\n'), sandbox);
 
   return { sandbox, values, writes, alerts, toasts, prompts, confirmations, mainRaw };
 }
