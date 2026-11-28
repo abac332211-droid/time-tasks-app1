@@ -113,6 +113,9 @@ test('main source recognizes the transaction journal in both startup and save pa
   assert.match(appScript, /_recoverPendingTaskFocusLinkMutationFromStartup/);
   assert.match(appScript, /_runStorageRecoveryCoordinatorInsideLock/);
   assert.match(appScript, /if \(pendingTaskFocusLink\) v2\.pendingTaskFocusLinkMutation = pendingTaskFocusLink/);
+  const backupBuilder = extract('buildBackupObject');
+  assert.match(backupBuilder, /pendingTaskFocusLinkMutation/,
+    'the backup builder must explicitly reject an unfinished Task–Focus journal');
 });
 
 
