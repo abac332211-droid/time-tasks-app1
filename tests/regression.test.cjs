@@ -24,10 +24,10 @@ function extractFunction(name) {
   const source = match[0];
   if (name === '_isTaskStorageLockHeld' || name === '_withTaskStorageLock') return source;
   const helpers = [];
-  if (/\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
+  if (name !== '_beginTaskFocusLinkMutation' && /\b_beginTaskFocusLinkMutation\s*\(/.test(source)) {
     helpers.push(extractFunction('_beginTaskFocusLinkMutation'));
   }
-  if (/\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
+  if (name !== '_finishTaskFocusLinkMutation' && /\b_finishTaskFocusLinkMutation\s*\(/.test(source)) {
     helpers.push(extractFunction('_finishTaskFocusLinkMutation'));
   }
   if (name !== '_isClockAdjustedV2WorkSession'
