@@ -7269,6 +7269,20 @@ function _taskFocusLinkOtherTasksFingerprint(taskRows, taskId) {
   return JSON.stringify(rows);
 }
 
+function _isValidTaskFocusLinkTaskSnapshot(task) {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+  try {
+    return validateV2({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      tasks: [task],
+      dailyLogs: [],
+      creditOperations: []
+    });
+  } catch (error) {
+    return false;
+  }
+}
+
 function _validatePendingTaskFocusLinkMutation(record) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return false;
   var keys = ["version", "id", "taskId", "operation", "phase", "beforeTask",
@@ -7283,8 +7297,8 @@ function _validatePendingTaskFocusLinkMutation(record) {
       || ["PREPARED", "FOCUS_DETACHED", "TASK_COMMITTED", "VERIFIED"].indexOf(record.phase) < 0
       || !Number.isFinite(record.createdAt) || record.createdAt <= 0
       || !Number.isFinite(record.updatedAt) || record.updatedAt < record.createdAt
-      || !record.beforeTask || typeof record.beforeTask !== "object"
-      || Array.isArray(record.beforeTask) || record.beforeTask.id !== record.taskId
+      || !_isValidTaskFocusLinkTaskSnapshot(record.beforeTask)
+      || record.beforeTask.id !== record.taskId
       || typeof record.otherTasksFingerprint !== "string"
       || record.otherTasksFingerprint.length > 2000000) return false;
   try {
@@ -7295,8 +7309,8 @@ function _validatePendingTaskFocusLinkMutation(record) {
     })) return false;
   } catch (e) { return false; }
   if (record.operation === "delete") return record.targetTask === null;
-  return !!record.targetTask && typeof record.targetTask === "object"
-    && !Array.isArray(record.targetTask) && record.targetTask.id === record.taskId
+  return _isValidTaskFocusLinkTaskSnapshot(record.targetTask)
+    && record.targetTask.id === record.taskId
     && record.targetTask.status === "done";
 }
 
