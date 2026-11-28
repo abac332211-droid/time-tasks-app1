@@ -7484,7 +7484,7 @@ function _beginTaskFocusLinkMutationDurable(taskId, operation, targetTask) {
 function _finishTaskFocusLinkMutationDurable(detachment, taskSaveSucceeded) {
   if (!detachment || detachment.linked !== true) return true;
   var journal = detachment.journal;
-  var succeeded = false;
+  var outcome = null;
   try {
     if (!_isTaskStorageLockHeld() || !_validatePendingTaskFocusLinkMutation(journal)) {
       storageRecoveryRequired = true;
@@ -7506,18 +7506,19 @@ function _finishTaskFocusLinkMutationDurable(detachment, taskSaveSucceeded) {
       if (!journal) throw new Error("verified phase could not be persisted");
       if (!_writeTaskFocusLinkJournal(journal, true))
         throw new Error("task-focus journal could not be cleared");
-      succeeded = true;
+      detachment.committedTasks = JSON.parse(JSON.stringify(mainData.tasks));
+      outcome = "committed";
     } else if (state === "before" && taskSaveSucceeded !== true && !storageRecoveryRequired) {
       if (!_setTaskFocusLinkOnDurableTimer(null, journal.taskId))
         throw new Error("focus timer rollback could not be verified");
       if (!_writeTaskFocusLinkJournal(journal, true))
         throw new Error("rolled-back task-focus journal could not be cleared");
-      succeeded = true;
+      outcome = "rolled_back";
     } else {
       throw new Error("task state is neither the verified pre-commit nor target state");
     }
-    if (succeeded) _renderFocusTimer();
-    return succeeded;
+    if (outcome) _renderFocusTimer();
+    return outcome;
   } catch (error) {
     storageRecoveryRequired = true;
     console.error("Task–Focus transaction finalization failed:", error);
@@ -7686,8 +7687,23 @@ function toggleTask(id) {
           showToast("🎉 ممتاز! تم إنجاز المهمة");
           return true;
         }
-        Object.assign(t, _old);
-        _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+        const _taskFocusOutcome = _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+        if (_taskFocusOutcome === "committed") {
+          if (!Array.isArray(_taskFocusDetachment.committedTasks)) {
+            storageRecoveryRequired = true;
+            return false;
+          }
+          tasks = _taskFocusDetachment.committedTasks;
+          renderAll();
+          showToast("🎉 تم تثبيت الإنجاز والتحقق من الحفظ بعد نتيجة كتابة غير مؤكدة");
+          return true;
+        }
+        if (_taskFocusOutcome === "rolled_back" || !_taskFocusDetachment.linked) {
+          Object.assign(t, _old);
+        } else {
+          storageRecoveryRequired = true;
+          showToast("⚠️ نتيجة الحفظ غير محسومة؛ أوقفنا التعديل حتى يسترد التطبيق سجل المعاملة");
+        }
         return false;
         });
       }
@@ -7734,8 +7750,24 @@ function deleteTask(id) {
       showToast("🗑️ تم حذف المهمة" + (_taskFocusDetachment.linked ? " — فُصل المؤقت" : ""));
       return true;
     }
-    tasks = _snap;
-    _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+    const _taskFocusOutcome = _finishTaskFocusLinkMutation(_taskFocusDetachment, false);
+    if (_taskFocusOutcome === "committed") {
+      if (!Array.isArray(_taskFocusDetachment.committedTasks)) {
+        storageRecoveryRequired = true;
+        return false;
+      }
+      tasks = _taskFocusDetachment.committedTasks;
+      if (editingId === id) cancelEdit();
+      renderAll();
+      showToast("🗑️ تم تثبيت الحذف والتحقق من الحفظ بعد نتيجة كتابة غير مؤكدة");
+      return true;
+    }
+    if (_taskFocusOutcome === "rolled_back" || !_taskFocusDetachment.linked) {
+      tasks = _snap;
+    } else {
+      storageRecoveryRequired = true;
+      showToast("⚠️ نتيجة الحذف غير محسومة؛ أوقفنا التعديل حتى يسترد التطبيق سجل المعاملة");
+    }
     return false;
 
     });
